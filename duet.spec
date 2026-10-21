@@ -1,12 +1,13 @@
 # PyInstaller build for Windows (one-file Duet.exe) and macOS (Duet.app).
+# Build the Rust engine into the environment first:  pip install ./engine
 #   pyinstaller --noconfirm duet.spec
 import sys
 
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = [("ui", "ui")] + collect_data_files("_sounddevice_data") + collect_data_files("webview")
+datas = [("ui", "ui")] + collect_data_files("webview")
 
-a = Analysis(["duet.py"], datas=datas)
+a = Analysis(["duet.py"], datas=datas, hiddenimports=["duet_engine"])
 pyz = PYZ(a.pure)
 
 if sys.platform == "darwin":
@@ -23,7 +24,7 @@ if sys.platform == "darwin":
             # Same for the camera, except macOS kills the app outright when it's missing.
             "NSCameraUsageDescription": "Duet shows you to your partner in the video call.",
             "NSHighResolutionCapable": True,
-            "CFBundleShortVersionString": "0.2.0",
+            "CFBundleShortVersionString": "0.3.0",
             "LSMinimumSystemVersion": "11.0",
         },
     )

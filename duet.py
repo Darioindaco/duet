@@ -4,8 +4,9 @@
     python duet.py --port 50555    # fixed UDP port (if you forward it on your router)
 
 The window is an HTML page (ui/index.html) in a native webview (Edge WebView2 on
-Windows, WebKit on macOS). The page calls into the `Api` class below; audio and
-networking never touch the UI thread.
+Windows, WebKit on macOS). The page calls into the `Api` class below. Audio and
+networking live in the Rust engine (engine/, imported as duet_engine) on native
+threads that never wait for Python or the UI.
 """
 from __future__ import annotations
 
@@ -19,9 +20,7 @@ from pathlib import Path
 
 import webview
 
-import audio
-from effects import PRESETS
-from engine import Engine
+from duet_engine import Engine
 
 
 def resource(path: str) -> Path:
@@ -35,9 +34,9 @@ class Api:
 
     def __init__(self, engine: Engine):
         self._engine = engine
-        self._audio = audio.AudioIO(engine)
         self._code = ""
         self._code_note = ""
+        self._audio = False
         threading.Thread(target=self._discover, daemon=True).start()
 
     def _discover(self):
@@ -48,28 +47,29 @@ class Api:
     # --- setup ---------------------------------------------------------------
 
     def init(self):
-        inputs, outputs = audio.list_devices()
-        din, dout = audio.default_devices(inputs, outputs)
+        inputs, outputs, din, dout = self._engine.devices()
         return {
             "inputs": inputs, "outputs": outputs,
             "defaultInput": din, "defaultOutput": dout,
-            "fx": self._engine.fx.state(),
-            "presets": list(PRESETS),
+            "fx": self._engine.fx_state(),
+            "presets": Engine.presets(),
             "platform": sys.platform,
         }
 
     def start_audio(self, cfg):
+        channel = None if cfg["channel"] == "mix" else int(cfg["channel"])
         try:
-            self._audio.start(int(cfg["input"]), int(cfg["output"]), cfg["channel"],
-                              int(cfg["samplerate"]), int(cfg["block"]))
-        except Exception as exc:  # PortAudio errors are plain Exceptions with useful text
-            self._audio.stop()
+            lin, lout = self._engine.start_audio(str(cfg["input"]), str(cfg["output"]), channel,
+                                                 int(cfg["samplerate"]), int(cfg["block"]))
+        except Exception as exc:
+            self._audio = False
             return {"ok": False, "error": str(exc)}
-        lin, lout = self._audio.latency_ms
+        self._audio = True
         return {"ok": True, "latencyIn": lin, "latencyOut": lout}
 
     def stop_audio(self):
-        self._audio.stop()
+        self._engine.stop_audio()
+        self._audio = False
         return True
 
     def connect(self, code):
@@ -92,49 +92,38 @@ class Api:
     # --- live controls -------------------------------------------------------
 
     def set_fx(self, effect, key, value):
-        self._engine.fx.set(effect, key, value)
+        self._engine.set_fx(effect, key, float(value))
 
     def fx_state(self):
-        return self._engine.fx.state()
+        return self._engine.fx_state()
 
     def preset(self, name):
-        self._engine.fx.preset(name)
-        return self._engine.fx.state()
+        return self._engine.preset(name)
 
     def set_mix(self, key, value):
-        e = self._engine
-        if key == "partner":
-            e.remote_gain = float(value)
-        elif key == "monitor":
-            e.monitor_gain = float(value)
-        elif key == "buffer":
-            e.jitter.target = int(value)
-        elif key == "room":
-            e.room.set("reverb", "on", float(value) > 0.001)
-            e.room.set("reverb", "mix", float(value))
+        self._engine.set_mix(key, float(value))
 
     # --- polled ~12x per second by the page ----------------------------------
 
     def state(self):
-        e, a, j = self._engine, self._audio, self._engine.jitter
-        lin, lout = a.latency_ms
-        connected = e.connected
-        net_ms = e.rtt_ms / 2 if (connected and e.rtt_ms is not None) else None
-        buf_ms = j.target * e.frame / e.samplerate * 1000
+        s = self._engine.state()
+        sr, frame = s["samplerate"], s["frame"]
         return {
             "code": self._code, "codeNote": self._code_note,
-            "audio": a.running,
-            "connected": connected,
-            "calling": bool(e.candidates) and not connected,
-            "peer": e.peer_addr[0] if (connected and e.peer_addr) else None,
-            "rtt": e.rtt_ms if connected else None,
-            "latency": {"network": net_ms, "buffer": buf_ms,
-                        "card": lin + lout, "block": e.frame / e.samplerate * 1000},
-            "levels": {"me": e.in_level, "partner": e.out_level},
-            "stats": {"depth": j.depth, "underruns": j.underruns, "lost": j.lost,
-                      "late": j.late, "trimmed": j.dropped, "xruns": a.xruns},
-            "warning": e.warning or e.fx_error,
-            "signals": e.drain_signals(),
+            "audio": self._audio,
+            "connected": s["connected"],
+            "calling": s["calling"],
+            "peer": s["peer"],
+            "rtt": s["rtt"],
+            "latency": {"network": s["rtt"] / 2 if s["rtt"] is not None else None,
+                        "buffer": s["jitter_target"] * frame / sr * 1000,
+                        "card": (s["lat_in_ms"] + s["lat_out_ms"]) if self._audio else 0.0,
+                        "block": frame / sr * 1000},
+            "levels": {"me": s["in_level"], "partner": s["out_level"]},
+            "stats": {k: s[k] for k in ("depth", "underruns", "lost", "late", "trimmed", "xruns")},
+            "cpu": s["cpu_us"],
+            "warning": s["warning"],
+            "signals": self._engine.drain_signals(),
         }
 
     # --- video call signaling (WebRTC runs in the page; we only carry its messages)
@@ -143,7 +132,6 @@ class Api:
         self._engine.send_signal(text)
 
     def shutdown(self):
-        self._audio.stop()
         self._engine.close()
 
 
@@ -152,10 +140,6 @@ def main():
     ap.add_argument("--port", type=int, default=0, help="fixed UDP port (default: random)")
     ap.add_argument("--debug", action="store_true", help="open the webview dev tools")
     args = ap.parse_args()
-    # The audio callback, the network thread and the UI bridge share the GIL; a
-    # shorter switch interval (default 5 ms, longer than one block) keeps audio on time.
-    sys.setswitchinterval(0.0005)
-
     engine = Engine(port=args.port)
     engine.start()
     api = Api(engine)

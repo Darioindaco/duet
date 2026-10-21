@@ -21,7 +21,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: pip install -r requirements.txt pyinstaller
+        run: pip install -r requirements.txt pyinstaller maturin
+      - name: Build the Rust engine
+        run: pip install ./engine
+      - name: Engine unit tests
+        working-directory: engine
+        run: cargo test --release
       - name: Self-test
         run: python selftest.py
       - name: Build Duet.app

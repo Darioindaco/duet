@@ -1,0 +1,25 @@
+[package]
+name = "duet_engine"
+version = "0.3.0"
+edition = "2021"
+
+[lib]
+name = "duet_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# extension-module is switched on by maturin (pyproject.toml), not here, so
+# `cargo test` can still link against libpython on every platform
+pyo3 = { version = "0.25", features = ["abi3-py39"] }
+cpal = "0.15"
+rtrb = "0.3"
+rand = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+cpal = { version = "0.15", features = ["asio"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"   # a panic in the audio thread must not take Python down with it

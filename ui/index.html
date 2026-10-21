@@ -468,7 +468,7 @@ function fillDevices() {
 }
 
 function fillChannels() {
-  const dev = init.inputs.find((d) => d.id === +$("inDev").value);
+  const dev = init.inputs.find((d) => d.id === $("inDev").value);
   const n = dev ? dev.inputs : 1;
   const sel = $("inCh");
   const saved = store.get("channel", "0");
@@ -493,7 +493,7 @@ async function toggleAudio() {
     return;
   }
   btn.disabled = true; btn.textContent = "Starting…";
-  const cfg = { input: +$("inDev").value, output: +$("outDev").value, channel: $("inCh").value, samplerate: ui.rate, block: ui.block };
+  const cfg = { input: $("inDev").value, output: $("outDev").value, channel: $("inCh").value, samplerate: ui.rate, block: ui.block };
   const res = await api.start_audio(cfg);
   btn.disabled = false;
   if (!res.ok) {
@@ -858,9 +858,9 @@ function demoApi() {
   setTimeout(() => (code = "KJFXZ-4HCOP-AKRMW-I4JZQ"), 700);
   return {
     init: async () => ({
-      inputs: [{ id: 1, name: "Focusrite USB ASIO", api: "ASIO", inputs: 2 }, { id: 3, name: "Analogue 1 + 2 (Focusrite USB Audio)", api: "WASAPI", inputs: 2 }, { id: 5, name: "Microphone (Realtek)", api: "MME", inputs: 2 }],
-      outputs: [{ id: 1, name: "Focusrite USB ASIO", api: "ASIO", outputs: 2 }, { id: 4, name: "Speakers (Focusrite USB Audio)", api: "WASAPI", outputs: 2 }],
-      defaultInput: 1, defaultOutput: 1, fx, presets: Object.keys(PRESET_FX), platform: "win32" }),
+      inputs: [{ id: "ASIO|Focusrite USB ASIO", name: "Focusrite USB ASIO", api: "ASIO", inputs: 2 }, { id: "WASAPI|Analogue 1 + 2", name: "Analogue 1 + 2 (Focusrite USB Audio)", api: "WASAPI", inputs: 2 }],
+      outputs: [{ id: "ASIO|Focusrite USB ASIO", name: "Focusrite USB ASIO", api: "ASIO", outputs: 2 }, { id: "WASAPI|Speakers", name: "Speakers (Focusrite USB Audio)", api: "WASAPI", outputs: 2 }],
+      defaultInput: "ASIO|Focusrite USB ASIO", defaultOutput: "ASIO|Focusrite USB ASIO", fx, presets: Object.keys(PRESET_FX), platform: "win32" }),
     start_audio: async () => ({ ok: true, latencyIn: 6.2, latencyOut: 8.2 }),
     stop_audio: async () => true,
     connect: async () => { calling = true; setTimeout(() => (connected = true), 1500); return { ok: true }; },

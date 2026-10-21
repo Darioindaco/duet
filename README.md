@@ -60,24 +60,39 @@ have the other person enter `public.ip:50555` as the partner code.
 
 ## Development
 
+Needs Python 3.9+ and Rust (https://rustup.rs). On Windows also LLVM (for the
+ASIO bindings: `winget install LLVM.LLVM`, then `set LIBCLANG_PATH=C:\Program Files\LLVM\bin`).
+
 ```
 python -m venv .venv && .venv\Scripts\activate     # Mac: source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt maturin
+pip install ./engine      # compiles the Rust audio engine (or: cd engine && maturin develop --release)
 python duet.py            # --debug opens the web inspector
 python selftest.py        # no sound card needed; --stun also checks the address lookup
+cd engine && cargo test --release   # engine unit tests
 pyinstaller --noconfirm duet.spec   # build Duet.exe / Duet.app for this OS
 ```
 
 Open `ui/index.html?demo` in a browser to work on the interface with a fake backend.
 
+**How it's split:** Python + the web page do setup and display. Everything
+time-critical is in the Rust engine, on native threads that never wait for Python:
+the audio callback never locks, allocates or touches the GIL; other threads talk
+to it through lock-free queues and atomics.
+
 | File | What |
 |---|---|
-| `net.py` | STUN lookup of your public address, connect codes, packet format |
-| `engine.py` | UDP link, hole punching, ping, jitter buffer (reorder, loss concealment, clock-drift trim) |
-| `effects.py` | Pedalboard: compressor, overdrive, chorus, tremolo, delay, reverb, all vectorized per block |
-| `audio.py` | Device list and the sound card stream (ASIO opened on a COM STA thread) |
+| `engine/src/dsp.rs` | The per-block audio work: effects, send, jitter buffer playout, loss concealment, mix |
+| `engine/src/audio.rs` | Sound card via cpal (ASIO / CoreAudio / WASAPI), on one COM-STA thread |
+| `engine/src/jitter.rs` | Jitter buffer: reorder, loss detection, burst-tolerant clock-drift trim |
+| `engine/src/fx.rs` | Pedalboard: compressor, overdrive, chorus, tremolo, delay, Freeverb |
+| `engine/src/net.rs` | Packet format, connect codes, STUN |
+| `engine/src/signal.rs` | Reliable side channel for the video call setup |
+| `engine/src/lib.rs` | Network threads (receive, punching, ping) and the Python API |
 | `duet.py` | Window (pywebview) and the API the page calls |
-| `ui/index.html` | The interface |
-| `.github/workflows/build.yml` | Builds and smoke-tests the Mac app on every push |
+| `ui/index.html` | The interface, incl. the WebRTC video call |
+| `.github/workflows/build.yml` | Builds, tests and smoke-tests the Mac app on every push |
 
-Audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.
+Audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way. The wire
+format hasn't changed since the first (Python) version, so old and new builds
+can still talk to each other.
