@@ -22,18 +22,30 @@ denied the microphone: System Settings → Privacy & Security → Microphone →
 
 ## Using it
 
-1. **Sound:** pick your audio interface (on Windows the `ASIO` entry), the input
-   your instrument/mic is plugged into, and the output. **Same buffer and sample
-   rate on both sides** (128 / 48k is a good start). Press *Start audio*.
+1. **Sound:** pick your audio interface (on Windows the `ASIO` entry) and the
+   output. **Same buffer and sample rate on both sides** (128 / 48k is a good
+   start). Press *Start audio*.
 2. **Connect:** *Copy* your code and send it to your partner; paste theirs and
    press *Connect*. **Both** of you press Connect. That's what gets through your routers.
-3. **Mix:** *Hear me* (your own sound, with effects), partner *Volume*, *Room*
-   (reverb on your partner), and the *Safety* buffer: press + if you hear
-   crackles, each step adds about 2.7 ms.
-4. **Pedalboard:** stomp the round footswitch to turn a pedal on; drag knobs up/down
-   (Shift = fine, double-click = reset, scroll wheel works too). Presets at the top.
-   Your partner hears your effects. To hear them yourself, turn up *Hear me*
-   and turn off your interface's direct monitoring.
+3. **Mixer:** one strip per input you play into, up to four (*+ Add input*, e.g.
+   guitar on In 1 and vocals on In 2). Click a strip's name to rename it; your
+   partner sees that name on their side. Per strip:
+   - **SEND**: your partner gets this channel (as its own strip on their side)
+   - **MON**: you hear it yourself. Turn off your interface's direct monitoring
+     then, or you'll hear yourself twice.
+   - **M / S**: mute / solo; the fader and pan knob set your own mix
+   
+   Your partner's channels appear after the divider, one strip each, and you
+   mix them however you like. **Safety buffer** (top right): press + if you
+   hear crackles; each step adds about 2.7 ms.
+4. **FX rack:** click a strip to see its effects below. *+ Add effect* adds a
+   pedal, the arrows reorder, ✕ removes, the round footswitch turns it on/off.
+   Drag knobs up/down (Shift = fine, double-click = reset, scroll wheel works).
+   Presets replace the strip's whole rack. Effects on your strips are heard by
+   your partner; effects on their strips only change what you hear (e.g. some
+   reverb on their vocals).
+
+Everything you set up is remembered for next time.
 
 **Video:** press *Camera* (top right) to turn yours on; your partner's shows up
 when they do the same. Drag the video panel by its title bar; the arrows button

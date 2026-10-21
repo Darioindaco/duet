@@ -120,7 +120,7 @@ input[type=text] { font-family: var(--mono); letter-spacing: 0.04em; user-select
 .strip .x { position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; border-radius: 5px; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 12px; line-height: 1; display: none; }
 .strip:hover .x { display: block; }
 .strip .x:hover { color: var(--bad); }
-.fxlist { width: 100%; display: flex; flex-direction: column; gap: 2px; min-height: 54px; }
+.fxlist { width: 100%; display: flex; flex-direction: column; gap: 2px; min-height: 52px; }
 .fxlist .fx { font-size: 10.5px; padding: 2px 5px; border-radius: 5px; background: var(--panel-2); display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; }
 .fxlist .fx i { width: 6px; height: 6px; border-radius: 50%; background: var(--fxc); flex: none; box-shadow: 0 0 4px var(--fxc); }
 .fxlist .fx.off { color: var(--faint); }
@@ -671,12 +671,12 @@ function stripEl(t) {
   const fl = document.createElement("div");
   fl.className = "fxlist";
   if (cfg) {
-    const shown = cfg.rack.slice(0, 3);
+    const shown = cfg.rack.slice(0, 2);
     for (const s of shown) {
       const meta = FXMETA[s.kind];
       fl.insertAdjacentHTML("beforeend", `<div class="fx${s.on ? "" : " off"}" style="--fxc:${meta.color}"><i></i>${meta.name}</div>`);
     }
-    if (cfg.rack.length > 3) fl.insertAdjacentHTML("beforeend", `<div class="none">+${cfg.rack.length - 3} more</div>`);
+    if (cfg.rack.length > 2) fl.insertAdjacentHTML("beforeend", `<div class="none">+${cfg.rack.length - 2} more</div>`);
     if (!cfg.rack.length) fl.insertAdjacentHTML("beforeend", `<div class="none">no effects</div>`);
   }
   el.append(fl);
@@ -697,17 +697,17 @@ function stripEl(t) {
   el.append(fs, db);
   ui.meters[t] = meter.firstChild;
 
-  // buttons
+  // buttons, in a column beside the fader
   if (cfg) {
     const b = document.createElement("div");
     b.className = "btns";
+    fs.append(b);
     b.append(toggleBtn("M", "m", cfg.mute, "Mute", (v) => setStrip(t, "mute", v)));
     b.append(toggleBtn("S", "s", cfg.solo, "Solo", (v) => setStrip(t, "solo", v)));
     if (t[0] === "L") {
       b.append(toggleBtn("SEND", "send", cfg.send, "Send this channel to your partner", (v) => { setStrip(t, "send", v); sendNames(); }));
       b.append(toggleBtn("MON", "mon", cfg.mon, "Hear this channel yourself (turn off your interface's direct monitoring)", (v) => setStrip(t, "mon", v)));
     }
-    el.append(b);
   }
   return el;
 }
@@ -747,6 +747,7 @@ async function addStrip() {
   delete ui.names[t];
   await setStrip(t, "active", true);
   ui.mixer = await api.mixer();
+  renderStrips();
   selectStrip(t);
   sendNames();
 }
