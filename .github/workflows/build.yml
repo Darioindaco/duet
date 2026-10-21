@@ -1,0 +1,44 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14          # Apple Silicon (M1 and newer)
+            arch: apple-silicon
+          - os: macos-15-intel    # older Intel MacBooks
+            arch: intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements.txt pyinstaller
+      - name: Self-test
+        run: python selftest.py
+      - name: Build Duet.app
+        run: pyinstaller --noconfirm duet.spec
+      - name: Smoke test (app must start and stay up)
+        run: |
+          ./dist/Duet.app/Contents/MacOS/Duet > app.log 2>&1 &
+          PID=$!
+          sleep 15
+          if kill -0 $PID 2>/dev/null; then
+            echo "app is running"; kill $PID
+          else
+            echo "app exited early:"; cat app.log; exit 1
+          fi
+      - name: Zip
+        run: ditto -c -k --keepParent dist/Duet.app Duet-mac-${{ matrix.arch }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Duet-mac-${{ matrix.arch }}
+          path: Duet-mac-${{ matrix.arch }}.zip
