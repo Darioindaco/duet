@@ -117,6 +117,8 @@ pub struct Shared {
     pub cushion_frames: AtomicU64,
     pub test_signal_loss: AtomicF32,
     pub streaming: std::sync::atomic::AtomicBool,
+    /// the sound card went away (unplugged) or failed mid-stream
+    pub stream_error: std::sync::atomic::AtomicBool,
     /// our block counter (the seq of the block being processed)
     pub seq: AtomicU64,
     /// metronome: beat number + 1 of the last click (0 = none yet), for the UI's blinker

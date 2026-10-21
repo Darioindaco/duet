@@ -56,14 +56,21 @@ class Api:
     # --- setup ---------------------------------------------------------------
 
     def init(self):
-        inputs, outputs, din, dout = self._engine.devices()
+        inputs, outputs, din, dout, sys_in, sys_out = self._engine.devices()
         return {
             "inputs": inputs, "outputs": outputs,
             "defaultInput": din, "defaultOutput": dout,
+            "systemInput": sys_in, "systemOutput": sys_out,
             "presets": Engine.presets(),
             "effects": Engine.effects(),
             "platform": sys.platform,
         }
+
+    def devices_poll(self):
+        """Cheap re-read of the device list (no ASIO drivers), every few seconds:
+        headphones plugged in or out, and where "System default" points now."""
+        inputs, outputs, _din, _dout, sys_in, sys_out = self._engine.devices(False)
+        return {"inputs": inputs, "outputs": outputs, "systemInput": sys_in, "systemOutput": sys_out}
 
     def start_audio(self, cfg):
         try:
@@ -171,6 +178,7 @@ class Api:
             "cpu": s["cpu_us"],
             "dspLoad": s["cpu_us"] / (frame / sr * 1e6) if frame else 0.0,
             "warning": s["warning"],
+            "streamError": s["stream_error"],
             "signals": self._engine.drain_signals(),
         }
 

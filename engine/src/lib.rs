@@ -347,9 +347,13 @@ impl Engine {
 
     // --- audio ---------------------------------------------------------------------
 
-    /// ([inputs], [outputs], default input id, default output id); each device a dict.
-    fn devices<'py>(&self, py: Python<'py>) -> PyResult<(Vec<Bound<'py, PyDict>>, Vec<Bound<'py, PyDict>>, Option<String>, Option<String>)> {
-        let list = py.allow_threads(|| self.audio.list());
+    /// ([inputs], [outputs], default input id, default output id, system default
+    /// input name, system default output name); each device a dict.
+    /// include_asio=False skips ASIO drivers (for polling while one streams).
+    #[pyo3(signature = (include_asio=true))]
+    #[allow(clippy::type_complexity)]
+    fn devices<'py>(&self, py: Python<'py>, include_asio: bool) -> PyResult<(Vec<Bound<'py, PyDict>>, Vec<Bound<'py, PyDict>>, Option<String>, Option<String>, Option<String>, Option<String>)> {
+        let list = py.allow_threads(|| self.audio.list(include_asio));
         let conv = |d: &audio::DeviceInfo| -> PyResult<Bound<'py, PyDict>> {
             let o = PyDict::new(py);
             o.set_item("id", &d.id)?;
@@ -364,6 +368,8 @@ impl Engine {
             list.outputs.iter().map(conv).collect::<PyResult<_>>()?,
             list.default_input,
             list.default_output,
+            list.default_input_name,
+            list.default_output_name,
         ))
     }
 
@@ -841,6 +847,7 @@ impl Engine {
         d.set_item("cpu_us", s.cpu_ns.load(Relaxed) as f64 / 1000.0)?;
         d.set_item("raw_in_peak", s.raw_in_peak.get())?;
         d.set_item("metro_beat", s.metro_beat.load(Relaxed) as i64 - 1)?;
+        d.set_item("stream_error", s.stream_error.load(Relaxed))?;
         d.set_item("metro_synced", s.metro_synced.load(Relaxed))?;
         d.set_item("in_callbacks", s.in_callbacks.load(Relaxed))?;
         d.set_item("ring_empty", s.ring_empty.load(Relaxed))?;

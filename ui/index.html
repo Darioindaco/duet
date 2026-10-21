@@ -636,7 +636,7 @@ function seg(el, value, onPick) {
   paint(value);
 }
 
-function fillDevices() {
+function fillDevices(curIn, curOut) {
   const fill = (sel, list, chosen) => {
     sel.innerHTML = "";
     const groups = {};
@@ -648,11 +648,43 @@ function fillDevices() {
       sel.append(g);
     }
   };
-  const savedIn = store.get("input", null), savedOut = store.get("output", null);
+  const savedIn = curIn ?? store.get("input", null), savedOut = curOut ?? store.get("output", null);
   const has = (list, id) => list.some((d) => d.id === id);
+  // a saved device that isn't there now (headphones unplugged) falls back to the default
   fill($("inDev"), init.inputs, has(init.inputs, savedIn) ? savedIn : init.defaultInput);
   fill($("outDev"), init.outputs, has(init.outputs, savedOut) ? savedOut : init.defaultOutput);
-  deviceChanged();
+  deviceChanged(curIn === undefined);
+}
+
+// ---------- devices come and go (headphones plugged in, AirPods, interfaces) ----------
+const devKey = (list) => list.map((d) => d.id).join("\n");
+
+async function refreshDevices() {
+  let res;
+  try { res = await api.devices_poll(); } catch { return; }
+  // ASIO drivers aren't re-read while polling (it can disturb a running stream): keep the ones we have
+  const keep = (old) => old.filter((d) => d.api === "ASIO");
+  const inputs = [...keep(init.inputs), ...res.inputs], outputs = [...keep(init.outputs), ...res.outputs];
+  const listChanged = devKey(inputs) !== devKey(init.inputs) || devKey(outputs) !== devKey(init.outputs)
+    || inputs.some((d, i) => d.name !== init.inputs[i]?.name) || outputs.some((d, i) => d.name !== init.outputs[i]?.name);
+  const sysMoved = res.systemOutput !== init.systemOutput || res.systemInput !== init.systemInput;
+  const curIn = $("inDev").value, curOut = $("outDev").value;
+  Object.assign(init, { inputs, outputs, systemInput: res.systemInput, systemOutput: res.systemOutput });
+  if (!listChanged && !sysMoved) return;
+  let restart = false;
+  if (listChanged) {
+    fillDevices(curIn, curOut);
+    // the device we were using is gone (e.g. headphones unplugged): follow the system
+    if (!inputs.some((d) => d.id === curIn)) { $("inDev").value = "SYSTEM|in"; restart = true; }
+    if (!outputs.some((d) => d.id === curOut)) { $("outDev").value = "SYSTEM|out"; restart = true; }
+  }
+  // "System default" points somewhere else now: the sound moves with it
+  if (sysMoved && (curIn === "SYSTEM|in" || curOut === "SYSTEM|out")) restart = true;
+  if (restart && ui.audioWanted) {
+    const to = (curOut === "SYSTEM|out" || $("outDev").value === "SYSTEM|out") ? res.systemOutput : $("outDev").selectedOptions[0]?.text;
+    toast(`Sound now goes to ${String(to || "your output").replace(/^System default \((.*)\)$/, "$1")}`);
+    restartAudio();
+  }
 }
 
 function deviceChanged(reset = true) {
@@ -1357,6 +1389,17 @@ function paint(s) {
     paintMetro();
   }
   if (s.metro) paintBeat(s.metro.beat);
+  // the sound device vanished mid-stream (unplugged): fall back to the system's choice
+  if (s.streamError && ui.audio && !paint.recovering) {
+    paint.recovering = true;
+    ui.audio = false;
+    toast("Lost the sound device. Switching to the system default…");
+    refreshDevices().then(() => {
+      if (!init.inputs.some((d) => d.id === $("inDev").value)) $("inDev").value = "SYSTEM|in";
+      if (!init.outputs.some((d) => d.id === $("outDev").value)) $("outDev").value = "SYSTEM|out";
+      return startAudio();
+    }).finally(() => setTimeout(() => (paint.recovering = false), 3000));
+  }
   vOnConnection(s.connected);
   for (const sig of s.signals || []) vReceive(sig);
   if (s.warning) setHint("connHint", s.warning, "warn");
@@ -1413,6 +1456,12 @@ async function boot(a) {
     // same device for both directions is what ASIO needs, and what most people mean
     const sameOut = init.outputs.find((d) => d.id === $("inDev").value);
     if (sameOut) $("outDev").value = sameOut.id;
+    else {
+      // input and output must use the same kind of driver: leaving ASIO, follow the system
+      const inApi = init.inputs.find((d) => d.id === $("inDev").value)?.api;
+      const outApi = init.outputs.find((d) => d.id === $("outDev").value)?.api;
+      if (inApi && outApi && inApi !== outApi) $("outDev").value = "SYSTEM|out";
+    }
     deviceChanged(); restartAudio();
   };
   seg($("rateSeg"), ui.rate, (v) => { ui.rate = v; store.set("rate", v); ui.paintBuf && ui.paintBuf(); restartAudio(); });
@@ -1469,6 +1518,7 @@ async function boot(a) {
   poll();
   // no buttons to press: sound comes on, and we call the last partner again
   startAudio();
+  setInterval(refreshDevices, 3000);
   if (looksLikeCode($("peerCode").value)) connect(true);
 }
 
@@ -1670,6 +1720,7 @@ function demoApi() {
       defaultInput: "ASIO|Focusrite USB ASIO", defaultOutput: "ASIO|Focusrite USB ASIO",
       presets: Object.keys(PRESET_RACKS), effects: [], platform: "win32" }),
     start_audio: async () => ({ ok: true, latencyIn: 2.7, latencyOut: 2.7, inChannels: 2 }),
+    devices_poll: async () => ({ inputs: [], outputs: [], systemInput: null, systemOutput: null }),
     stop_audio: async () => true,
     connect: async () => { calling = true; setTimeout(() => (connected = true), 1500); return { ok: true }; },
     copy: async () => true,

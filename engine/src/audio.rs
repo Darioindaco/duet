@@ -39,6 +39,9 @@ pub struct DeviceList {
     pub outputs: Vec<DeviceInfo>,
     pub default_input: Option<String>,
     pub default_output: Option<String>,
+    /// what "System default" currently points at (to notice it changing)
+    pub default_input_name: Option<String>,
+    pub default_output_name: Option<String>,
 }
 
 pub struct StartOk {
@@ -48,7 +51,7 @@ pub struct StartOk {
 }
 
 enum Req {
-    List(mpsc::Sender<DeviceList>),
+    List(bool, mpsc::Sender<DeviceList>),
     Start(StartArgs, mpsc::Sender<Result<StartOk, String>>),
     Stop(mpsc::Sender<()>),
 }
@@ -77,8 +80,8 @@ impl AudioThread {
                 let mut streams: Option<(cpal::Stream, cpal::Stream)> = None;
                 for req in rx {
                     match req {
-                        Req::List(reply) => {
-                            let _ = reply.send(list_devices());
+                        Req::List(include_asio, reply) => {
+                            let _ = reply.send(list_devices(include_asio));
                         }
                         Req::Start(args, reply) => {
                             drop(streams.take()); // stop the old ones first (drop = stop)
@@ -105,8 +108,13 @@ impl AudioThread {
         rrx.recv().ok()
     }
 
-    pub fn list(&self) -> DeviceList {
-        self.call(Req::List).unwrap_or(DeviceList { inputs: vec![], outputs: vec![], default_input: None, default_output: None })
+    /// All devices. With include_asio=false, skip ASIO (cheap enough to poll,
+    /// and safe while an ASIO stream runs).
+    pub fn list(&self, include_asio: bool) -> DeviceList {
+        self.call(|r| Req::List(include_asio, r)).unwrap_or(DeviceList {
+            inputs: vec![], outputs: vec![], default_input: None, default_output: None,
+            default_input_name: None, default_output_name: None,
+        })
     }
 
     pub fn start(&self, args: StartArgs) -> Result<StartOk, String> {
@@ -148,19 +156,41 @@ fn is_wrapper(name: &str) -> bool {
 /// one driver at a time, and keeping e.g. "FL Studio ASIO" alive makes the
 /// next driver (the Focusrite) fail to load and silently vanish from the list.
 /// `visit` returns true to keep that device (and stop walking).
-fn walk(mut visit: impl FnMut(&DeviceInfo, &cpal::Device) -> bool) -> Option<cpal::Device> {
+fn walk(include_asio: bool, mut visit: impl FnMut(&DeviceInfo, &cpal::Device) -> bool) -> Option<cpal::Device> {
     for host_id in cpal::available_hosts() {
-        let Ok(host) = cpal::host_from_id(host_id) else { continue };
         let api = host_id.name().to_string();
+        if api == "ASIO" && !include_asio {
+            continue; // loading ASIO drivers while one streams can break the stream
+        }
+        let Ok(host) = cpal::host_from_id(host_id) else { continue };
         let Ok(devices) = host.devices() else { continue };
+        // Which devices the OS lists as inputs / outputs decides, not whether
+        // their formats could be read: e.g. a Mac's "External Headphones" or
+        // AirPods can fail that query and would otherwise vanish from the list.
+        // (Not for ASIO: listing those loads every driver once more.)
+        let (in_names, out_names): (Vec<String>, Vec<String>) = if api == "ASIO" {
+            (Vec::new(), Vec::new())
+        } else {
+            (
+                host.input_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default(),
+                host.output_devices().map(|it| it.filter_map(|d| d.name().ok()).collect()).unwrap_or_default(),
+            )
+        };
         let mut seen: Vec<String> = Vec::new();
         for dev in devices {
             let Ok(name) = dev.name() else { continue };
-            let max_ch = |r: Result<Vec<cpal::SupportedStreamConfigRange>, _>| {
-                r.unwrap_or_default().iter().map(|c| c.channels()).max().unwrap_or(0)
+            let max_ch = |r: Result<Vec<cpal::SupportedStreamConfigRange>, _>, fallback: Option<u16>| {
+                let n = r.unwrap_or_default().iter().map(|c| c.channels()).max().unwrap_or(0);
+                if n > 0 { n } else { fallback.unwrap_or(0) }
             };
-            let inputs = max_ch(dev.supported_input_configs().map(|c| c.collect()));
-            let outputs = max_ch(dev.supported_output_configs().map(|c| c.collect()));
+            let mut inputs = max_ch(dev.supported_input_configs().map(|c| c.collect()), dev.default_input_config().ok().map(|c| c.channels()));
+            let mut outputs = max_ch(dev.supported_output_configs().map(|c| c.collect()), dev.default_output_config().ok().map(|c| c.channels()));
+            if inputs == 0 && in_names.contains(&name) {
+                inputs = 1;
+            }
+            if outputs == 0 && out_names.contains(&name) {
+                outputs = 2;
+            }
             let dup = seen.iter().filter(|n| **n == name).count();
             seen.push(name.clone());
             let id = if dup == 0 { format!("{api}|{name}") } else { format!("{api}|{name}#{dup}") };
@@ -172,30 +202,63 @@ fn walk(mut visit: impl FnMut(&DeviceInfo, &cpal::Device) -> bool) -> Option<cpa
     None
 }
 
-fn list_devices() -> DeviceList {
+pub const SYSTEM_IN: &str = "SYSTEM|in";
+pub const SYSTEM_OUT: &str = "SYSTEM|out";
+
+/// The OS's current default devices, as entries that follow it: plug in
+/// headphones and the Mac (or Windows) switches its default output to them,
+/// and so does Duet.
+fn system_default(input: bool) -> Option<(DeviceInfo, cpal::Device)> {
+    let host = cpal::default_host();
+    let dev = if input { host.default_input_device() } else { host.default_output_device() }?;
+    let name = dev.name().unwrap_or_else(|_| "unknown".into());
+    let ch = if input {
+        dev.default_input_config().map(|c| c.channels()).unwrap_or(1)
+    } else {
+        dev.default_output_config().map(|c| c.channels()).unwrap_or(2)
+    };
+    let info = DeviceInfo {
+        id: (if input { SYSTEM_IN } else { SYSTEM_OUT }).into(),
+        name: format!("System default ({name})"),
+        api: host.id().name().to_string(),
+        inputs: if input { ch } else { 0 },
+        outputs: if input { 0 } else { ch },
+    };
+    Some((info, dev))
+}
+
+fn list_devices(include_asio: bool) -> DeviceList {
     let mut all: Vec<DeviceInfo> = Vec::new();
-    walk(|d, _| {
+    walk(include_asio, |d, _| {
         all.push(d.clone());
         false
     });
     all.sort_by_key(|d| (api_rank(&d.api), is_wrapper(&d.name)));
-    let inputs: Vec<DeviceInfo> = all.iter().filter(|d| d.inputs > 0).cloned().collect();
-    let outputs: Vec<DeviceInfo> = all.iter().filter(|d| d.outputs > 0).cloned().collect();
+    let mut inputs: Vec<DeviceInfo> = all.iter().filter(|d| d.inputs > 0).cloned().collect();
+    let mut outputs: Vec<DeviceInfo> = all.iter().filter(|d| d.outputs > 0).cloned().collect();
+    let sys_in = system_default(true).map(|(i, _)| i);
+    let sys_out = system_default(false).map(|(i, _)| i);
+    let default_input_name = sys_in.as_ref().map(|i| i.name.clone());
+    let default_output_name = sys_out.as_ref().map(|i| i.name.clone());
+    // right after the ASIO entries (if any)
+    let at = |v: &Vec<DeviceInfo>| v.iter().position(|d| d.api != "ASIO").unwrap_or(v.len());
+    if let Some(i) = sys_in.clone() {
+        let p = at(&inputs);
+        inputs.insert(p, i);
+    }
+    if let Some(o) = sys_out.clone() {
+        let p = at(&outputs);
+        outputs.insert(p, o);
+    }
 
-    // an ASIO interface with both directions wins; else the OS defaults
+    // an ASIO interface with both directions wins; otherwise follow the system
     let asio = inputs
         .iter()
         .find(|d| d.api == "ASIO" && !is_wrapper(&d.name) && outputs.iter().any(|o| o.id == d.id))
         .map(|d| d.id.clone());
-    let host = cpal::default_host();
-    let api = host.id().name().to_string();
-    let def = |name: Option<String>, pool: &Vec<DeviceInfo>| {
-        name.and_then(|n| pool.iter().find(|d| d.api == api && d.name == n).map(|d| d.id.clone()))
-            .or_else(|| pool.first().map(|d| d.id.clone()))
-    };
-    let default_input = asio.clone().or_else(|| def(host.default_input_device().and_then(|d| d.name().ok()), &inputs));
-    let default_output = asio.or_else(|| def(host.default_output_device().and_then(|d| d.name().ok()), &outputs));
-    DeviceList { inputs, outputs, default_input, default_output }
+    let default_input = asio.clone().or(sys_in.map(|i| i.id)).or_else(|| inputs.first().map(|d| d.id.clone()));
+    let default_output = asio.or(sys_out.map(|o| o.id)).or_else(|| outputs.first().map(|d| d.id.clone()));
+    DeviceList { inputs, outputs, default_input, default_output, default_input_name, default_output_name }
 }
 
 // --- streams -------------------------------------------------------------------
@@ -247,8 +310,14 @@ fn write_out(data: &mut Data, channels: usize, stereo: impl Iterator<Item = (f32
 }
 
 fn find(id: &str) -> Option<(DeviceInfo, cpal::Device)> {
+    if id == SYSTEM_IN {
+        return system_default(true);
+    }
+    if id == SYSTEM_OUT {
+        return system_default(false);
+    }
     let mut info = None;
-    let dev = walk(|d, _| {
+    let dev = walk(true, |d, _| {
         let hit = d.id == id;
         if hit {
             info = Some(d.clone());
@@ -288,6 +357,9 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
     let in_channels = in_ch as usize;
     let (mut ring_tx, mut ring_rx) = rtrb::RingBuffer::<f32>::new(8 * MAX_INPUTS * 1024);
     let shared_in = a.shared.clone();
+    let err_in = a.shared.clone();
+    let err_out = a.shared.clone();
+    a.shared.stream_error.store(false, Relaxed);
     let mut samples: Vec<f32> = Vec::with_capacity(MAX_INPUTS * 4096);
     let input = in_dev
         .build_input_stream_raw(
@@ -311,7 +383,10 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                     debug_assert_eq!(n, samples.len());
                 }
             },
-            |e| eprintln!("input stream error: {e}"),
+            move |e| {
+                eprintln!("input stream error: {e}");
+                err_in.stream_error.store(true, Relaxed);
+            },
             Some(Duration::from_secs(2)),
         )
         .map_err(|e| format!("input: {e}"))?;
@@ -376,7 +451,10 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                 }
                 write_out(data, out_channels, fifo.drain(..frames));
             },
-            |e| eprintln!("output stream error: {e}"),
+            move |e| {
+                eprintln!("output stream error: {e}");
+                err_out.stream_error.store(true, Relaxed);
+            },
             Some(Duration::from_secs(2)),
         )
         .map_err(|e| format!("output: {e}"))?;
