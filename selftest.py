@@ -31,27 +31,32 @@ def connect_pair():
     return a, b, time.monotonic() - t0
 
 
-def test_two_engines(seconds: float = 3.0):
+def wait_packets(b, n, timeout=1.0):
+    """Lockstep driving: block until B has received A's n-th packet. Pacing with
+    sleep() made these tests flaky on slow shared CI machines (sleeps overshoot,
+    the jitter buffer fills up); this way timing noise can't change the result."""
+    t0 = time.monotonic()
+    while b.state()["packets_in"] < n and time.monotonic() - t0 < timeout:
+        time.sleep(0.0005)
+
+
+def test_two_engines(blocks: int = 1100):
     a, b, took = connect_pair()
     print(f"handshake: ok  ({took * 1000:.0f} ms)")
-    # Drive both at the real block rate; A sends a click every 100 blocks.
-    period = N / SR
+    # A sends a click every 100 blocks; B plays each block once A's packet is in.
     silence = [0.0] * N
     click = [0.9] + [0.0] * (N - 1)
     sent_at, heard_at = [], []
-    start = time.perf_counter()
-    for k in range(int(seconds / period)):
+    base = b.state()["packets_in"]
+    for k in range(blocks):
         x = silence
         if k % 100 == 10:
             x = click
             sent_at.append(k)
-        b_out = b.process(silence)
         a.process(x)
-        if b_out[0] > 0.5:
+        wait_packets(b, base + k + 1)
+        if b.process(silence)[0] > 0.5:
             heard_at.append(k)
-        delay = start + (k + 1) * period - time.perf_counter()
-        if delay > 0:
-            time.sleep(delay)
     time.sleep(1.2)  # let a ping round-trip finish
     s = b.state()
     lat = [h - s_ for s_, h in zip(sent_at, heard_at)]
@@ -59,7 +64,8 @@ def test_two_engines(seconds: float = 3.0):
     print(f"rtt {a.state()['rtt'] and round(a.state()['rtt'], 2)} ms, B buffer: underruns {s['underruns']} "
           f"lost {s['lost']} late {s['late']} trimmed {s['trimmed']}")
     assert len(heard_at) == len(sent_at), "clicks went missing"
-    assert all(0 < d <= 8 for d in lat), "end-to-end delay out of range"
+    # in lockstep the jitter buffer sits exactly at its target (3): played 2 blocks later
+    assert all(d == 2 for d in lat), "end-to-end delay should be the jitter target"
     a.close()
     b.close()
     print("two engines: ok")
@@ -113,18 +119,15 @@ def test_effects_cpu():
 
 
 def run_blocks(a, b, blocks, a_input, b_right=False):
-    """Drive A (2 interface inputs) and B in real time; return B's output peak per block."""
-    period = N / SR
+    """Drive A (2 interface inputs) and B in lockstep; return B's output peak per block."""
     silence = [0.0] * N
     peaks = []
-    start = time.perf_counter()
+    base = b.state()["packets_in"]
     for k in range(blocks):
-        out = b.process(silence, 1, b_right)
         a.process(a_input(k), 2)
+        wait_packets(b, base + k + 1)
+        out = b.process(silence, 1, b_right)
         peaks.append(max(abs(v) for v in out))
-        delay = start + (k + 1) * period - time.perf_counter()
-        if delay > 0:
-            time.sleep(delay)
     return peaks
 
 
