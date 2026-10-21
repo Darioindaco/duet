@@ -1,90 +1,78 @@
 # Duet
 
-Free peer-to-peer jamming for two people. Audio goes straight from one computer
-to the other over UDP: no server, no account, no subscription.
+Free peer-to-peer jamming for two people, with a pedalboard. Audio goes straight
+from one computer to the other over UDP: no server, no account, no subscription.
 
-## Getting it running
+## Install
 
-**Windows, easiest:** send your partner `dist\Duet.exe` (one file, about 24 MB) and
-double-click it. Windows SmartScreen will warn because the file isn't signed:
-click *More info → Run anyway*. On first launch, allow it through the Windows
-firewall (private *and* public networks).
+**Windows:** run `Duet.exe`. SmartScreen will warn because it isn't signed:
+*More info → Run anyway*. Allow it through the firewall when asked.
 
-**Mac:**
+**Mac:** unzip `Duet-mac-apple-silicon.zip` (M1/M2/M3/M4 Macs) or
+`Duet-mac-intel.zip` (older Intel Macs; Apple menu → About This Mac tells you
+which) and drag `Duet.app` into Applications. The app isn't signed by Apple, so
+the first launch needs one extra step:
 
-1. Install Python from https://www.python.org/downloads/macos/ (once). Apple's built-in
-   `python3` has a broken window toolkit, so use the python.org one.
-2. Unzip `duet-mac.zip` into Downloads, open **Terminal** and run:
-   ```
-   bash ~/Downloads/duet/run_mac.command
-   ```
-   The first run takes about a minute to set up. Use the same command every time after that.
-3. When macOS asks whether **Terminal may use the microphone**, click Allow. If you
-   missed it: System Settings → Privacy & Security → Microphone → turn on Terminal,
-   then restart Duet. When it asks about **incoming network connections**, click Allow.
+- Open it once. macOS says it can't be opened → click *Done*.
+- System Settings → Privacy & Security → scroll down → **Open Anyway** next to Duet.
+- Or, in Terminal: `xattr -cr /Applications/Duet.app`
 
-On a Mac there's no ASIO. Pick the audio interface by name, or the built-in mic
-and headphones. With an interface, set its sample rate to 48 kHz in *Audio MIDI
-Setup* if 48000 won't start.
-
-**From source (Windows / Mac / Linux):**
-
-```
-python -m venv .venv
-.venv\Scripts\activate          # Mac/Linux: source .venv/bin/activate
-pip install -r requirements.txt
-python duet.py
-```
+Then allow **Microphone** and **incoming network connections** when asked. If you
+denied the microphone: System Settings → Privacy & Security → Microphone → Duet on.
 
 ## Using it
 
-1. **Sound:** pick your audio interface (choose the `[ASIO]` entry on Windows),
-   the input channel your instrument/mic is on, and the output. Use the **same
-   buffer and sample rate on both sides** (128 / 48000 is a good start). Press
-   *Start audio*.
-2. **Connect:** press *Copy* next to *Your code* and send it to your partner (in
-   WhatsApp, anywhere). Paste theirs into *Partner's code* and press *Connect*.
-   **Both** of you press Connect. That's what punches through your routers.
-3. **Mix:** *Partner volume*, *Hear myself* (leave at 0 if your interface has
-   direct monitoring, which has zero delay), and *Safety buffer*. Raise the safety
-   buffer one step at a time if you hear crackles or dropouts. Each step adds
-   about 2.7 ms.
+1. **Sound:** pick your audio interface (on Windows the `ASIO` entry), the input
+   your instrument/mic is plugged into, and the output. **Same buffer and sample
+   rate on both sides** (128 / 48k is a good start). Press *Start audio*.
+2. **Connect:** *Copy* your code and send it to your partner; paste theirs and
+   press *Connect*. **Both** of you press Connect. That's what gets through your routers.
+3. **Mix:** *Hear me* (your own sound, with effects), partner *Volume*, *Room*
+   (reverb on your partner), and the *Safety* buffer: press + if you hear
+   crackles, each step adds about 2.7 ms.
+4. **Pedalboard:** stomp the round footswitch to turn a pedal on; drag knobs up/down
+   (Shift = fine, double-click = reset, scroll wheel works too). Presets at the top.
+   Your partner hears your effects. To hear them yourself, turn up *Hear me*
+   and turn off your interface's direct monitoring.
 
-The bottom line shows the estimated delay from your partner's instrument to your
-ears, broken down into network, safety buffer and sound card.
+The big number top right is the delay from your partner's instrument to your
+ears; the bar at the bottom shows where it comes from.
 
 ## Getting the latency down
 
-- **Ethernet cable, not Wi-Fi**, on both ends. Wi-Fi jitter forces a bigger safety buffer.
-- **Headphones.** With speakers your mic picks up your partner, and they hear themselves back.
-- **ASIO** with a real audio interface. Without one, use the `[WASAPI]` entry; it
-  works, but expect 20–40 ms more.
-- Lower the buffer in your interface's own control panel (Focusrite Control → 64 or 32).
-- Distance sets the floor: light in fibre needs about 1 ms per 100 km each way,
-  plus routing. Same country usually feels fine; across an ocean you'll feel it.
+- **Ethernet cable, not Wi-Fi**, on both ends.
+- **Headphones**, so your mic doesn't pick your partner up again.
+- **ASIO** with a real audio interface on Windows; lower the buffer in its control
+  panel (Focusrite Control → 64 or 32).
+- Distance sets the floor: about 1 ms per 100 km each way plus routing.
 
 ## When Connect doesn't work
 
-Most home routers allow hole punching. Some don't, e.g. "symmetric NAT" on a few
-mobile/4G connections and carrier-grade NAT. Fixes, simplest first:
+Most home routers allow hole punching; some don't (symmetric NAT on some 4G/5G
+and carrier-grade NAT). Try another connection (phone tether), or port forward
+on one side: start with `--port 50555`, forward UDP 50555 to that computer, and
+have the other person enter `public.ip:50555` as the partner code.
 
-- Try the other person's internet (or tether to a phone).
-- **Port forward** on one side: start with a fixed port, `python duet.py --port 50555`
-  (or `Duet.exe --port 50555`), forward UDP 50555 on that router to that computer,
-  and have the other person type `your.public.ip:50555` as the partner code.
-- Same house / same Wi-Fi works without any of this; the code includes your LAN address.
+## Development
 
-## How it works
+```
+python -m venv .venv && .venv\Scripts\activate     # Mac: source .venv/bin/activate
+pip install -r requirements.txt
+python duet.py            # --debug opens the web inspector
+python selftest.py        # no sound card needed; --stun also checks the address lookup
+pyinstaller --noconfirm duet.spec   # build Duet.exe / Duet.app for this OS
+```
+
+Open `ui/index.html?demo` in a browser to work on the interface with a fake backend.
 
 | File | What |
 |---|---|
-| `net.py` | STUN lookup of your public address (free public servers), connect codes, packet format |
+| `net.py` | STUN lookup of your public address, connect codes, packet format |
 | `engine.py` | UDP link, hole punching, ping, jitter buffer (reorder, loss concealment, clock-drift trim) |
-| `duet.py` | Tkinter UI + sound card stream (sounddevice / PortAudio, ASIO on Windows) |
-| `selftest.py` | Tests without a sound card: jitter buffer, codes, two engines over localhost (`--stun` to check the address lookup) |
+| `effects.py` | Pedalboard: compressor, overdrive, chorus, tremolo, delay, reverb, all vectorized per block |
+| `audio.py` | Device list and the sound card stream (ASIO opened on a COM STA thread) |
+| `duet.py` | Window (pywebview) and the API the page calls |
+| `ui/index.html` | The interface |
+| `.github/workflows/build.yml` | Builds and smoke-tests the Mac app on every push |
 
-Audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way. Fine on
-any normal broadband connection.
-
-Rebuild the exe: `pip install pyinstaller` then
-`pyinstaller --noconfirm --onefile --windowed --name Duet --collect-data _sounddevice_data duet.py`
+Audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.
