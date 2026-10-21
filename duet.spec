@@ -20,6 +20,8 @@ if sys.platform == "darwin":
         info_plist={
             # Without this key macOS silently feeds the app silence instead of the mic.
             "NSMicrophoneUsageDescription": "Duet sends your instrument or voice to your partner.",
+            # Same for the camera, except macOS kills the app outright when it's missing.
+            "NSCameraUsageDescription": "Duet shows you to your partner in the video call.",
             "NSHighResolutionCapable": True,
             "CFBundleShortVersionString": "0.2.0",
             "LSMinimumSystemVersion": "11.0",

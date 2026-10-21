@@ -35,6 +35,11 @@ denied the microphone: System Settings → Privacy & Security → Microphone →
    Your partner hears your effects. To hear them yourself, turn up *Hear me*
    and turn off your interface's direct monitoring.
 
+**Video:** press *Camera* (top right) to turn yours on; your partner's shows up
+when they do the same. Drag the video panel by its title bar; the arrows button
+makes it big. Video runs separately from the audio (it's about 0.1–0.2 s behind
+it, which is normal), and it's capped at 0.8 Mbit/s so it can't crowd out the sound.
+
 The big number top right is the delay from your partner's instrument to your
 ears; the bar at the bottom shows where it comes from.
 

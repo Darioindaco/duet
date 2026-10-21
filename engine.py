@@ -7,6 +7,7 @@ background threads.
 """
 from __future__ import annotations
 
+import random
 import socket
 import threading
 import time
@@ -162,12 +163,40 @@ class Engine:
         self._running = False
         self._threads: list[threading.Thread] = []
 
+        self._stun_txid = b""
+        self._stun_reply: bytes | None = None
+        self._stun_event = threading.Event()
+
+        # reliable signaling side channel (video call setup)
+        self._sig_lock = threading.Lock()
+        self._sig_next_id = random.getrandbits(31)
+        self._sig_outbox: dict[int, list] = {}          # id -> [packets, next_send, tries]
+        self._sig_partial: dict[int, dict[int, bytes]] = {}
+        self._sig_done: dict[int, float] = {}            # ids already delivered -> when
+        self._sig_inbox: list[str] = []
+
     # --- lifecycle -----------------------------------------------------------
 
     def discover(self) -> str:
-        """Look up our public address and return the code to give the partner."""
-        self.public_addr = net.stun_public_address(self.sock)
-        return net.make_code(self.public_addr, self.local_addr)
+        """Look up our public address and return the code to give the partner.
+
+        Must go out of the same socket we send audio from: the router mapping is
+        per socket, so the port STUN sees is the port the partner must send to.
+        The reply is picked up by the receive loop (only one thread may read the
+        socket), so call this after start().
+        """
+        self.public_addr = None
+        for addr in net.resolve_stun_servers():
+            for _attempt in range(2):
+                txid, req = net.stun_request()
+                self._stun_txid, self._stun_reply = txid, None
+                self._stun_event.clear()
+                self._send(req, addr)
+                if self._stun_event.wait(1.5) and self._stun_reply:
+                    self.public_addr = net.parse_stun_response(self._stun_reply)
+                    if self.public_addr:
+                        return net.make_code(self.public_addr, self.local_addr)
+        return net.make_code(None, self.local_addr)
 
     def start(self):
         self._running = True
@@ -195,6 +224,66 @@ class Engine:
         self.candidates = net.parse_code(code)
         self.peer_addr = None
         self.jitter.reset()
+
+    # --- signaling side channel ----------------------------------------------
+    # Small messages that must arrive (WebRTC offers/answers/candidates). Split
+    # into chunks, resent every 300 ms until the partner acks the whole message.
+
+    def send_signal(self, text: str):
+        data = text.encode()
+        n = net.SIGNAL_CHUNK
+        chunks = [data[i:i + n] for i in range(0, len(data), n)] or [b""]
+        with self._sig_lock:
+            mid = self._sig_next_id
+            self._sig_next_id = (self._sig_next_id + 1) & 0x7FFFFFFF
+            packets = [net.pack(net.T_SIGNAL, mid, net.CHUNK_HEAD.pack(i, len(chunks)) + c)
+                       for i, c in enumerate(chunks)]
+            self._sig_outbox[mid] = [packets, 0.0, 0]
+        self._flush_signals()
+
+    def drain_signals(self) -> list[str]:
+        with self._sig_lock:
+            out, self._sig_inbox = self._sig_inbox, []
+        return out
+
+    def _flush_signals(self):
+        now = time.monotonic()
+        with self._sig_lock:
+            due = []
+            for mid, entry in list(self._sig_outbox.items()):
+                packets, next_send, tries = entry
+                if tries >= 30:          # ~9 s without an ack: give up
+                    del self._sig_outbox[mid]
+                elif now >= next_send:
+                    entry[1], entry[2] = now + 0.3, tries + 1
+                    due.extend(packets)
+        for p in due:
+            self._send(p)
+
+    def _on_signal_chunk(self, mid: int, body: bytes):
+        if len(body) < net.CHUNK_HEAD.size:
+            return
+        idx, count = net.CHUNK_HEAD.unpack_from(body)
+        with self._sig_lock:
+            if mid not in self._sig_done:
+                parts = self._sig_partial.setdefault(mid, {})
+                parts[idx] = body[net.CHUNK_HEAD.size:]
+                if len(parts) == count:
+                    del self._sig_partial[mid]
+                    self._sig_done[mid] = time.monotonic()
+                    self._sig_inbox.append(b"".join(parts[i] for i in range(count)).decode("utf-8", "replace"))
+            complete = mid in self._sig_done
+            # forget old ids so the dict doesn't grow forever
+            if len(self._sig_done) > 512:
+                cutoff = time.monotonic() - 60
+                self._sig_done = {k: t for k, t in self._sig_done.items() if t > cutoff}
+        if complete:   # (re-)ack: our previous ack may have been lost
+            self._send(net.pack(net.T_SIGACK, mid))
+
+    def _reset_signals(self):
+        with self._sig_lock:
+            self._sig_outbox.clear()
+            self._sig_partial.clear()
 
     def close(self):
         if self.peer_addr:
@@ -261,6 +350,9 @@ class Engine:
                 continue
             pkt = net.unpack(data)
             if pkt is None:
+                if net.is_stun_response(data) and data[8:20] == self._stun_txid:
+                    self._stun_reply = data
+                    self._stun_event.set()
                 continue
             ptype, seq, body = pkt
 
@@ -270,6 +362,7 @@ class Engine:
                 if self.peer_addr != src:
                     self.peer_addr = src
                     self.jitter.reset()
+                    self._reset_signals()
                 self.last_heard = time.monotonic()
                 if len(body) >= net.HELLO_BODY.size:
                     sr, fr = net.HELLO_BODY.unpack_from(body)
@@ -293,6 +386,11 @@ class Engine:
                 (t0,) = net.TIME_BODY.unpack_from(body)
                 rtt = (time.monotonic() - t0) * 1000
                 self.rtt_ms = rtt if self.rtt_ms is None else self.rtt_ms * 0.8 + rtt * 0.2
+            elif ptype == net.T_SIGNAL:
+                self._on_signal_chunk(seq, body)
+            elif ptype == net.T_SIGACK:
+                with self._sig_lock:
+                    self._sig_outbox.pop(seq, None)
             elif ptype == net.T_BYE:
                 self.peer_addr = None
                 self.rtt_ms = None
@@ -316,6 +414,7 @@ class Engine:
                 self._send(net.pack(net.T_PING, self._ping_seq, net.TIME_BODY.pack(now)))
                 self._ping_seq += 1
                 next_ping = now + PING_INTERVAL
+            self._flush_signals()
             time.sleep(0.05)
 
     def _send(self, data: bytes, addr=None):

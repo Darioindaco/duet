@@ -29,8 +29,13 @@ T_AUDIO = 2   # payload: int16 mono PCM, `frame` samples
 T_PING = 3    # payload: sender's monotonic time (f64)
 T_PONG = 4    # payload: echoed time (f64)
 T_BYE = 5
+T_SIGNAL = 6  # reliable side channel (WebRTC video setup), seq = message id
+              # payload: chunk index (u16), chunk count (u16), utf-8 bytes
+T_SIGACK = 7  # seq = id of a fully received message
 
 HELLO_BODY = struct.Struct("!IH")
+CHUNK_HEAD = struct.Struct("!HH")
+SIGNAL_CHUNK = 1000  # bytes per datagram: stays under any sane MTU, no IP fragmentation
 TIME_BODY = struct.Struct("!d")
 
 
@@ -60,41 +65,25 @@ def local_ip() -> str:
         s.close()
 
 
-def stun_public_address(sock: socket.socket, timeout: float = 1.5):
-    """Ask a STUN server what our public ip:port is, using `sock` itself.
-
-    Must use the same socket we'll send audio from: the router mapping is per
-    socket, so the port STUN sees is the port the partner must send to.
-    Returns (ip, port) or None when every server failed.
-    """
-    old_timeout = sock.gettimeout()
-    sock.settimeout(timeout)
-    try:
-        for host, port in STUN_SERVERS:
-            try:
-                addr = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_DGRAM)[0][4]
-            except OSError:
-                continue
-            txid = os.urandom(12)
-            req = struct.pack("!HHI", 0x0001, 0, STUN_MAGIC) + txid
-            for _attempt in range(2):
-                try:
-                    sock.sendto(req, addr)
-                    while True:
-                        data, _src = sock.recvfrom(2048)
-                        if len(data) >= 20 and data[8:20] == txid:
-                            break
-                except (socket.timeout, OSError):
-                    continue
-                result = _parse_stun_response(data)
-                if result:
-                    return result
-        return None
-    finally:
-        sock.settimeout(old_timeout)
+def stun_request() -> tuple[bytes, bytes]:
+    """(transaction id, binding request packet)."""
+    txid = os.urandom(12)
+    return txid, struct.pack("!HHI", 0x0001, 0, STUN_MAGIC) + txid
 
 
-def _parse_stun_response(data: bytes):
+def is_stun_response(data: bytes) -> bool:
+    return len(data) >= 20 and data[0:2] == b"\x01\x01" and data[4:8] == struct.pack("!I", STUN_MAGIC)
+
+
+def resolve_stun_servers():
+    for host, port in STUN_SERVERS:
+        try:
+            yield socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_DGRAM)[0][4]
+        except OSError:
+            continue
+
+
+def parse_stun_response(data: bytes):
     msg_type, msg_len = struct.unpack_from("!HH", data)
     if msg_type != 0x0101:
         return None

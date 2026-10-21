@@ -10,6 +10,8 @@ networking never touch the UI thread.
 from __future__ import annotations
 
 import argparse
+import os
+import socket
 import subprocess
 import sys
 import threading
@@ -132,7 +134,13 @@ class Api:
             "stats": {"depth": j.depth, "underruns": j.underruns, "lost": j.lost,
                       "late": j.late, "trimmed": j.dropped, "xruns": a.xruns},
             "warning": e.warning or e.fx_error,
+            "signals": e.drain_signals(),
         }
+
+    # --- video call signaling (WebRTC runs in the page; we only carry its messages)
+
+    def send_signal(self, text):
+        self._engine.send_signal(text)
 
     def shutdown(self):
         self._audio.stop()
@@ -155,7 +163,35 @@ def main():
                                    width=1280, height=900, min_size=(980, 780),
                                    background_color="#0e0d12")
     window.events.closed += api.shutdown
-    webview.start(debug=args.debug)
+    # Served from http://127.0.0.1:<fixed port> rather than file://: the camera needs a
+    # secure origin, and a stable origin + persistent storage keep saved settings and
+    # the camera permission across launches.
+    webview.start(debug=args.debug, http_server=True, http_port=pick_port(),
+                  private_mode=False, storage_path=str(data_dir() / "webview"))
+
+
+def data_dir() -> Path:
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home()))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    path = base / "Duet"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def pick_port(preferred: int = 47321) -> int:
+    """The same port every launch when possible (same origin = same saved settings)."""
+    for port in (preferred, preferred + 1, preferred + 2, 0):
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return s.getsockname()[1]
+            except OSError:
+                continue
+    return 0
 
 
 if __name__ == "__main__":

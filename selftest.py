@@ -182,8 +182,45 @@ def test_two_engines(seconds: float = 3.0):
     print("two engines: ok")
 
 
+def test_signals():
+    a, b = Engine(), Engine()
+    # lossy link: drop 30% of A's outgoing signal packets and B's acks
+    rng = np.random.default_rng(1)
+    for e in (a, b):
+        real = e._send
+        def lossy(data, addr=None, _real=real):
+            if data[2] in (7, 6) and rng.random() < 0.3:
+                return
+            _real(data, addr)
+        e._send = lossy
+    for e in (a, b):
+        e.start()
+    a.connect(f"127.0.0.1:{b.local_addr[1]}")
+    b.connect(f"127.0.0.1:{a.local_addr[1]}")
+    t0 = time.monotonic()
+    while not (a.connected and b.connected) and time.monotonic() - t0 < 3:
+        time.sleep(0.01)
+    big = "x" * 5000 + "é"
+    msgs = [big, '{"candidate": 1}', '{"candidate": 2}']
+    for m in msgs:
+        a.send_signal(m)
+    got = []
+    t0 = time.monotonic()
+    while len(got) < 3 and time.monotonic() - t0 < 8:
+        got += b.drain_signals()
+        time.sleep(0.05)
+    time.sleep(1.5)              # let retransmits of acked messages die out
+    got += b.drain_signals()     # ...and make sure none were delivered twice
+    assert sorted(got) == sorted(msgs), [len(g) for g in got]
+    assert not a._sig_outbox, "messages never acked"
+    a.close()
+    b.close()
+    print(f"signals: ok  (3 messages incl. 5 KB over a 30%-loss link in {time.monotonic() - t0:.1f} s)")
+
+
 def test_stun():
     e = Engine()
+    e.start()   # the receive loop delivers the STUN reply
     code = e.discover()
     print(f"stun: public {e.public_addr}, local {e.local_addr}, code {code}")
     assert e.public_addr, "no STUN server answered"
@@ -195,6 +232,7 @@ if __name__ == "__main__":
     test_effects()
     test_codes()
     test_two_engines()
+    test_signals()
     if "--stun" in sys.argv:
         test_stun()
     print("all good")
