@@ -20,6 +20,9 @@ use cpal::{BufferSize, Data, SampleFormat, SampleRate, StreamConfig};
 
 use crate::dsp::{Dsp, Shared};
 
+/// Inputs captured per stream (interfaces with more get their first 8).
+pub const MAX_INPUTS: usize = 8;
+
 const WRAPPERS: [&str; 5] = ["fl studio", "asio4all", "generic low latency", "voicemeeter", "realtek asio"];
 
 #[derive(Clone, Debug)]
@@ -41,6 +44,7 @@ pub struct DeviceList {
 pub struct StartOk {
     pub lat_in_ms: f32,
     pub lat_out_ms: f32,
+    pub in_channels: u16,
 }
 
 enum Req {
@@ -52,7 +56,6 @@ enum Req {
 pub struct StartArgs {
     pub input: String,
     pub output: String,
-    pub channel: Option<usize>, // None = mix all inputs
     pub samplerate: u32,
     pub frame: usize,
     pub dsp: Arc<Mutex<Dsp>>,
@@ -197,18 +200,13 @@ fn list_devices() -> DeviceList {
 
 // --- streams -------------------------------------------------------------------
 
-fn read_mono(data: &Data, channels: usize, pick: Option<usize>, out: &mut Vec<f32>) {
+/// Interleaved device samples of any format -> interleaved f32.
+fn read_all(data: &Data, out: &mut Vec<f32>) {
     out.clear();
     macro_rules! go {
         ($t:ty, $conv:expr) => {
             if let Some(s) = data.as_slice::<$t>() {
-                for frame in s.chunks(channels) {
-                    let v = match pick {
-                        Some(c) => $conv(frame[c.min(channels - 1)]),
-                        None => frame.iter().map(|x| $conv(*x)).sum::<f32>() / channels as f32,
-                    };
-                    out.push(v);
-                }
+                out.extend(s.iter().map(|x| $conv(*x)));
             }
         };
     }
@@ -221,13 +219,20 @@ fn read_mono(data: &Data, channels: usize, pick: Option<usize>, out: &mut Vec<f3
     }
 }
 
-fn write_out(data: &mut Data, channels: usize, mono: impl Iterator<Item = f32>) {
+/// Interleaved stereo frames -> the device: L/R on the first two channels
+/// (any further ones silent), or a mono sum on a one-channel device.
+fn write_out(data: &mut Data, channels: usize, stereo: impl Iterator<Item = (f32, f32)>) {
     macro_rules! go {
         ($t:ty, $conv:expr) => {
             if let Some(s) = data.as_slice_mut::<$t>() {
-                for (frame, v) in s.chunks_mut(channels).zip(mono) {
-                    let v = v.clamp(-1.0, 1.0);
-                    frame.fill($conv(v));
+                for (frame, (l, r)) in s.chunks_mut(channels).zip(stereo) {
+                    if channels == 1 {
+                        frame[0] = $conv(((l + r) * 0.7071).clamp(-1.0, 1.0));
+                    } else {
+                        frame.fill($conv(0.0));
+                        frame[0] = $conv(l.clamp(-1.0, 1.0));
+                        frame[1] = $conv(r.clamp(-1.0, 1.0));
+                    }
                 }
             }
         };
@@ -270,23 +275,20 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
 
     let in_fmt = in_dev.default_input_config().map_err(|e| e.to_string())?.sample_format();
     let out_fmt = out_dev.default_output_config().map_err(|e| e.to_string())?.sample_format();
-    let in_ch = match a.channel {
-        Some(c) => (c + 1) as u16,
-        None => in_info.inputs,
-    }
-    .max(1);
+    // every input of the interface, so each mixer strip can pick its own
+    let in_ch = in_info.inputs.clamp(1, MAX_INPUTS as u16);
     let out_ch = out_info.outputs.min(2).max(1);
+    a.shared.in_channels.store(in_ch as u64, Relaxed);
     let cfg = |ch: u16| StreamConfig {
         channels: ch,
         sample_rate: SampleRate(a.samplerate),
         buffer_size: BufferSize::Fixed(frame as u32),
     };
 
-    let (mut ring_tx, mut ring_rx) = rtrb::RingBuffer::<f32>::new(16 * 1024);
-    let shared_in = a.shared.clone();
-    let mut mono: Vec<f32> = Vec::with_capacity(8192);
-    let pick = a.channel;
     let in_channels = in_ch as usize;
+    let (mut ring_tx, mut ring_rx) = rtrb::RingBuffer::<f32>::new(8 * MAX_INPUTS * 1024);
+    let shared_in = a.shared.clone();
+    let mut samples: Vec<f32> = Vec::with_capacity(MAX_INPUTS * 4096);
     let input = in_dev
         .build_input_stream_raw(
             &cfg(in_ch),
@@ -296,17 +298,17 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                 if let Some(d) = ts.callback.duration_since(&ts.capture) {
                     shared_in.lat_in_us.store(d.as_micros() as u64, Relaxed);
                 }
-                read_mono(data, in_channels, pick, &mut mono);
+                read_all(data, &mut samples);
                 shared_in.in_callbacks.fetch_add(1, Relaxed);
-                let pk = mono.iter().fold(0f32, |a, v| a.max(v.abs()));
+                let pk = samples.iter().fold(0f32, |a, v| a.max(v.abs()));
                 shared_in.raw_in_peak.set(pk.max(shared_in.raw_in_peak.get() * 0.95));
-                if ring_tx.slots() < mono.len() {
+                if ring_tx.slots() < samples.len() {
                     shared_in.xruns.fetch_add(1, Relaxed);
+                    return;
                 }
-                for s in &mono {
-                    if ring_tx.push(*s).is_err() {
-                        break;
-                    }
+                if let Ok(chunk) = ring_tx.write_chunk_uninit(samples.len()) {
+                    let n = chunk.fill_from_iter(samples.iter().copied());
+                    debug_assert_eq!(n, samples.len());
                 }
             },
             |e| eprintln!("input stream error: {e}"),
@@ -316,9 +318,10 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
 
     let shared_out = a.shared.clone();
     let dsp = a.dsp.clone();
-    let mut fifo: VecDeque<f32> = VecDeque::with_capacity(16 * 1024);
-    let mut in_blk = vec![0f32; frame];
-    let mut out_blk = vec![0f32; frame];
+    let mut fifo: VecDeque<(f32, f32)> = VecDeque::with_capacity(8 * 1024);
+    let block = frame * in_channels; // one input block, in samples
+    let mut in_blk = vec![0f32; block];
+    let mut out_blk = vec![0f32; 2 * frame];
     let out_channels = out_ch as usize;
     // With ASIO, input and output come from the same driver interrupt, input
     // first, so the input block is always there in time: no cushion, no added
@@ -339,19 +342,20 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                 let frames = data.len() / out_channels;
                 // Separate input/output devices drift apart; never let the input
                 // ring build up more than the cushion plus one spare block.
-                let allowed = frame * (1 + cushion) + frames;
+                let allowed = block * (1 + cushion) + frames * in_channels;
                 let spare = ring_rx.slots().saturating_sub(allowed);
-                if spare > frame {
+                if spare > block {
+                    let spare = spare - spare % in_channels; // stay frame-aligned
                     if let Ok(chunk) = ring_rx.read_chunk(spare) {
                         chunk.commit_all();
                     }
                 }
-                if !primed && ring_rx.slots() >= frame * (1 + cushion) {
+                if !primed && ring_rx.slots() >= block * (1 + cushion) {
                     primed = true;
                 }
                 while fifo.len() < frames {
-                    if primed && ring_rx.slots() >= frame {
-                        let chunk = ring_rx.read_chunk(frame).unwrap();
+                    if primed && ring_rx.slots() >= block {
+                        let chunk = ring_rx.read_chunk(block).unwrap();
                         let (x, y) = chunk.as_slices();
                         in_blk[..x.len()].copy_from_slice(x);
                         in_blk[x.len()..].copy_from_slice(y);
@@ -365,10 +369,10 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                         }
                     }
                     match dsp.try_lock() {
-                        Ok(mut d) => d.process(&mut in_blk, &mut out_blk),
+                        Ok(mut d) => d.process(&in_blk, in_channels, &mut out_blk),
                         Err(_) => out_blk.fill(0.0),
                     }
-                    fifo.extend(out_blk.iter().copied());
+                    fifo.extend(out_blk.chunks_exact(2).map(|p| (p[0], p[1])));
                 }
                 write_out(data, out_channels, fifo.drain(..frames));
             },
@@ -383,6 +387,7 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
     let ok = StartOk {
         lat_in_ms: a.shared.lat_in_us.load(Relaxed) as f32 / 1000.0,
         lat_out_ms: a.shared.lat_out_us.load(Relaxed) as f32 / 1000.0,
+        in_channels: in_ch,
     };
     Ok((input, output, ok))
 }

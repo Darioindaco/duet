@@ -13,6 +13,15 @@ pub const T_PONG: u8 = 4;
 pub const T_BYE: u8 = 5;
 pub const T_SIGNAL: u8 = 6; // seq = message id; payload: chunk idx u16, count u16, bytes
 pub const T_SIGACK: u8 = 7;
+/// Multichannel audio (protocol 2). payload: total channels u8, first channel
+/// u8, channels in this packet u8, then i16 LE samples, channel after channel.
+/// A block with more channels than fit under the MTU is split over packets.
+pub const T_AUDIO_MC: u8 = 8;
+
+/// Sent as an extra byte after HELLO's samplerate/frame. Builds that predate it
+/// send 6 bytes, so a missing byte means version 1: mono T_AUDIO only.
+pub const PROTOCOL: u8 = 2;
+pub const MAX_AUDIO_PAYLOAD: usize = 1200;
 
 pub const SIGNAL_CHUNK: usize = 1000;
 pub const STUN_MAGIC: u32 = 0x2112_A442;

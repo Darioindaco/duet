@@ -98,31 +98,77 @@ input[type=text] { font-family: var(--mono); letter-spacing: 0.04em; user-select
 .copy { background: var(--line-2); border: 0; border-radius: 8px; padding: 7px 11px; font-size: 12px; font-weight: 650; cursor: pointer; }
 .copy.done { background: var(--ok); color: #062012; }
 
-/* ---------- right side ---------- */
-.right { display: grid; grid-template-rows: auto 1fr; gap: 14px; min-height: 0; }
-.mixer { display: grid; grid-template-columns: 1fr 1.35fr auto; gap: 14px; }
-.strip { display: flex; align-items: center; gap: 14px; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
-.strip .who { width: 74px; }
-.strip .who b { display: block; font-size: 15px; }
-.strip .who span { font-size: 11px; color: var(--muted); }
-.meter { flex: 1; height: 10px; border-radius: 5px; background: #0a090d; overflow: hidden; position: relative; min-width: 60px; }
-.meter i { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 5px; transition: width 90ms linear; }
-.meter.me i { background: linear-gradient(90deg, color-mix(in srgb, var(--me) 55%, transparent), var(--me) 80%, var(--bad)); }
-.meter.partner i { background: linear-gradient(90deg, color-mix(in srgb, var(--partner) 55%, transparent), var(--partner) 80%, var(--bad)); }
-.stepper { display: flex; align-items: center; gap: 4px; }
-.stepper button { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel-2); cursor: pointer; font-size: 16px; line-height: 1; }
-.stepper .v { min-width: 62px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 650; }
+/* ---------- right side: mixer + rack ---------- */
+.right { display: grid; grid-template-rows: auto 1fr; gap: 14px; min-height: 0; overflow: hidden; }
+.sect-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.sect-head h2 { margin: 0; }
+.stepper { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.stepper button { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel-2); cursor: pointer; font-size: 15px; line-height: 1; }
+.stepper .v { min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 650; color: var(--text); }
 .stepper .v small { display: block; font-size: 10px; color: var(--muted); font-weight: 500; }
 
-.board-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-.board-head h2 { margin: 0; }
+.strips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px; align-items: stretch; }
+.strip { --c: var(--me); width: 94px; flex: none; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 7px 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; position: relative; transition: border-color 0.15s, box-shadow 0.15s; }
+.strip.remote { --c: var(--partner); }
+.strip.master { --c: #d9d3e3; cursor: default; }
+.strip.sel { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset, 0 0 18px color-mix(in srgb, var(--c) 18%, transparent); }
+.strip .nm { width: 100%; font: 700 12px/1.2 inherit; font-family: inherit; letter-spacing: 0; color: var(--c); text-align: center; border: 1px solid transparent; background: none; padding: 3px 2px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.strip input.nm:hover { border-color: var(--line-2); }
+.strip input.nm:focus { border-color: var(--c); background: var(--panel); cursor: text; }
+.strip .src { width: 100%; padding: 3px 18px 3px 6px; font-size: 11px; border-radius: 7px; background-position: calc(100% - 10px) 52%, calc(100% - 6px) 52%; }
+.strip .srclbl { font-size: 10.5px; color: var(--faint); height: 22px; display: grid; place-items: center; }
+.strip .x { position: absolute; top: 3px; right: 3px; width: 16px; height: 16px; border-radius: 5px; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 12px; line-height: 1; display: none; }
+.strip:hover .x { display: block; }
+.strip .x:hover { color: var(--bad); }
+.fxlist { width: 100%; display: flex; flex-direction: column; gap: 2px; min-height: 52px; }
+.fxlist .fx { font-size: 10.5px; padding: 2px 5px; border-radius: 5px; background: var(--panel-2); display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; }
+.fxlist .fx i { width: 6px; height: 6px; border-radius: 50%; background: var(--fxc); flex: none; box-shadow: 0 0 4px var(--fxc); }
+.fxlist .fx.off { color: var(--faint); }
+.fxlist .fx.off i { background: #3a3542; box-shadow: none; }
+.fxlist .none { font-size: 10.5px; color: var(--faint); text-align: center; padding-top: 4px; }
+.fadersec { display: flex; gap: 5px; height: 112px; align-items: stretch; }
+.vmeter { width: 8px; border-radius: 4px; background: #0a090d; position: relative; overflow: hidden; }
+.vmeter i { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: linear-gradient(0deg, color-mix(in srgb, var(--c) 55%, transparent), var(--c) 70%, var(--warn) 88%, var(--bad)); transition: height 90ms linear; }
+.fader { width: 28px; position: relative; cursor: ns-resize; touch-action: none; outline: none; }
+.fader::before { content: ""; position: absolute; left: 50%; top: 4px; bottom: 4px; width: 4px; margin-left: -2px; background: #0a090d; border-radius: 2px; }
+.fader .unity { position: absolute; left: 2px; right: 2px; height: 1px; background: var(--faint); }
+.fader .cap { position: absolute; left: 1px; right: 1px; height: 22px; margin-top: -11px; border-radius: 5px; background: linear-gradient(180deg, #77717f, #403b48 55%, #2c2932); border: 1px solid #000; box-shadow: 0 2px 5px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.15); }
+.fader .cap::after { content: ""; position: absolute; left: 4px; right: 4px; top: 50%; height: 2px; margin-top: -1px; background: var(--c); border-radius: 1px; }
+.fader:focus-visible .cap { outline: 2px solid var(--c); }
+.db { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); height: 14px; }
+.btns { display: flex; flex-direction: column; gap: 3px; width: 36px; }
+.tb { font-size: 9.5px; font-weight: 750; letter-spacing: 0.02em; border: 1px solid var(--line-2); background: var(--panel-2); border-radius: 6px; padding: 0; height: 24px; cursor: pointer; color: var(--muted); }
+.tb:hover { color: var(--text); }
+.tb.on { color: #111; border-color: transparent; background: var(--tbc); }
+.tb.m { --tbc: var(--bad); }
+.tb.s { --tbc: var(--warn); }
+.tb.send { --tbc: var(--me); }
+.tb.mon { --tbc: var(--ok); }
+.addstrip { width: 76px; flex: none; border: 1px dashed var(--line-2); border-radius: 12px; display: grid; place-items: center; color: var(--faint); cursor: pointer; font-size: 12px; text-align: center; background: none; padding: 8px; }
+.addstrip:hover { color: var(--text); border-color: var(--muted); }
+.addstrip b { display: block; font-size: 22px; font-weight: 400; }
+.sep { width: 1px; background: var(--line); flex: none; margin: 4px 2px; }
+.waiting { width: 150px; flex: none; display: grid; place-items: center; color: var(--faint); font-size: 12px; text-align: center; border: 1px dashed var(--line); border-radius: 12px; padding: 12px; }
+.strip .knob { width: 50px; }
+.strip .knob .kl { display: none; }
+
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip { border: 1px solid var(--line-2); background: var(--bg); border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--muted); }
 .chip:hover { color: var(--text); border-color: var(--muted); }
 .chip.on { color: var(--text); border-color: var(--me); background: color-mix(in srgb, var(--me) 14%, var(--bg)); }
-.board-card { display: flex; flex-direction: column; min-height: 0; }
-.board { display: grid; grid-template-columns: repeat(auto-fill, minmax(205px, 1fr)); gap: 14px; overflow: auto; padding: 2px; align-content: start; }
-.board-note { font-size: 12px; color: var(--muted); margin-left: auto; }
+.rack-card { display: flex; flex-direction: column; min-height: 0; }
+.rack-head .who { color: var(--c, var(--me)); text-transform: none; letter-spacing: 0; font-size: 13px; }
+.rack { display: flex; gap: 14px; overflow-x: auto; overflow-y: auto; padding: 2px 2px 10px; align-items: flex-start; min-height: 0; flex: 1; }
+.rack .pedal { width: 214px; flex: none; }
+.pedal .tools { display: flex; gap: 2px; margin-left: auto; opacity: 0.55; transition: opacity 0.15s; }
+.pedal:hover .tools { opacity: 1; }
+.pedal .tools button { width: 20px; height: 20px; border-radius: 6px; border: 0; background: rgba(0,0,0,0.3); color: var(--text); cursor: pointer; font-size: 11px; line-height: 1; padding: 0; }
+.pedal .tools button:hover { background: rgba(0,0,0,0.55); }
+.pedal .tools button.del:hover { color: var(--bad); }
+.pedal .led { margin-left: 6px; }
+.addfx { width: auto; padding: 7px 30px 7px 12px; font-size: 13px; font-weight: 650; border-radius: 10px; cursor: pointer; }
+.empty-rack { color: var(--faint); font-size: 13px; padding: 34px 6px; line-height: 1.6; }
+.empty-rack b { color: var(--muted); }
 
 /* pedals */
 .pedal {
@@ -172,19 +218,14 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 /* narrow windows: let columns shrink, scroll inside instead of overflowing */
 .right, .col, .card { min-width: 0; }
 .col { overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
-.board { overflow-x: hidden; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--faint); }
 ::-webkit-scrollbar-corner { background: transparent; }
-.mixer { grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) auto; }
 .code .txt { font-size: 15px; }
 @media (max-width: 1180px) {
-  .mixer { grid-template-columns: 1fr 1fr; }
-  .mixer .strip:last-child { grid-column: 1 / -1; justify-content: space-between; }
   main { grid-template-columns: 300px 1fr; }
-  .board-note { display: none; }
   footer { grid-template-columns: 1fr; gap: 8px; }
 }
 
@@ -242,13 +283,10 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
     <div class="col">
       <section class="card">
         <h2><span class="step">1</span>Sound</h2>
-        <div class="field"><label for="inDev">Input</label><select id="inDev"></select></div>
-        <div class="row" style="margin-bottom:12px">
-          <div class="field grow" style="margin:0"><label for="inCh">Input channel</label><select id="inCh"></select></div>
-          <div class="field" style="margin:0"><label>Sample rate</label>
-            <div class="seg" id="rateSeg"><button data-v="44100">44.1k</button><button data-v="48000">48k</button></div></div>
-        </div>
-        <div class="field"><label for="outDev">Output</label><select id="outDev"></select></div>
+        <div class="field"><label for="inDev">Audio interface (in)</label><select id="inDev"></select></div>
+        <div class="field"><label>Sample rate</label>
+          <div class="seg" id="rateSeg"><button data-v="44100">44.1k</button><button data-v="48000">48k</button></div></div>
+        <div class="field"><label for="outDev">Output (headphones)</label><select id="outDev"></select></div>
         <div class="field"><label>Buffer (samples)</label>
           <div class="seg" id="blockSeg"><button data-v="64">64</button><button data-v="128">128</button><button data-v="256">256</button><button data-v="512">512</button></div></div>
         <button class="btn primary block" id="audioBtn">Start audio</button>
@@ -269,37 +307,27 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 
     <div class="right">
       <section class="card">
-        <h2><span class="step">3</span>Mix</h2>
-        <div class="mixer">
-          <div class="strip">
-            <div class="who"><b style="color:var(--me)">You</b><span>after effects</span></div>
-            <div class="meter me"><i id="meMeter"></i></div>
-            <div id="monitorKnob"></div>
-          </div>
-          <div class="strip">
-            <div class="who"><b style="color:var(--partner)">Partner</b><span id="peerName">not connected</span></div>
-            <div class="meter partner"><i id="peerMeter"></i></div>
-            <div id="partnerKnob"></div>
-            <div id="roomKnob"></div>
-          </div>
-          <div class="strip">
-            <div class="who"><b>Safety</b><span>buffer</span></div>
-            <div class="stepper">
-              <button id="bufMinus" aria-label="Smaller buffer">−</button>
-              <div class="v" id="bufVal">3<small>8.0 ms</small></div>
-              <button id="bufPlus" aria-label="Bigger buffer">+</button>
-            </div>
+        <div class="sect-head">
+          <h2><span class="step">3</span>Mixer</h2>
+          <div class="spacer"></div>
+          <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Raise it if you hear crackles.">
+            Safety buffer
+            <button id="bufMinus" aria-label="Smaller safety buffer">−</button>
+            <div class="v" id="bufVal">3<small>8.0 ms</small></div>
+            <button id="bufPlus" aria-label="Bigger safety buffer">+</button>
           </div>
         </div>
+        <div class="strips" id="strips"></div>
       </section>
 
-      <section class="card board-card">
-        <div class="board-head">
-          <h2>Pedalboard</h2>
+      <section class="card rack-card">
+        <div class="sect-head rack-head">
+          <h2 id="rackTitle">FX rack</h2>
           <div class="chips" id="presets"></div>
-          <span class="board-note" id="boardNote">Your partner hears these. Turn up “Hear me” to hear them too.</span>
+          <div class="spacer"></div>
+          <select class="addfx" id="addFx" aria-label="Add an effect"></select>
         </div>
-        <div class="board" id="board"></div>
+        <div class="rack" id="rack"></div>
       </section>
     </div>
   </main>
@@ -432,7 +460,9 @@ let api = null;
 let init = null;
 const ui = {
   block: store.get("block", 128), rate: store.get("rate", 48000), buffer: store.get("buffer", 3),
-  audio: false, fxKnobs: {}, pedals: {},
+  audio: false, connected: false,
+  mixer: null, sel: "L0", names: store.get("names", {}), partnerNames: [], remoteCount: 0,
+  meters: {}, inChannels: 0,
 };
 
 function toast(msg, bad = false) {
@@ -464,21 +494,16 @@ function fillDevices() {
   const has = (list, id) => list.some((d) => d.id === id);
   fill($("inDev"), init.inputs, has(init.inputs, savedIn) ? savedIn : init.defaultInput);
   fill($("outDev"), init.outputs, has(init.outputs, savedOut) ? savedOut : init.defaultOutput);
-  fillChannels();
+  deviceChanged();
 }
 
-function fillChannels() {
+function deviceChanged() {
   const dev = init.inputs.find((d) => d.id === $("inDev").value);
-  const n = dev ? dev.inputs : 1;
-  const sel = $("inCh");
-  const saved = store.get("channel", "0");
-  sel.innerHTML = "";
-  for (let i = 0; i < n; i++) sel.append(new Option(`Input ${i + 1}`, String(i)));
-  if (n >= 2) sel.append(new Option(`All inputs mixed`, "mix"));
-  sel.value = [...sel.options].some((o) => o.value === saved) ? saved : "0";
   const isAsio = dev && dev.api === "ASIO";
   const winNoAsio = init.platform === "win32" && !isAsio && init.inputs.some((d) => d.api === "ASIO");
   setHint("audioHint", winNoAsio ? "Tip: an ASIO device gives much lower latency." : "Use the same buffer and sample rate on both sides.", winNoAsio ? "warn" : "");
+  ui.inChannels = 0;
+  if (ui.mixer) renderStrips();
 }
 
 function setHint(id, text, kind = "") { const h = $(id); h.textContent = text; h.className = "hint" + (kind ? " " + kind : ""); }
@@ -493,7 +518,7 @@ async function toggleAudio() {
     return;
   }
   btn.disabled = true; btn.textContent = "Starting…";
-  const cfg = { input: $("inDev").value, output: $("outDev").value, channel: $("inCh").value, samplerate: ui.rate, block: ui.block };
+  const cfg = { input: $("inDev").value, output: $("outDev").value, samplerate: ui.rate, block: ui.block };
   const res = await api.start_audio(cfg);
   btn.disabled = false;
   if (!res.ok) {
@@ -503,9 +528,11 @@ async function toggleAudio() {
     return;
   }
   ui.audio = true;
-  store.set("input", cfg.input); store.set("output", cfg.output); store.set("channel", cfg.channel);
+  store.set("input", cfg.input); store.set("output", cfg.output);
+  ui.inChannels = res.inChannels;
+  renderStrips();
   btn.textContent = "Stop audio"; btn.className = "btn stop block";
-  setHint("audioHint", `Running · sound card ${res.latencyIn.toFixed(1)} + ${res.latencyOut.toFixed(1)} ms`);
+  setHint("audioHint", `Running · ${res.inChannels} input${res.inChannels === 1 ? "" : "s"} · sound card ${res.latencyIn.toFixed(1)} + ${res.latencyOut.toFixed(1)} ms`);
 }
 
 async function connect() {
@@ -517,79 +544,301 @@ async function connect() {
   setHint("connHint", "Calling… they need to press Connect with your code too.");
 }
 
-function buildMixer() {
-  const mon = store.get("monitor", 0), partner = store.get("partner", 1), room = store.get("room", 0);
-  $("monitorKnob").append(knob({ label: "Hear me", value: mon, def: 0, color: "var(--me)", onChange: (v) => { api.set_mix("monitor", v); store.set("monitor", v); } }));
-  $("partnerKnob").append(knob({ label: "Volume", value: partner, def: 1, max: 2, color: "var(--partner)", onChange: (v) => { api.set_mix("partner", v); store.set("partner", v); } }));
-  $("roomKnob").append(knob({ label: "Room", value: room, def: 0, color: "var(--partner)", onChange: (v) => { api.set_mix("room", v); store.set("room", v); } }));
-  api.set_mix("monitor", mon); api.set_mix("partner", partner); api.set_mix("room", room);
+// ---------- mixer ----------
+// The engine holds the truth; ui.mixer is its last answer to api.mixer(),
+// patched locally for knob/fader moves so we don't round-trip on every pixel.
+const FXMETA = Object.fromEntries(FX.map((f) => [f.id, f]));
+const faderPos = (gain) => Math.cbrt(Math.max(0, gain) / 2);    // gain = 2 * pos^3: 0 dB at ~79%
+const faderGain = (pos) => 2 * Math.pow(Math.max(0, Math.min(1, pos)), 3);
+const fmtDb = (g) => (g < 0.0005 ? "-∞" : (20 * Math.log10(g) >= 0 ? "+" : "") + (20 * Math.log10(g)).toFixed(1)) + " dB";
+const fmtPan = (v) => (Math.abs(v) < 0.02 ? "C" : (v < 0 ? "L" : "R") + Math.round(Math.abs(v) * 100));
+
+function stripCfg(t) {
+  return t === "M" ? null : ui.mixer[t[0] === "L" ? "local" : "remote"][+t.slice(1)];
+}
+
+function stripName(t) {
+  if (t === "M") return "Master";
+  const i = +t.slice(1);
+  if (t[0] === "L") return ui.names[t] || `Input ${stripCfg(t).input + 1}`;
+  return ui.partnerNames[i] || `Partner ${i + 1}`;
+}
+
+function inputCount() {
+  if (ui.inChannels) return ui.inChannels;
+  const dev = init.inputs.find((d) => d.id === $("inDev").value);
+  return dev ? Math.min(8, dev.inputs) : 2;
+}
+
+function saveMixer() {
+  clearTimeout(saveMixer.t);
+  saveMixer.t = setTimeout(async () => { store.set("mixer", await api.mixer()); store.set("names", ui.names); }, 300);
+}
+
+// what the partner should call our channels: the sending strips, in order
+function sendNames() {
+  if (!ui.connected) return;
+  const names = ui.mixer.local.map((s, i) => (s.active && s.send ? stripName("L" + i) : null)).filter((n) => n !== null);
+  api.send_signal(JSON.stringify({ app: "names", names }));
+}
+
+async function setStrip(t, key, value) {
+  if (t === "M") { ui.mixer.master = value; await api.set_master(value); }
+  else { stripCfg(t)[key] = value; await api.strip_set(t, key, Number(value)); }
+  saveMixer();
+}
+
+function fader({ value, onChange }) {
+  const el = document.createElement("div");
+  el.className = "fader"; el.tabIndex = 0;
+  el.innerHTML = `<div class="unity"></div><div class="cap"></div>`;
+  const cap = el.querySelector(".cap"), unity = el.querySelector(".unity");
+  let pos = faderPos(value);
+  const place = () => {
+    const usable = (p) => `calc(11px + (100% - 22px) * ${(1 - p).toFixed(4)})`;
+    cap.style.top = usable(pos); unity.style.top = usable(faderPos(1));
+  };
+  const set = (p, emit = true) => { pos = Math.max(0, Math.min(1, p)); place(); if (emit) onChange(faderGain(pos)); };
+  el.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    el.setPointerCapture(e.pointerId);
+    let lastY = e.clientY;
+    const h = el.getBoundingClientRect().height - 22;
+    const move = (ev) => { set(pos + (lastY - ev.clientY) / h * (ev.shiftKey ? 0.25 : 1)); lastY = ev.clientY; };
+    const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  });
+  el.addEventListener("dblclick", (e) => { e.stopPropagation(); set(faderPos(1)); });
+  el.addEventListener("wheel", (e) => { e.preventDefault(); set(pos - Math.sign(e.deltaY) * 0.02); }, { passive: false });
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowUp") { set(pos + 0.02); e.preventDefault(); }
+    if (e.key === "ArrowDown") { set(pos - 0.02); e.preventDefault(); }
+  });
+  place();
+  return el;
+}
+
+function toggleBtn(label, cls, on, title, onClick) {
+  const b = document.createElement("button");
+  b.className = `tb ${cls}` + (on ? " on" : ""); b.textContent = label; b.title = title;
+  b.onclick = (e) => { e.stopPropagation(); const v = !b.classList.contains("on"); b.classList.toggle("on", v); onClick(v); };
+  return b;
+}
+
+function stripEl(t) {
+  const cfg = stripCfg(t);
+  const el = document.createElement("div");
+  el.className = "strip" + (t[0] === "R" ? " remote" : t === "M" ? " master" : "") + (ui.sel === t ? " sel" : "");
+  el.dataset.t = t;
+  if (t !== "M") el.onclick = () => selectStrip(t);
+
+  // name
+  if (t[0] === "L") {
+    const nm = document.createElement("input");
+    nm.className = "nm"; nm.value = stripName(t); nm.spellcheck = false; nm.title = "Rename";
+    nm.onclick = (e) => e.stopPropagation();
+    nm.onchange = () => { ui.names[t] = nm.value.trim() || undefined; saveMixer(); sendNames(); renderRack(); };
+    nm.onkeydown = (e) => e.key === "Enter" && nm.blur();
+    el.append(nm);
+  } else {
+    const nm = document.createElement("div");
+    nm.className = "nm"; nm.textContent = stripName(t);
+    el.append(nm);
+  }
+
+  // source
+  if (t[0] === "L") {
+    const src = document.createElement("select");
+    src.className = "src"; src.title = "Which input of your interface";
+    for (let i = 0; i < Math.max(inputCount(), cfg.input + 1); i++) src.append(new Option(`In ${i + 1}`, i, false, i === cfg.input));
+    src.onclick = (e) => e.stopPropagation();
+    src.onchange = () => { setStrip(t, "input", +src.value); if (!ui.names[t]) renderStrips(); };
+    el.append(src);
+    if (t !== "L0") {
+      const x = document.createElement("button");
+      x.className = "x"; x.textContent = "✕"; x.title = "Remove this strip";
+      x.onclick = (e) => { e.stopPropagation(); removeStrip(t); };
+      el.append(x);
+    }
+  } else {
+    const l = document.createElement("div");
+    l.className = "srclbl"; l.textContent = t === "M" ? "out" : "from partner";
+    el.append(l);
+  }
+
+  // effects at a glance
+  const fl = document.createElement("div");
+  fl.className = "fxlist";
+  if (cfg) {
+    const shown = cfg.rack.slice(0, 2);
+    for (const s of shown) {
+      const meta = FXMETA[s.kind];
+      fl.insertAdjacentHTML("beforeend", `<div class="fx${s.on ? "" : " off"}" style="--fxc:${meta.color}"><i></i>${meta.name}</div>`);
+    }
+    if (cfg.rack.length > 2) fl.insertAdjacentHTML("beforeend", `<div class="none">+${cfg.rack.length - 2} more</div>`);
+    if (!cfg.rack.length) fl.insertAdjacentHTML("beforeend", `<div class="none">no effects</div>`);
+  }
+  el.append(fl);
+
+  // pan
+  if (cfg) el.append(knob({ label: "Pan", value: cfg.pan, def: 0, min: -1, max: 1, fmt: fmtPan, color: "var(--c)", size: 34,
+    onChange: (v) => setStrip(t, "pan", v) }));
+
+  // meter + fader
+  const fs = document.createElement("div");
+  fs.className = "fadersec";
+  const meter = document.createElement("div");
+  meter.className = "vmeter"; meter.innerHTML = "<i></i>";
+  const value = t === "M" ? ui.mixer.master : cfg.fader;
+  const db = document.createElement("div");
+  db.className = "db"; db.textContent = fmtDb(value);
+  fs.append(meter, fader({ value, onChange: (g) => { db.textContent = fmtDb(g); setStrip(t, "fader", g); } }));
+  el.append(fs, db);
+  ui.meters[t] = meter.firstChild;
+
+  // buttons, in a column beside the fader
+  if (cfg) {
+    const b = document.createElement("div");
+    b.className = "btns";
+    fs.append(b);
+    b.append(toggleBtn("M", "m", cfg.mute, "Mute", (v) => setStrip(t, "mute", v)));
+    b.append(toggleBtn("S", "s", cfg.solo, "Solo", (v) => setStrip(t, "solo", v)));
+    if (t[0] === "L") {
+      b.append(toggleBtn("SEND", "send", cfg.send, "Send this channel to your partner", (v) => { setStrip(t, "send", v); sendNames(); }));
+      b.append(toggleBtn("MON", "mon", cfg.mon, "Hear this channel yourself (turn off your interface's direct monitoring)", (v) => setStrip(t, "mon", v)));
+    }
+  }
+  return el;
+}
+
+function renderStrips() {
+  const box = $("strips");
+  box.innerHTML = "";
+  ui.meters = {};
+  const local = ui.mixer.local;
+  local.forEach((s, i) => s.active && box.append(stripEl("L" + i)));
+  if (local.some((s) => !s.active)) {
+    const add = document.createElement("button");
+    add.className = "addstrip"; add.innerHTML = "<span><b>+</b>Add input</span>";
+    add.title = "Another input: e.g. vocals next to guitar";
+    add.onclick = addStrip;
+    box.append(add);
+  }
+  box.insertAdjacentHTML("beforeend", `<div class="sep"></div>`);
+  if (ui.remoteCount > 0) for (let i = 0; i < ui.remoteCount; i++) box.append(stripEl("R" + i));
+  else box.insertAdjacentHTML("beforeend", `<div class="waiting">Your partner's channels show up here once you're connected</div>`);
+  box.insertAdjacentHTML("beforeend", `<div class="sep"></div>`);
+  box.append(stripEl("M"));
+}
+
+async function addStrip() {
+  const local = ui.mixer.local;
+  const i = local.findIndex((s) => !s.active);
+  if (i < 0) return;
+  const used = new Set(local.filter((s) => s.active).map((s) => s.input));
+  let input = 0;
+  while (used.has(input) && input < inputCount() - 1) input++;
+  const t = "L" + i;
+  // a fresh strip: clean settings, no leftovers from the last time this slot was used
+  for (const [k, v] of Object.entries({ input, gain: 1, pan: 0, fader: 1, mute: false, solo: false, send: true, mon: false }))
+    await setStrip(t, k, v);
+  await api.rack_load(t, []);
+  delete ui.names[t];
+  await setStrip(t, "active", true);
+  ui.mixer = await api.mixer();
+  renderStrips();
+  selectStrip(t);
+  sendNames();
+}
+
+async function removeStrip(t) {
+  await setStrip(t, "active", false);
+  await api.rack_load(t, []);
+  delete ui.names[t];
+  ui.mixer = await api.mixer();
+  if (ui.sel === t) ui.sel = "L0";
+  renderStrips(); renderRack(); sendNames(); saveMixer();
+}
+
+function selectStrip(t) {
+  ui.sel = t;
+  for (const el of $("strips").querySelectorAll(".strip")) el.classList.toggle("sel", el.dataset.t === t);
+  renderRack();
+}
+
+// ---------- rack of the selected strip ----------
+async function rackChanged(newMixer) {
+  ui.mixer = newMixer || await api.mixer();
+  renderStrips(); renderRack(); saveMixer();
+}
+
+function renderRack() {
+  const t = ui.sel, cfg = stripCfg(t);
+  const rack = $("rack");
+  rack.innerHTML = "";
+  if (!cfg) return;
+  const color = t[0] === "L" ? "var(--me)" : "var(--partner)";
+  $("rackTitle").innerHTML = `FX rack <span class="who" style="--c:${color}">· ${stripName(t)}</span>`;
+  for (const c of $("presets").children) c.classList.remove("on");
+  if (!cfg.rack.length) {
+    rack.innerHTML = `<div class="empty-rack"><b>No effects on this channel yet.</b><br>Add one with the menu on the right, or start from a preset.
+      ${t[0] === "L" ? "Your partner hears these effects; turn on MON to hear them yourself." : "These effects only change what you hear."}</div>`;
+  }
+  cfg.rack.forEach((slot, pos) => {
+    const meta = FXMETA[slot.kind];
+    const p = document.createElement("div");
+    p.className = "pedal" + (slot.on ? "" : " off");
+    p.style.setProperty("--c", meta.color);
+    p.innerHTML = `<div class="top"><div><div class="name">${meta.name}</div><div class="sub">${meta.sub}</div></div>
+      <div class="tools"><button class="l" title="Move left" aria-label="Move left">◀</button><button class="r" title="Move right" aria-label="Move right">▶</button><button class="del" title="Remove" aria-label="Remove">✕</button></div>
+      <span class="led"></span></div><div class="knobs"></div>`;
+    const knobs = p.querySelector(".knobs");
+    for (const [key, label, fmt] of meta.knobs) {
+      knobs.append(knob({ label, value: slot[key], def: FX_DEFAULTS[slot.kind][key], fmt, color: meta.color,
+        onChange: (v) => { slot[key] = v; api.rack_set(t, pos, key, v); saveMixer(); } }));
+    }
+    const foot = document.createElement("button");
+    foot.className = "foot"; foot.title = "On / off"; foot.setAttribute("aria-label", `${meta.name} on/off`);
+    foot.onclick = async () => { slot.on = !slot.on; p.classList.toggle("off", !slot.on); await api.rack_set(t, pos, "on", slot.on ? 1 : 0); renderStrips(); saveMixer(); };
+    p.append(foot);
+    p.querySelector(".l").onclick = async () => pos > 0 && rackChanged(await api.rack_move(t, pos, pos - 1));
+    p.querySelector(".r").onclick = async () => pos < cfg.rack.length - 1 && rackChanged(await api.rack_move(t, pos, pos + 1));
+    p.querySelector(".del").onclick = async () => rackChanged(await api.rack_remove(t, pos));
+    rack.append(p);
+  });
+}
+
+function buildRackControls() {
+  const add = $("addFx");
+  add.append(new Option("+ Add effect", ""));
+  for (const f of FX) add.append(new Option(f.name, f.id));
+  add.onchange = async () => {
+    const kind = add.value;
+    add.value = "";
+    if (!kind) return;
+    if (stripCfg(ui.sel).rack.length >= 8) { toast("A channel holds up to 8 effects."); return; }
+    await rackChanged(await api.rack_add(ui.sel, kind));
+    $("rack").scrollLeft = $("rack").scrollWidth;
+  };
+  for (const name of init.presets) {
+    const c = document.createElement("button");
+    c.className = "chip"; c.textContent = name;
+    c.onclick = async () => { await rackChanged(await api.rack_preset(ui.sel, name)); c.classList.add("on"); };
+    $("presets").append(c);
+  }
+}
+
+function buildSafety() {
   const paintBuf = () => {
     const ms = ui.buffer * ui.block / ui.rate * 1000;
     $("bufVal").innerHTML = `${ui.buffer}<small>${ms.toFixed(1)} ms</small>`;
-    api.set_mix("buffer", ui.buffer); store.set("buffer", ui.buffer);
+    api.set_buffer(ui.buffer); store.set("buffer", ui.buffer);
   };
   $("bufMinus").onclick = () => { ui.buffer = Math.max(1, ui.buffer - 1); paintBuf(); };
   $("bufPlus").onclick = () => { ui.buffer = Math.min(16, ui.buffer + 1); paintBuf(); };
   paintBuf();
   ui.paintBuf = paintBuf;
-}
-
-function buildBoard(state) {
-  const board = $("board");
-  board.innerHTML = "";
-  for (const fx of FX) {
-    const st = state[fx.id];
-    const p = document.createElement("div");
-    p.className = "pedal" + (st.on ? "" : " off");
-    p.style.setProperty("--c", fx.color);
-    p.innerHTML = `<div class="top"><div><div class="name">${fx.name}</div><div class="sub">${fx.sub}</div></div><span class="led"></span></div><div class="knobs"></div>`;
-    const knobs = p.querySelector(".knobs");
-    ui.fxKnobs[fx.id] = {};
-    for (const [key, label, fmt] of fx.knobs) {
-      const k = knob({ label, value: st[key], def: FX_DEFAULTS[fx.id][key], fmt, color: fx.color,
-        onChange: (v) => { api.set_fx(fx.id, key, v); saveFx(); markPreset(null); } });
-      ui.fxKnobs[fx.id][key] = k;
-      knobs.append(k);
-    }
-    const foot = document.createElement("button");
-    foot.className = "foot"; foot.title = "On / off";
-    foot.setAttribute("aria-label", `${fx.name} on/off`);
-    foot.onclick = () => {
-      const on = p.classList.toggle("off") === false;
-      api.set_fx(fx.id, "on", on); saveFx(); markPreset(null);
-    };
-    p.append(foot);
-    ui.pedals[fx.id] = p;
-    board.append(p);
-  }
-}
-
-function applyFxState(state) {
-  for (const fx of FX) {
-    const st = state[fx.id];
-    ui.pedals[fx.id].classList.toggle("off", !st.on);
-    for (const [key] of fx.knobs) ui.fxKnobs[fx.id][key].setValue(st[key]);
-  }
-}
-
-function saveFx() {
-  // ask python for the truth rather than re-deriving it from the DOM
-  clearTimeout(saveFx.t);
-  saveFx.t = setTimeout(async () => store.set("fx", await api.fx_state()), 300);
-}
-
-function markPreset(name) {
-  for (const c of $("presets").children) c.classList.toggle("on", c.textContent === name);
-  store.set("preset", name);
-}
-
-function buildPresets() {
-  for (const name of init.presets) {
-    const c = document.createElement("button");
-    c.className = "chip"; c.textContent = name;
-    c.onclick = async () => { const st = await api.preset(name); applyFxState(st); markPreset(name); store.set("fx", st); };
-    $("presets").append(c);
-  }
 }
 
 // ---------- live state ----------
@@ -604,17 +853,26 @@ function paint(s) {
   const pill = $("pill");
   pill.className = "pill" + (s.connected ? " connected" : s.calling ? " calling" : "");
   $("pillTxt").textContent = s.connected ? "Connected" : s.calling ? "Calling…" : "Not connected";
-  $("peerName").textContent = s.connected ? s.peer : "not connected";
   if (s.connected && !paint.wasConnected) { setHint("connHint", `Connected to ${s.peer}. Play something!`); toast("Connected. Play something!"); }
   if (!s.connected && paint.wasConnected) setHint("connHint", "Partner went quiet. Still trying to reach them…", "warn");
   paint.wasConnected = s.connected;
+  if (s.connected !== ui.connected) { ui.connected = s.connected; if (s.connected) sendNames(); }
   vOnConnection(s.connected);
   for (const sig of s.signals || []) vReceive(sig);
   if (s.warning) setHint("connHint", s.warning, "warn");
 
+  // the partner's channel count decides how many partner strips there are
+  const rc = s.connected ? s.remoteChannels : 0;
+  if (rc !== ui.remoteCount) {
+    ui.remoteCount = rc;
+    if (ui.sel[0] === "R" && +ui.sel.slice(1) >= rc) ui.sel = "L0";
+    renderStrips(); renderRack();
+  }
   // meters
-  $("meMeter").style.width = dbPct(s.levels.me) + "%";
-  $("peerMeter").style.width = dbPct(s.levels.partner) + "%";
+  const m = ui.meters;
+  s.levels.local.forEach((v, i) => m["L" + i] && (m["L" + i].style.height = dbPct(v) + "%"));
+  s.levels.remote.forEach((v, i) => m["R" + i] && (m["R" + i].style.height = dbPct(v) + "%"));
+  if (m.M) m.M.style.height = dbPct(s.levels.master) + "%";
 
   // latency
   const L = s.latency;
@@ -650,7 +908,7 @@ async function boot(a) {
   api = a;
   init = await api.init();
   fillDevices();
-  $("inDev").onchange = fillChannels;
+  $("inDev").onchange = deviceChanged;
   seg($("rateSeg"), ui.rate, (v) => { ui.rate = v; store.set("rate", v); ui.paintBuf && ui.paintBuf(); });
   seg($("blockSeg"), ui.block, (v) => { ui.block = v; store.set("block", v); ui.paintBuf && ui.paintBuf(); });
   $("audioBtn").onclick = toggleAudio;
@@ -666,17 +924,15 @@ async function boot(a) {
     b.textContent = ok ? "Copied" : "Select it"; b.classList.toggle("done", ok);
     setTimeout(() => { b.textContent = "Copy"; b.classList.remove("done"); }, 1600);
   };
-  buildMixer();
-  buildPresets();
+  buildSafety();
+  buildRackControls();
   vSetup();
-  // restore the pedalboard from last time
-  const saved = store.get("fx", null);
-  if (saved) {
-    for (const [fx, params] of Object.entries(saved))
-      for (const [k, v] of Object.entries(params)) if (init.fx[fx] && k in init.fx[fx]) { api.set_fx(fx, k, v); init.fx[fx][k] = v; }
-  }
-  buildBoard(init.fx);
-  markPreset(store.get("preset", null));
+  // restore last session's mixer (strips, racks, faders) and channel names
+  const saved = store.get("mixer", null);
+  if (saved) { try { await api.load_mixer(saved); } catch (e) { console.warn("old mixer settings ignored", e); } }
+  ui.mixer = await api.mixer();
+  renderStrips();
+  renderRack();
   poll();
 }
 
@@ -797,9 +1053,11 @@ async function vHandle(msg) {
 
 // Messages can arrive out of order after a retransmit; replay them in send order per session.
 let vQueue = Promise.resolve();
+window.vReceive = vReceive;
 function vReceive(raw) {
   let msg;
   try { msg = JSON.parse(raw); } catch { return; }
+  if (msg.app === "names") { ui.partnerNames = msg.names || []; renderStrips(); renderRack(); return; }
   const r = (vc.remote[msg.sid] ||= { next: 0, buf: {} });
   r.buf[msg.n] = msg;
   while (r.buf[r.next]) {
@@ -850,34 +1108,52 @@ function vSetup() {
 
 // ---------- demo backend (page opened in a normal browser, or ?demo) ----------
 function demoApi() {
-  const fx = JSON.parse(JSON.stringify(FX_DEFAULTS));
-  for (const k in fx) fx[k].on = false;
-  fx.chorus.on = true; fx.reverb.on = true; fx.delay.on = true;
-  const PRESET_FX = { Clean: {}, Dreamy: { chorus: {}, delay: {}, reverb: {} }, Crunch: { comp: {}, drive: {}, reverb: {} }, Vocal: { comp: {}, reverb: {} }, Surf: { tremolo: {}, reverb: {} } };
+  const strip = (input, active, extra = {}) => ({ active, input, gain: 1, pan: 0, fader: 1, mute: false, solo: false, send: true, mon: false, rack: [], ...extra });
+  const slot = (kind, extra = {}) => ({ kind, on: true, ...FX_DEFAULTS[kind], ...extra });
+  const PRESET_RACKS = { Clean: [], Dreamy: ["chorus", "delay", "reverb"], Crunch: ["comp", "drive", "reverb"], Vocal: ["comp", "reverb"], Surf: ["tremolo", "reverb"] };
+  const mixer = {
+    local: [strip(0, true, { mon: true, rack: [slot("comp"), slot("drive", { drive: 0.55 }), slot("delay"), slot("reverb", { on: false })] }),
+            strip(1, true, { pan: -0.3, fader: 0.8, rack: [slot("comp", { threshold: 0.35 }), slot("reverb", { mix: 0.25 })] }),
+            strip(2, false), strip(3, false)],
+    remote: Array.from({ length: 8 }, (_, i) => strip(0, true, { send: false, mon: true, pan: i === 1 ? 0.35 : 0, rack: i === 0 ? [slot("reverb", { mix: 0.2 })] : [] })),
+    master: 1,
+  };
+  const target = (t) => mixer[t[0] === "L" ? "local" : "remote"][+t.slice(1)];
+  const copy = () => JSON.parse(JSON.stringify(mixer));
   let t = 0, connected = false, calling = false, code = "";
   setTimeout(() => (code = "KJFXZ-4HCOP-AKRMW-I4JZQ"), 700);
+  if (location.search.includes("connected")) setTimeout(() => window.vReceive && vReceive(JSON.stringify({ app: "names", names: ["Vocals", "Keys"] })), 900);
   return {
     init: async () => ({
       inputs: [{ id: "ASIO|Focusrite USB ASIO", name: "Focusrite USB ASIO", api: "ASIO", inputs: 2 }, { id: "WASAPI|Analogue 1 + 2", name: "Analogue 1 + 2 (Focusrite USB Audio)", api: "WASAPI", inputs: 2 }],
       outputs: [{ id: "ASIO|Focusrite USB ASIO", name: "Focusrite USB ASIO", api: "ASIO", outputs: 2 }, { id: "WASAPI|Speakers", name: "Speakers (Focusrite USB Audio)", api: "WASAPI", outputs: 2 }],
-      defaultInput: "ASIO|Focusrite USB ASIO", defaultOutput: "ASIO|Focusrite USB ASIO", fx, presets: Object.keys(PRESET_FX), platform: "win32" }),
-    start_audio: async () => ({ ok: true, latencyIn: 6.2, latencyOut: 8.2 }),
+      defaultInput: "ASIO|Focusrite USB ASIO", defaultOutput: "ASIO|Focusrite USB ASIO",
+      presets: Object.keys(PRESET_RACKS), effects: [], platform: "win32" }),
+    start_audio: async () => ({ ok: true, latencyIn: 2.7, latencyOut: 2.7, inChannels: 2 }),
     stop_audio: async () => true,
     connect: async () => { calling = true; setTimeout(() => (connected = true), 1500); return { ok: true }; },
     copy: async () => true,
-    set_fx: async (e, k, v) => { if (k === "on") fx[e].on = !!v; else fx[e][k] = v; },
-    fx_state: async () => fx,
-    preset: async (n) => { for (const k in fx) { Object.assign(fx[k], FX_DEFAULTS[k]); fx[k].on = k in PRESET_FX[n]; } return fx; },
-    set_mix: async () => {},
+    mixer: async () => copy(),
+    load_mixer: async () => true,
+    strip_set: async (tg, k, v) => { target(tg)[k] = typeof target(tg)[k] === "boolean" ? !!v : v; },
+    set_master: async (v) => { mixer.master = v; },
+    set_buffer: async () => {},
+    rack_add: async (tg, kind) => { target(tg).rack.push(slot(kind)); return copy(); },
+    rack_remove: async (tg, pos) => { target(tg).rack.splice(pos, 1); return copy(); },
+    rack_move: async (tg, a, b) => { const r = target(tg).rack; r.splice(b, 0, r.splice(a, 1)[0]); return copy(); },
+    rack_set: async (tg, pos, k, v) => { const s = target(tg).rack[pos]; s[k] = k === "on" ? !!v : v; },
+    rack_preset: async (tg, name) => { target(tg).rack = PRESET_RACKS[name].map((k) => slot(k)); return copy(); },
+    rack_load: async (tg, slots) => { target(tg).rack = slots; },
     send_signal: async () => {},
     state: async () => {
       t += 0.08;
       const lv = (f, p) => Math.max(0, 0.25 + 0.2 * Math.sin(t * f + p) + 0.1 * Math.sin(t * 7.3 * f));
       const on = connected || location.search.includes("connected");
       return { code, codeNote: "", audio: true, connected: on, calling: calling && !on, peer: on ? "82.75.124.240" : null, rtt: on ? 14.2 : null,
-        latency: { network: on ? 7.1 : null, buffer: 8.0, card: 14.4, block: 2.7 },
-        levels: { me: lv(1.3, 0), partner: on ? lv(0.9, 2) : 0 },
-        stats: { depth: 3, underruns: 2, lost: 0, late: 1, trimmed: 0, xruns: 0 }, warning: "" };
+        latency: { network: on ? 7.1 : null, buffer: 8.0, card: 5.3, block: 2.7 },
+        levels: { local: [lv(1.3, 0), lv(0.7, 1), 0, 0], remote: on ? [lv(0.9, 2), lv(1.1, 3), 0, 0, 0, 0, 0, 0] : [0, 0, 0, 0, 0, 0, 0, 0], master: lv(1, 1.5) },
+        remoteChannels: on ? 2 : 0,
+        stats: { depth: 3, underruns: 2, lost: 0, late: 1, trimmed: 0, xruns: 0 }, warning: "", signals: [] };
     },
   };
 }
