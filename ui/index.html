@@ -59,8 +59,40 @@ header { display: flex; align-items: center; gap: 18px; }
 @keyframes pulse { 50% { opacity: 0.25; } }
 
 /* ---------- layout ---------- */
-main { display: grid; grid-template-columns: 330px 1fr; gap: 14px; min-height: 0; }
-.col { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+main { display: flex; min-height: 0; }
+main > .right { flex: 1; min-width: 0; }
+
+/* ---------- sidebar ---------- */
+.sidebar { width: 344px; flex: none; min-height: 0; overflow: hidden; transition: width 0.22s ease, opacity 0.18s; }
+.sidebar .sb-inner { width: 330px; height: 100%; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; padding: 12px 16px 16px; }
+.sidebar.closed { width: 0; opacity: 0; }
+.tabs { display: flex; align-items: center; gap: 4px; margin: 0 -4px 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.tab { display: inline-flex; align-items: center; gap: 7px; border: 0; background: none; padding: 7px 12px; border-radius: 9px; cursor: pointer; color: var(--muted); font-weight: 650; }
+.tab:hover { color: var(--text); }
+.tab.on { background: var(--line); color: var(--text); }
+.tabdot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.tabdot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.tabdot.warn { background: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
+.tabdot.bad { background: var(--bad); }
+.sb-close { margin-left: auto; width: 30px; height: 30px; border-radius: 8px; border: 0; background: none; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
+.sb-close:hover { background: var(--line); color: var(--text); }
+.pane[hidden] { display: none; }
+.status { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); margin-bottom: 16px; }
+.status b { display: block; font-size: 14px; }
+.status span:not(.sdot) { display: block; font-size: 12px; color: var(--muted); margin-top: 1px; }
+.status .sdot { width: 10px; height: 10px; border-radius: 50%; background: var(--faint); flex: none; }
+.status.ok { border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.status.ok .sdot { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+.status.warn .sdot { background: var(--warn); animation: pulse 1.1s ease-in-out infinite; }
+.status.bad { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.status.bad .sdot { background: var(--bad); }
+.fine { font-size: 12px; color: var(--faint); line-height: 1.5; margin: 6px 0 0; }
+.lbl-hint { color: var(--faint); margin-left: 6px; }
+.linkbtn { border: 0; background: none; color: var(--muted); padding: 10px 0 0; cursor: pointer; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; align-self: flex-start; }
+.linkbtn:hover { color: var(--text); }
+.iconbtn.sq { padding: 8px; border-radius: 10px; }
+.iconbtn.sq.on { border-color: var(--line-2); color: var(--text); background: var(--line); }
+.pill { cursor: pointer; }
 .card { background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
 .card h2 { margin: 0 0 12px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); display: flex; align-items: center; gap: 8px; }
 .card h2 .step { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; background: var(--line); color: var(--text); font-size: 11px; letter-spacing: 0; }
@@ -217,7 +249,6 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 
 /* narrow windows: let columns shrink, scroll inside instead of overflowing */
 .right, .col, .card { min-width: 0; }
-.col { overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 4px; }
@@ -225,7 +256,6 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 ::-webkit-scrollbar-corner { background: transparent; }
 .code .txt { font-size: 15px; }
 @media (max-width: 1180px) {
-  main { grid-template-columns: 300px 1fr; }
   footer { grid-template-columns: 1fr; gap: 8px; }
 }
 
@@ -251,6 +281,48 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 .vempty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); font-size: 13px; }
 .vempty[hidden] { display: none; }
 
+/* ---------- NAM pedal ---------- */
+.rack .pedal.nam { width: 360px; }
+.namrow { display: flex; gap: 8px; width: 100%; align-items: center; }
+.namrow .knobs { width: auto; flex: none; gap: 4px; }
+.model { flex: 1; min-width: 0; background: rgba(0,0,0,0.28); border: 1px solid rgba(0,0,0,0.35); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.mname { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff6e8; }
+.mname.none { color: var(--muted); font-weight: 500; }
+.mnote { font-size: 11px; line-height: 1.35; }
+.mnote.warn { color: var(--warn); }
+.mnote.bad { color: var(--bad); }
+.mnote a { color: inherit; font-weight: 700; }
+.mbtns { display: flex; gap: 4px; }
+.mb { flex: none; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.08); border-radius: 7px; padding: 4px 8px; font-size: 11px; font-weight: 700; cursor: pointer; }
+.mb:hover { background: rgba(255,255,255,0.16); }
+.mb.t3k { color: #ffd9a8; }
+.mlib { flex: 1; min-width: 0; padding: 4px 22px 4px 8px; font-size: 11px; border-radius: 7px; background-position: calc(100% - 12px) 52%, calc(100% - 8px) 52%; }
+
+/* ---------- modal ---------- */
+.modal { position: fixed; inset: 0; z-index: 40; background: rgba(6,5,9,0.62); backdrop-filter: blur(3px); display: grid; place-items: center; }
+.modal[hidden] { display: none; }
+.mbox { width: min(460px, calc(100vw - 32px)); max-height: calc(100vh - 60px); overflow: auto; background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--line-2); border-radius: 16px; box-shadow: 0 24px 70px rgba(0,0,0,0.6); }
+.mhead { display: flex; align-items: baseline; gap: 10px; padding: 16px 18px 0; }
+.mhead b { font-size: 17px; }
+.mhead span { color: var(--muted); font-size: 12px; }
+.mhead .x { margin-left: auto; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; }
+.mbody { padding: 12px 18px 18px; font-size: 13.5px; line-height: 1.5; }
+.mbody p { margin: 0 0 10px; }
+.mbody ol { margin: 0 0 12px; padding-left: 20px; color: var(--muted); }
+.mbody code { font-family: var(--mono); background: var(--bg); padding: 1px 5px; border-radius: 5px; }
+.mbody .row { margin-top: 6px; }
+.mwait { display: flex; align-items: center; gap: 12px; font-weight: 600; padding: 10px 0; }
+.spinner { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--line-2); border-top-color: var(--me); animation: spin 0.8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.tone b { display: block; font-size: 16px; }
+.tone span { color: var(--muted); font-size: 12px; }
+.tone { margin-bottom: 10px; }
+.mlist { display: flex; flex-direction: column; gap: 6px; }
+.mitem { text-align: left; border: 1px solid var(--line-2); background: var(--bg); border-radius: 10px; padding: 9px 12px; cursor: pointer; }
+.mitem:hover { border-color: var(--me); }
+.mitem b { display: block; }
+.mitem span { color: var(--muted); font-size: 12px; }
+
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%) translateY(20px); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 16px; opacity: 0; transition: 0.25s; pointer-events: none; max-width: 560px; font-size: 13px; }
 .toast.show { opacity: 1; transform: translateX(-50%); }
 .toast.bad { border-color: var(--bad); }
@@ -259,6 +331,9 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 <body>
 <div class="app">
   <header>
+    <button class="iconbtn sq" id="sbToggle" title="Show / hide the Connect & Sound panel" aria-label="Toggle side panel">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
+    </button>
     <div class="brand">
       <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
         <defs><linearGradient id="lg" x1="0" x2="1"><stop offset="0" stop-color="#ff9548"/><stop offset="1" stop-color="#4fd6c6"/></linearGradient></defs>
@@ -280,35 +355,47 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
   </header>
 
   <main>
-    <div class="col">
-      <section class="card">
-        <h2><span class="step">1</span>Sound</h2>
-        <div class="field"><label for="inDev">Audio interface (in)</label><select id="inDev"></select></div>
-        <div class="field"><label>Sample rate</label>
-          <div class="seg" id="rateSeg"><button data-v="44100">44.1k</button><button data-v="48000">48k</button></div></div>
-        <div class="field"><label for="outDev">Output (headphones)</label><select id="outDev"></select></div>
-        <div class="field"><label>Buffer (samples)</label>
-          <div class="seg" id="blockSeg"><button data-v="64">64</button><button data-v="128">128</button><button data-v="256">256</button><button data-v="512">512</button></div></div>
-        <button class="btn primary block" id="audioBtn">Start audio</button>
-        <div class="hint" id="audioHint">Use the same buffer and sample rate on both sides.</div>
-      </section>
+    <aside class="sidebar" id="sidebar">
+      <div class="sb-inner card">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="connect"><span class="tabdot" id="connDot"></span>Connect</button>
+          <button class="tab" role="tab" data-tab="sound"><span class="tabdot" id="soundDot"></span>Sound</button>
+          <button class="sb-close" id="sbClose" title="Hide panel" aria-label="Hide panel">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+          </button>
+        </div>
 
-      <section class="card">
-        <h2><span class="step">2</span>Connect</h2>
-        <div class="field"><label>Your code: send this to your partner</label>
-          <div class="code"><span class="txt pending" id="myCode">Looking up your address…</span><button class="copy" id="copyBtn">Copy</button></div>
-        </div>
-        <div class="field"><label for="peerCode">Partner's code</label>
-          <div class="row"><input type="text" id="peerCode" placeholder="Paste their code" spellcheck="false" autocomplete="off"><button class="btn teal" id="connectBtn">Connect</button></div>
-        </div>
-        <div class="hint" id="connHint">Both of you paste each other's code and press Connect.</div>
-      </section>
-    </div>
+        <section class="pane" id="pane-connect" role="tabpanel">
+          <div class="status" id="connStatus"><span class="sdot"></span><div><b>Not connected</b><span>Swap codes with your partner below.</span></div></div>
+          <div class="field"><label>1 · Send your code to your partner</label>
+            <div class="code"><span class="txt pending" id="myCode">Looking up your address…</span><button class="copy" id="copyBtn">Copy</button></div>
+          </div>
+          <div class="field"><label for="peerCode">2 · Paste their code</label>
+            <div class="row"><input type="text" id="peerCode" placeholder="Paste their code" spellcheck="false" autocomplete="off"><button class="btn teal" id="connectBtn">Connect</button></div>
+          </div>
+          <div class="hint" id="connHint"></div>
+          <p class="fine">Your code stays the same between sessions, so next time Duet reconnects to your partner by itself.</p>
+        </section>
+
+        <section class="pane" id="pane-sound" role="tabpanel" hidden>
+          <div class="status" id="soundStatus"><span class="sdot"></span><div><b>Starting sound…</b><span></span></div></div>
+          <div class="field"><label for="inDev">Audio interface</label><select id="inDev"></select></div>
+          <div class="field"><label for="outDev">Headphones / output</label><select id="outDev"></select></div>
+          <div class="field"><label>Sample rate</label>
+            <div class="seg" id="rateSeg"><button data-v="44100">44.1k</button><button data-v="48000">48k</button></div></div>
+          <div class="field"><label>Buffer <span class="lbl-hint">smaller = less delay, more CPU</span></label>
+            <div class="seg" id="blockSeg"><button data-v="64">64</button><button data-v="128">128</button><button data-v="256">256</button><button data-v="512">512</button></div></div>
+          <div class="hint" id="audioHint"></div>
+          <p class="fine">Changes apply right away. Use the same sample rate and buffer as your partner.</p>
+          <button class="linkbtn" id="audioBtn">Turn sound off</button>
+        </section>
+      </div>
+    </aside>
 
     <div class="right">
       <section class="card">
         <div class="sect-head">
-          <h2><span class="step">3</span>Mixer</h2>
+          <h2>Mixer</h2>
           <div class="spacer"></div>
           <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Raise it if you hear crackles.">
             Safety buffer
@@ -354,6 +441,12 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
     <video id="localV" autoplay playsinline muted hidden></video>
   </div>
 </div>
+<div class="modal" id="t3k" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="t3kTitle">
+    <div class="mhead"><b id="t3kTitle">TONE3000</b><span>neural amp models</span><button class="x" id="t3kX" aria-label="Close">✕</button></div>
+    <div class="mbody" id="t3kBody"></div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -377,11 +470,15 @@ const FX = [
     ["time", "Time", (v) => Math.round(60 + 1100 * v) + " ms"], ["feedback", "Repeats", pct], ["mix", "Mix", pct]] },
   { id: "reverb", name: "Reverb", sub: "space", color: "#ffc857", knobs: [
     ["size", "Size", pct], ["damp", "Damp", pct], ["mix", "Mix", pct]] },
+  { id: "nam", name: "NAM Amp", sub: "neural amp model", color: "#e7dccb", knobs: [
+    ["input", "Input", (v) => fmtTrim(v)], ["output", "Output", (v) => fmtTrim(v)]] },
 ];
+function fmtTrim(v) { const db = -12 + 24 * v; return (db > 0.05 ? "+" : "") + db.toFixed(1) + " dB"; }
 const FX_DEFAULTS = {
   comp: { threshold: 0.5, ratio: 0.5, makeup: 0.3 }, drive: { drive: 0.4, tone: 0.5, level: 0.5 },
   chorus: { rate: 0.3, depth: 0.5, mix: 0.5 }, tremolo: { rate: 0.4, depth: 0.6 },
   delay: { time: 0.35, feedback: 0.4, mix: 0.35 }, reverb: { size: 0.6, damp: 0.4, mix: 0.3 },
+  nam: { input: 0.5, output: 0.5 },
 };
 
 // ---------- persistence (per machine, best effort) ----------
@@ -460,7 +557,7 @@ let api = null;
 let init = null;
 const ui = {
   block: store.get("block", 128), rate: store.get("rate", 48000), buffer: store.get("buffer", 3),
-  audio: false, connected: false,
+  audio: false, audioWanted: true, connected: false, sbOpen: true, tab: "connect",
   mixer: null, sel: "L0", names: store.get("names", {}), partnerNames: [], remoteCount: 0,
   meters: {}, inChannels: 0,
 };
@@ -497,51 +594,96 @@ function fillDevices() {
   deviceChanged();
 }
 
-function deviceChanged() {
+function deviceChanged(reset = true) {
   const dev = init.inputs.find((d) => d.id === $("inDev").value);
   const isAsio = dev && dev.api === "ASIO";
   const winNoAsio = init.platform === "win32" && !isAsio && init.inputs.some((d) => d.api === "ASIO");
-  setHint("audioHint", winNoAsio ? "Tip: an ASIO device gives much lower latency." : "Use the same buffer and sample rate on both sides.", winNoAsio ? "warn" : "");
-  ui.inChannels = 0;
-  if (ui.mixer) renderStrips();
+  setHint("audioHint", winNoAsio ? "Tip: an ASIO device gives much lower delay." : "", winNoAsio ? "warn" : "");
+  if (reset) {
+    ui.inChannels = 0;
+    if (ui.mixer) renderStrips();
+  }
 }
 
 function setHint(id, text, kind = "") { const h = $(id); h.textContent = text; h.className = "hint" + (kind ? " " + kind : ""); }
 
-async function toggleAudio() {
-  const btn = $("audioBtn");
-  if (ui.audio) {
-    await api.stop_audio();
-    ui.audio = false;
-    btn.textContent = "Start audio"; btn.className = "btn primary block";
-    setHint("audioHint", "Audio off.");
-    return;
-  }
-  btn.disabled = true; btn.textContent = "Starting…";
+// ---------- side panel ----------
+function setStatus(id, kind, title, sub) {
+  const el = $(id);
+  el.className = "status" + (kind ? " " + kind : "");
+  el.querySelector(":scope > div > b").textContent = title;
+  el.querySelector(":scope > div > span").textContent = sub || "";
+  $(id === "connStatus" ? "connDot" : "soundDot").className = "tabdot" + (kind ? " " + kind : "");
+}
+
+function setSidebar(open) {
+  ui.sbOpen = open;
+  $("sidebar").classList.toggle("closed", !open);
+  $("sbToggle").classList.toggle("on", open);
+  store.set("sidebar", open);
+}
+
+function setTab(tab) {
+  ui.tab = tab;
+  for (const t of document.querySelectorAll(".tab")) t.classList.toggle("on", t.dataset.tab === tab);
+  $("pane-connect").hidden = tab !== "connect";
+  $("pane-sound").hidden = tab !== "sound";
+  store.set("tab", tab);
+}
+
+function openPanel(tab) { setTab(tab); setSidebar(true); }
+
+// ---------- sound: always on, restarts itself when a setting changes ----------
+async function startAudio() {
+  ui.audioWanted = true;
+  $("audioBtn").textContent = "Turn sound off";
   const cfg = { input: $("inDev").value, output: $("outDev").value, samplerate: ui.rate, block: ui.block };
+  if (!cfg.input || !cfg.output) { setStatus("soundStatus", "bad", "No audio device found", "Plug in your interface and restart Duet."); return; }
+  setStatus("soundStatus", "warn", "Starting sound…", $("inDev").selectedOptions[0]?.text);
   const res = await api.start_audio(cfg);
-  btn.disabled = false;
   if (!res.ok) {
-    btn.textContent = "Start audio";
-    setHint("audioHint", "Couldn't open audio: " + res.error, "bad");
-    toast("Couldn't start audio. With ASIO, use the same device for input and output; try 44.1k; close other apps using the interface.", true);
+    ui.audio = false;
+    setStatus("soundStatus", "bad", "Sound couldn't start", res.error);
+    setHint("audioHint", "Try another interface or sample rate, or close other apps using it. With ASIO, pick the same device for both.", "bad");
+    openPanel("sound");
     return;
   }
   ui.audio = true;
   store.set("input", cfg.input); store.set("output", cfg.output);
   ui.inChannels = res.inChannels;
   renderStrips();
-  btn.textContent = "Stop audio"; btn.className = "btn stop block";
-  setHint("audioHint", `Running · ${res.inChannels} input${res.inChannels === 1 ? "" : "s"} · sound card ${res.latencyIn.toFixed(1)} + ${res.latencyOut.toFixed(1)} ms`);
+  const dev = $("inDev").selectedOptions[0]?.text || "";
+  setStatus("soundStatus", "ok", "Sound on", `${dev} · ${res.inChannels} input${res.inChannels === 1 ? "" : "s"} · ${(res.latencyIn + res.latencyOut).toFixed(1)} ms`);
+  deviceChanged(false);
 }
 
-async function connect() {
+async function stopAudio() {
+  ui.audioWanted = false;
+  await api.stop_audio();
+  ui.audio = false;
+  $("audioBtn").textContent = "Turn sound on";
+  setStatus("soundStatus", "", "Sound off", "Nothing goes in or out until you turn it back on.");
+}
+
+function restartAudio() {
+  clearTimeout(restartAudio.t);
+  if (ui.audioWanted) restartAudio.t = setTimeout(startAudio, 250);
+}
+
+// ---------- connect: paste and go; reconnects by itself next time ----------
+const looksLikeCode = (s) => /^[a-z2-7]{5}(-?[a-z2-7]{5}){3}$/i.test(s.trim()) || /^[\w.-]+:\d{2,5}$/.test(s.trim());
+
+async function connect(quiet = false) {
   const code = $("peerCode").value.trim();
   if (!code) { $("peerCode").focus(); return; }
+  if (code.replace(/-/g, "").toUpperCase() === $("myCode").textContent.replace(/-/g, "").toUpperCase()) {
+    setHint("connHint", "That's your own code. Paste your partner's here.", "bad");
+    return;
+  }
   const res = await api.connect(code);
-  if (!res.ok) { setHint("connHint", res.error, "bad"); return; }
+  if (!res.ok) { if (!quiet) setHint("connHint", res.error, "bad"); return; }
   store.set("peer", code);
-  setHint("connHint", "Calling… they need to press Connect with your code too.");
+  setHint("connHint", "");
 }
 
 // ---------- mixer ----------
@@ -674,7 +816,7 @@ function stripEl(t) {
     const shown = cfg.rack.slice(0, 2);
     for (const s of shown) {
       const meta = FXMETA[s.kind];
-      fl.insertAdjacentHTML("beforeend", `<div class="fx${s.on ? "" : " off"}" style="--fxc:${meta.color}"><i></i>${meta.name}</div>`);
+      fl.insertAdjacentHTML("beforeend", `<div class="fx${s.on ? "" : " off"}" style="--fxc:${meta.color}" title="${esc(s.model_name || meta.name)}"><i></i>${esc(s.kind === "nam" && s.model_name ? s.model_name : meta.name)}</div>`);
     }
     if (cfg.rack.length > 2) fl.insertAdjacentHTML("beforeend", `<div class="none">+${cfg.rack.length - 2} more</div>`);
     if (!cfg.rack.length) fl.insertAdjacentHTML("beforeend", `<div class="none">no effects</div>`);
@@ -773,6 +915,116 @@ async function rackChanged(newMixer) {
   renderStrips(); renderRack(); saveMixer();
 }
 
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// ---------- NAM amp slot ----------
+function namSection(t, pos, slot) {
+  const box = document.createElement("div");
+  box.className = "model";
+  const name = slot.model_name || (slot.model ? slot.model.split(/[\\/]/).pop() : null);
+  let note = "";
+  if (slot.error) note = `<div class="mnote bad">${esc(slot.error)}</div>`;
+  else if (slot.model_sr && Math.round(slot.model_sr) !== ui.rate)
+    note = `<div class="mnote warn">Captured at ${(slot.model_sr / 1000).toFixed(1).replace(".0", "")} kHz, you run ${(ui.rate / 1000).toFixed(1).replace(".0", "")} kHz. <a href="#" class="fixsr">Switch</a></div>`;
+  box.innerHTML = `<div class="mname${name ? "" : " none"}" title="${esc(slot.model || "")}">${esc(name || "No model loaded")}</div>${note}
+    <div class="mbtns"><button class="mb t3k" title="Pick a tone on tone3000.com">TONE3000</button><button class="mb file" title="Open a .nam file">Open…</button>
+    <select class="mlib" title="Models you've used before"><option value="">Library</option></select></div>`;
+  box.querySelector(".t3k").onclick = () => startT3K(t, pos);
+  box.querySelector(".file").onclick = async () => { const path = await api.nam_open_file(); if (path) loadModel(t, pos, path); };
+  const lib = box.querySelector(".mlib");
+  for (const m of ui.namLib || []) lib.append(new Option(m.name && m.name !== m.title ? `${m.title} · ${m.name}` : m.title, m.path));
+  if (!(ui.namLib || []).length) lib.disabled = true;
+  lib.onchange = () => lib.value && loadModel(t, pos, lib.value);
+  const fix = box.querySelector(".fixsr");
+  if (fix) fix.onclick = (e) => {
+    e.preventDefault();
+    ui.rate = Math.round(slot.model_sr); store.set("rate", ui.rate);
+    for (const b of $("rateSeg").querySelectorAll("button")) b.classList.toggle("on", +b.dataset.v === ui.rate);
+    ui.paintBuf && ui.paintBuf(); restartAudio(); setTimeout(renderRack, 400);
+  };
+  return box;
+}
+
+async function refreshLibrary() {
+  try { ui.namLib = await api.nam_library(); } catch { ui.namLib = []; }
+}
+
+async function loadModel(t, pos, path) {
+  const pedal = $("rack").children[pos];
+  const nm = pedal && pedal.querySelector(".mname");
+  if (nm) { nm.textContent = "Loading…"; nm.classList.add("none"); }
+  const res = await api.set_model(t, pos, path);
+  if (res && res.error) { toast("Couldn't load that model: " + res.error, true); renderRack(); return; }
+  await refreshLibrary();
+  await rackChanged(res);
+}
+
+// ---------- TONE3000 picker ----------
+async function startT3K(t, pos) {
+  ui.t3k = { t, pos };
+  $("t3k").hidden = false;
+  if (!(await api.t3k_has_key())) { t3kRender({ stage: "needs_key" }); return; }
+  t3kRender(await api.t3k_pick());
+  t3kPoll();
+}
+
+async function t3kPoll() {
+  clearTimeout(t3kPoll.t);
+  if ($("t3k").hidden) return;
+  const st = await api.t3k_status();
+  if (JSON.stringify(st) !== t3kPoll.last) { t3kPoll.last = JSON.stringify(st); t3kRender(st); }
+  if (["waiting", "loading", "downloading"].includes(st.stage)) t3kPoll.t = setTimeout(t3kPoll, 400);
+}
+
+function t3kClose() { $("t3k").hidden = true; api.t3k_cancel(); clearTimeout(t3kPoll.t); t3kPoll.last = null; }
+
+function t3kRender(st) {
+  const body = $("t3kBody");
+  const spin = (msg, cancel = true) => `<div class="mwait"><span class="spinner"></span>${esc(msg)}</div>${cancel ? `<button class="linkbtn" data-a="cancel">Cancel</button>` : ""}`;
+  if (st.stage === "needs_key") {
+    body.innerHTML = `<p>Duet loads amp models straight from <b>TONE3000</b>. To do that it needs a free <b>publishable key</b> from your TONE3000 account (one time):</p>
+      <ol><li>Log in on tone3000.com, open <b>Settings → API Keys</b> and create a key.</li><li>Copy the one that starts with <code>t3k_pub_</code> and paste it here.</li></ol>
+      <div class="row"><input type="text" id="t3kKey" placeholder="t3k_pub_…" spellcheck="false"><button class="btn teal" data-a="savekey">Save</button></div>
+      <div class="hint" id="t3kHint"></div>
+      <button class="linkbtn" data-a="site">Open tone3000.com</button>`;
+  } else if (st.stage === "waiting") {
+    body.innerHTML = spin("Pick a tone in your browser. Duet will pick it up from there.") +
+      `<p class="fine">Opened tone3000.com in your browser. Log in if it asks, then choose a tone.</p>`;
+  } else if (st.stage === "loading" || st.stage === "downloading") {
+    body.innerHTML = spin(st.message || "Working…", false);
+  } else if (st.stage === "choose") {
+    const tone = st.tone || {};
+    const light = { lite: "lighter on CPU", feather: "very light on CPU", nano: "lightest on CPU" };
+    body.innerHTML = `<div class="tone"><b>${esc(tone.title)}</b><span>${tone.author ? "by " + esc(tone.author) : ""}${tone.license ? " · " + esc(tone.license) : ""}</span></div>
+      <p class="fine">This tone has ${st.models.length} model${st.models.length === 1 ? "" : "s"}. Pick one:</p>
+      <div class="mlist">${st.models.map((m) => `<button class="mitem" data-id="${m.id}"><b>${esc(m.name)}</b>
+        <span>${esc(m.size || "")}${light[m.size] ? " · " + light[m.size] : m.size === "standard" ? " · best quality" : ""}${m.architecture ? " · A" + esc(m.architecture) : ""}</span></button>`).join("")}</div>`;
+  } else if (st.stage === "error") {
+    body.innerHTML = `<div class="mnote bad">${esc(st.message)}</div><div class="row"><button class="btn teal" data-a="retry">Try again</button><button class="linkbtn" data-a="cancel">Close</button></div>`;
+  } else {
+    body.innerHTML = "";
+  }
+  body.onclick = async (e) => {
+    const a = e.target.closest("[data-a]")?.dataset.a, item = e.target.closest(".mitem");
+    if (a === "cancel") t3kClose();
+    if (a === "site") api.open_url("https://www.tone3000.com/");
+    if (a === "retry") startT3K(ui.t3k.t, ui.t3k.pos);
+    if (a === "savekey") {
+      const res = await api.t3k_set_key($("t3kKey").value);
+      if (res.error) { setHint("t3kHint", res.error, "bad"); return; }
+      startT3K(ui.t3k.t, ui.t3k.pos);
+    }
+    if (item) {
+      t3kRender({ stage: "downloading", message: "Downloading " + item.querySelector("b").textContent + "…" });
+      const res = await api.t3k_download(item.dataset.id);
+      if (res.error) { t3kRender({ stage: "error", message: res.error }); return; }
+      $("t3k").hidden = true;
+      await loadModel(ui.t3k.t, ui.t3k.pos, res.path);
+      toast(`Loaded ${res.title}${res.name ? " · " + res.name : ""}`);
+    }
+  };
+}
+
 function renderRack() {
   const t = ui.sel, cfg = stripCfg(t);
   const rack = $("rack");
@@ -788,12 +1040,21 @@ function renderRack() {
   cfg.rack.forEach((slot, pos) => {
     const meta = FXMETA[slot.kind];
     const p = document.createElement("div");
-    p.className = "pedal" + (slot.on ? "" : " off");
+    p.className = "pedal" + (slot.on ? "" : " off") + (slot.kind === "nam" ? " nam" : "");
     p.style.setProperty("--c", meta.color);
-    p.innerHTML = `<div class="top"><div><div class="name">${meta.name}</div><div class="sub">${meta.sub}</div></div>
+    const sub = slot.kind === "nam" && slot.model_name
+      ? (slot.includes_cab === true ? "amp + cab" : slot.includes_cab === false ? "amp only, no cab" : meta.sub) : meta.sub;
+    p.innerHTML = `<div class="top"><div><div class="name">${meta.name}</div><div class="sub">${esc(sub)}</div></div>
       <div class="tools"><button class="l" title="Move left" aria-label="Move left">◀</button><button class="r" title="Move right" aria-label="Move right">▶</button><button class="del" title="Remove" aria-label="Remove">✕</button></div>
       <span class="led"></span></div><div class="knobs"></div>`;
     const knobs = p.querySelector(".knobs");
+    if (slot.kind === "nam") {
+      // model panel and knobs side by side, so it's no taller than the other pedals
+      const row = document.createElement("div");
+      row.className = "namrow";
+      knobs.replaceWith(row);
+      row.append(namSection(t, pos, slot), knobs);
+    }
     for (const [key, label, fmt] of meta.knobs) {
       knobs.append(knob({ label, value: slot[key], def: FX_DEFAULTS[slot.kind][key], fmt, color: meta.color,
         onChange: (v) => { slot[key] = v; api.rack_set(t, pos, key, v); saveMixer(); } }));
@@ -853,8 +1114,15 @@ function paint(s) {
   const pill = $("pill");
   pill.className = "pill" + (s.connected ? " connected" : s.calling ? " calling" : "");
   $("pillTxt").textContent = s.connected ? "Connected" : s.calling ? "Calling…" : "Not connected";
-  if (s.connected && !paint.wasConnected) { setHint("connHint", `Connected to ${s.peer}. Play something!`); toast("Connected. Play something!"); }
-  if (!s.connected && paint.wasConnected) setHint("connHint", "Partner went quiet. Still trying to reach them…", "warn");
+  if (s.connected) setStatus("connStatus", "ok", "Connected", `with ${s.peer}${s.rtt != null ? ` · ping ${s.rtt.toFixed(0)} ms` : ""}`);
+  else if (s.calling) setStatus("connStatus", "warn", paint.wasConnected || paint.lostOnce ? "Reconnecting…" : "Calling…", "Waiting for your partner. Duet keeps trying, so you can leave this open.");
+  else setStatus("connStatus", "", "Not connected", "Swap codes with your partner below.");
+  if (s.connected && !paint.wasConnected) {
+    toast("Connected. Play something!");
+    // out of the way once you're in, unless you were busy in the Sound tab
+    if (ui.sbOpen && ui.tab === "connect") setTimeout(() => ui.connected && setSidebar(false), 1200);
+  }
+  if (!s.connected && paint.wasConnected) paint.lostOnce = true;
   paint.wasConnected = s.connected;
   if (s.connected !== ui.connected) { ui.connected = s.connected; if (s.connected) sendNames(); }
   vOnConnection(s.connected);
@@ -894,7 +1162,8 @@ function paint(s) {
     `<span>Ping <b>${s.rtt == null ? "–" : s.rtt.toFixed(1)}</b> ms</span>` +
     `<span${hot(st.underruns)}>Dropouts <b>${st.underruns}</b></span>` +
     `<span${hot(st.lost + st.late)}>Lost <b>${st.lost + st.late}</b></span>` +
-    `<span${hot(st.xruns)}>Glitches <b>${st.xruns}</b></span>`;
+    `<span${hot(st.xruns)}>Glitches <b>${st.xruns}</b></span>` +
+    `<span${s.dspLoad > 0.7 ? ' class="hot"' : ""} title="How much of each audio block the effects and NAM models use">DSP <b>${Math.round((s.dspLoad || 0) * 100)}%</b></span>`;
   if (st.underruns > 50 && !paint.tipped) { paint.tipped = true; toast("Hearing crackles? Press + on the safety buffer a step or two."); }
 }
 
@@ -908,13 +1177,28 @@ async function boot(a) {
   api = a;
   init = await api.init();
   fillDevices();
-  $("inDev").onchange = deviceChanged;
-  seg($("rateSeg"), ui.rate, (v) => { ui.rate = v; store.set("rate", v); ui.paintBuf && ui.paintBuf(); });
-  seg($("blockSeg"), ui.block, (v) => { ui.block = v; store.set("block", v); ui.paintBuf && ui.paintBuf(); });
-  $("audioBtn").onclick = toggleAudio;
-  $("connectBtn").onclick = connect;
+  $("inDev").onchange = () => {
+    // same device for both directions is what ASIO needs, and what most people mean
+    const sameOut = init.outputs.find((d) => d.id === $("inDev").value);
+    if (sameOut) $("outDev").value = sameOut.id;
+    deviceChanged(); restartAudio();
+  };
+  seg($("rateSeg"), ui.rate, (v) => { ui.rate = v; store.set("rate", v); ui.paintBuf && ui.paintBuf(); restartAudio(); });
+  seg($("blockSeg"), ui.block, (v) => { ui.block = v; store.set("block", v); ui.paintBuf && ui.paintBuf(); restartAudio(); });
+  $("outDev").onchange = restartAudio;
+  $("audioBtn").onclick = () => (ui.audioWanted ? stopAudio() : startAudio());
+  $("connectBtn").onclick = () => connect();
   $("peerCode").value = store.get("peer", "");
   $("peerCode").addEventListener("keydown", (e) => e.key === "Enter" && connect());
+  // pasting a whole code connects right away, no button needed
+  $("peerCode").addEventListener("input", () => looksLikeCode($("peerCode").value) && connect(true));
+  // side panel
+  for (const t of document.querySelectorAll(".tab")) t.onclick = () => setTab(t.dataset.tab);
+  $("sbClose").onclick = () => setSidebar(false);
+  $("sbToggle").onclick = () => setSidebar(!ui.sbOpen);
+  $("pill").onclick = () => openPanel("connect");
+  setTab(store.get("tab", "connect"));
+  setSidebar(store.get("sidebar", true));
   $("copyBtn").onclick = async () => {
     const txt = $("myCode").textContent;
     if ($("myCode").classList.contains("pending")) return;
@@ -931,9 +1215,16 @@ async function boot(a) {
   const saved = store.get("mixer", null);
   if (saved) { try { await api.load_mixer(saved); } catch (e) { console.warn("old mixer settings ignored", e); } }
   ui.mixer = await api.mixer();
+  await refreshLibrary();
   renderStrips();
   renderRack();
+  $("t3kX").onclick = t3kClose;
+  $("t3k").onclick = (e) => e.target === $("t3k") && t3kClose();
+  document.addEventListener("keydown", (e) => e.key === "Escape" && !$("t3k").hidden && t3kClose());
   poll();
+  // no buttons to press: sound comes on, and we call the last partner again
+  startAudio();
+  if (looksLikeCode($("peerCode").value)) connect(true);
 }
 
 // ---------- video call ----------
@@ -1112,7 +1403,7 @@ function demoApi() {
   const slot = (kind, extra = {}) => ({ kind, on: true, ...FX_DEFAULTS[kind], ...extra });
   const PRESET_RACKS = { Clean: [], Dreamy: ["chorus", "delay", "reverb"], Crunch: ["comp", "drive", "reverb"], Vocal: ["comp", "reverb"], Surf: ["tremolo", "reverb"] };
   const mixer = {
-    local: [strip(0, true, { mon: true, rack: [slot("comp"), slot("drive", { drive: 0.55 }), slot("delay"), slot("reverb", { on: false })] }),
+    local: [strip(0, true, { mon: true, rack: [slot("comp"), slot("nam", { model: "C:/models/plexi.nam", model_name: "Plexi 1959 · Crunch", model_sr: 48000, includes_cab: true }), slot("delay"), slot("reverb", { on: false })] }),
             strip(1, true, { pan: -0.3, fader: 0.8, rack: [slot("comp", { threshold: 0.35 }), slot("reverb", { mix: 0.25 })] }),
             strip(2, false), strip(3, false)],
     remote: Array.from({ length: 8 }, (_, i) => strip(0, true, { send: false, mon: true, pan: i === 1 ? 0.35 : 0, rack: i === 0 ? [slot("reverb", { mix: 0.2 })] : [] })),
@@ -1145,6 +1436,17 @@ function demoApi() {
     rack_preset: async (tg, name) => { target(tg).rack = PRESET_RACKS[name].map((k) => slot(k)); return copy(); },
     rack_load: async (tg, slots) => { target(tg).rack = slots; },
     send_signal: async () => {},
+    nam_library: async () => [{ path: "C:/models/plexi.nam", title: "Plexi 1959", name: "Crunch" }, { path: "C:/models/twin.nam", title: "Twin Reverb", name: "Clean" }],
+    nam_open_file: async () => null,
+    set_model: async (tg, pos, path) => { Object.assign(target(tg).rack[pos], { model: path, model_name: path.split("/").pop(), model_sr: 48000 }); return copy(); },
+    t3k_has_key: async () => true,
+    t3k_pick: async () => ({ stage: "waiting" }),
+    t3k_status: async () => ({ stage: "choose", tone: { title: "Plexi 1959 Super Lead", author: "tonelover", license: "cc-by" },
+      models: [{ id: 3, name: "Crunch (gain 6)", size: "standard", architecture: "2" }, { id: 4, name: "Crunch (gain 6)", size: "lite", architecture: "2" }, { id: 5, name: "Edge of breakup", size: "feather", architecture: "1" }] }),
+    t3k_cancel: async () => {},
+    t3k_download: async () => ({ path: "C:/models/plexi.nam", title: "Plexi 1959", name: "Crunch" }),
+    t3k_set_key: async () => ({ ok: true }),
+    open_url: async () => {},
     state: async () => {
       t += 0.08;
       const lv = (f, p) => Math.max(0, 0.25 + 0.2 * Math.sin(t * f + p) + 0.1 * Math.sin(t * 7.3 * f));
@@ -1153,7 +1455,7 @@ function demoApi() {
         latency: { network: on ? 7.1 : null, buffer: 8.0, card: 5.3, block: 2.7 },
         levels: { local: [lv(1.3, 0), lv(0.7, 1), 0, 0], remote: on ? [lv(0.9, 2), lv(1.1, 3), 0, 0, 0, 0, 0, 0] : [0, 0, 0, 0, 0, 0, 0, 0], master: lv(1, 1.5) },
         remoteChannels: on ? 2 : 0,
-        stats: { depth: 3, underruns: 2, lost: 0, late: 1, trimmed: 0, xruns: 0 }, warning: "", signals: [] };
+        stats: { depth: 3, underruns: 2, lost: 0, late: 1, trimmed: 0, xruns: 0 }, dspLoad: 0.24, warning: "", signals: [] };
     },
   };
 }

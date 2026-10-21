@@ -437,9 +437,11 @@ impl Engine {
         }
         let pos = pos.unwrap_or(rack.len()).min(rack.len());
         let cfg = SlotCfg::new(k);
-        rack.insert(pos, cfg);
+        rack.insert(pos, cfg.clone());
         // built (allocated) here, on the control side, then moved into the audio thread
-        self.cmd(Cmd::RackInsert(t, pos, Slot::new(cfg, self.samplerate())));
+        // a fresh slot has no model file to load, so this can't fail
+        let slot = Slot::new(cfg, self.samplerate()).expect("plain slot");
+        self.cmd(Cmd::RackInsert(t, pos, slot));
         Ok(pos)
     }
 
@@ -510,9 +512,53 @@ impl Engine {
                     cfg.p[i] = v.extract::<f32>()?;
                 }
             }
+            if let Some(m) = d.get_item("model")? {
+                cfg.model = m.extract::<Option<String>>()?;
+            }
             cfgs.push(cfg);
         }
         self.load_rack(t, cfgs);
+        Ok(())
+    }
+
+    /// Load a .nam file into a NAM slot (None empties it). Raises with a
+    /// readable message if the file can't be used; the slot is left as it was.
+    #[pyo3(signature = (target, pos, path))]
+    fn rack_set_model(&self, py: Python<'_>, target: &str, pos: usize, path: Option<String>) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let mut cfg = {
+            let mut c = self.inner.ctl.lock().unwrap();
+            let Some(slot) = mirror(&mut c, t).rack.get_mut(pos) else {
+                return Err(PyValueError::new_err(format!("no slot {pos}")));
+            };
+            if slot.kind != fx::NAM {
+                return Err(PyValueError::new_err("that slot isn't a NAM amp"));
+            }
+            slot.clone()
+        };
+        cfg.model = path;
+        cfg.info = None;
+        cfg.error = None;
+        let sr = self.samplerate();
+        // parsing and building a model takes a moment: don't hold the GIL for it
+        let slot = py.allow_threads(|| Slot::new(cfg, sr)).map_err(PyRuntimeError::new_err)?;
+        let mut c = self.inner.ctl.lock().unwrap();
+        if let Some(m) = mirror(&mut c, t).rack.get_mut(pos) {
+            let (on, p) = (m.on, m.p); // knobs may have moved while it loaded
+            *m = slot.cfg.clone();
+            m.on = on;
+            m.p = p;
+        }
+        drop(c);
+        self.cmd(Cmd::RackReplace(t, pos, slot));
+        // the fresh slot carries the on/params from when loading started; resend the current ones
+        let m = self.inner.ctl.lock().unwrap().clone_slot(t, pos);
+        if let Some(m) = m {
+            self.cmd(Cmd::RackOn(t, pos, m.on));
+            for (k, v) in m.p.iter().enumerate() {
+                self.cmd(Cmd::RackParam(t, pos, k, *v));
+            }
+        }
         Ok(())
     }
 
@@ -546,6 +592,13 @@ impl Engine {
                 e.set_item("on", slot.on)?;
                 for (i, name) in FX[slot.kind].params.iter().enumerate() {
                     e.set_item(*name, slot.p[i])?;
+                }
+                if slot.kind == fx::NAM {
+                    e.set_item("model", slot.model.clone())?;
+                    e.set_item("model_name", slot.info.as_ref().map(|i| i.name.clone()))?;
+                    e.set_item("model_sr", slot.info.as_ref().map(|i| i.sample_rate))?;
+                    e.set_item("includes_cab", slot.info.as_ref().and_then(|i| i.includes_cab))?;
+                    e.set_item("error", slot.error.clone())?;
                 }
                 Ok(e)
             }).collect::<PyResult<Vec<_>>>()?;
@@ -686,8 +739,19 @@ impl Engine {
         }
         rack.clear();
         for (i, s) in slots.into_iter().take(MAX_SLOTS).enumerate() {
-            rack.push(s);
-            self.cmd(Cmd::RackInsert(t, i, Slot::new(s, sr)));
+            let slot = match Slot::new(s.clone(), sr) {
+                Ok(slot) => slot,
+                Err(e) => {
+                    let mut empty = s.clone();
+                    empty.model = None;
+                    let mut slot = Slot::new(empty, sr).expect("plain slot");
+                    slot.cfg.model = s.model.clone(); // remembered, so it can be retried
+                    slot.cfg.error = Some(e);
+                    slot
+                }
+            };
+            rack.push(slot.cfg.clone());
+            self.cmd(Cmd::RackInsert(t, i, slot));
         }
     }
 }
@@ -700,6 +764,12 @@ fn parse_target(s: &str) -> PyResult<Target> {
         "L" if i < MAX_LOCAL => Ok(Target::Local(i)),
         "R" if i < MAX_REMOTE => Ok(Target::Remote(i)),
         _ => Err(bad()),
+    }
+}
+
+impl Ctl {
+    fn clone_slot(&mut self, t: Target, pos: usize) -> Option<SlotCfg> {
+        mirror(self, t).rack.get(pos).cloned()
     }
 }
 

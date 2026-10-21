@@ -45,6 +45,7 @@ pub enum Cmd {
     RackInsert(Target, usize, Box<Slot>),
     RackRemove(Target, usize),
     RackMove(Target, usize, usize),
+    RackReplace(Target, usize, Box<Slot>),
     RackOn(Target, usize, bool),
     RackParam(Target, usize, usize, f32),
     Master(f32),
@@ -252,7 +253,10 @@ impl Dsp {
         if samplerate != self.samplerate {
             for strip in self.local.iter_mut().chain(self.remote.iter_mut()) {
                 for slot in strip.rack.slots.iter_mut() {
-                    slot.fx = crate::fx::make(slot.cfg.kind, samplerate as f32);
+                    // a model that can't be reloaded keeps its old instance
+                    if let Ok(fx) = crate::fx::make(&slot.cfg, samplerate as f32) {
+                        slot.fx = fx;
+                    }
                 }
             }
         }
@@ -302,6 +306,13 @@ impl Dsp {
                     if let Some(slot) = self.strip(t).and_then(|s| s.rack.remove(pos)) {
                         self.retire(slot);
                     }
+                }
+                Cmd::RackReplace(t, pos, slot) => {
+                    let old = match self.strip(t) {
+                        Some(s) => s.rack.replace(pos, slot),
+                        None => slot,
+                    };
+                    self.retire(old);
                 }
                 Cmd::RackMove(t, from, to) => {
                     if let Some(s) = self.strip(t) {

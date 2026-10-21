@@ -11,16 +11,20 @@ threads that never wait for Python or the UI.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import random
 import socket
 import subprocess
 import sys
 import threading
+import webbrowser
 from pathlib import Path
 
 import webview
 
 from duet_engine import Engine
+from t3k import Tone3000
 
 
 def resource(path: str) -> Path:
@@ -37,6 +41,8 @@ class Api:
         self._code = ""
         self._code_note = ""
         self._audio = False
+        self._window = None  # set once the window exists (for file dialogs)
+        self._t3k = Tone3000(data_dir() / "models", lambda: load_settings().get("t3k_key"))
         threading.Thread(target=self._discover, daemon=True).start()
 
     def _discover(self):
@@ -159,9 +165,64 @@ class Api:
             "remoteChannels": s["remote_channels"],
             "stats": {k: s[k] for k in ("depth", "underruns", "lost", "late", "trimmed", "xruns")},
             "cpu": s["cpu_us"],
+            "dspLoad": s["cpu_us"] / (frame / sr * 1e6) if frame else 0.0,
             "warning": s["warning"],
             "signals": self._engine.drain_signals(),
         }
+
+    # --- NAM amps and TONE3000 ---------------------------------------------
+
+    def set_model(self, target, pos, path):
+        """Load a .nam into a NAM slot. Returns the mixer, or {"error": ...}."""
+        try:
+            self._engine.rack_set_model(target, int(pos), path)
+        except Exception as exc:
+            return {"error": str(exc)}
+        if path:
+            self._t3k.remember_file(path)
+        return self._engine.mixer()
+
+    def nam_library(self):
+        return self._t3k.library()
+
+    def nam_open_file(self):
+        """Native file picker for a .nam; returns the path or None."""
+        if not self._window:
+            return None
+        picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
+                                                 file_types=("NAM models (*.nam)", "All files (*.*)"))
+        return picked[0] if picked else None
+
+    def t3k_has_key(self):
+        return bool(load_settings().get("t3k_key"))
+
+    def t3k_set_key(self, key):
+        key = (key or "").strip()
+        if not key.startswith("t3k_pub_"):
+            return {"error": "That isn't a publishable key. It starts with t3k_pub_ (not t3k_cs_, keep that one secret)."}
+        settings = load_settings()
+        settings["t3k_key"] = key
+        save_settings(settings)
+        return {"ok": True}
+
+    def t3k_pick(self):
+        return self._t3k.start_pick()
+
+    def t3k_cancel(self):
+        self._t3k.cancel()
+
+    def t3k_status(self):
+        return self._t3k.status
+
+    def t3k_download(self, model_id):
+        try:
+            return self._t3k.download(model_id)
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def open_url(self, url):
+        if str(url).startswith("https://"):
+            webbrowser.open(url)
 
     # --- video call signaling (WebRTC runs in the page; we only carry its messages)
 
@@ -174,15 +235,16 @@ class Api:
 
 def main():
     ap = argparse.ArgumentParser(description="Duet: peer-to-peer jamming")
-    ap.add_argument("--port", type=int, default=0, help="fixed UDP port (default: random)")
+    ap.add_argument("--port", type=int, default=0, help="fixed UDP port (default: the one from last time)")
     ap.add_argument("--debug", action="store_true", help="open the webview dev tools")
     args = ap.parse_args()
-    engine = Engine(port=args.port)
+    engine = open_engine(args.port)
     engine.start()
     api = Api(engine)
     window = webview.create_window("Duet", url=str(resource("ui/index.html")), js_api=api,
                                    width=1280, height=900, min_size=(980, 780),
                                    background_color="#0e0d12")
+    api._window = window
     window.events.closed += api.shutdown
     # Served from http://127.0.0.1:<fixed port> rather than file://: the camera needs a
     # secure origin, and a stable origin + persistent storage keep saved settings and
@@ -201,6 +263,35 @@ def data_dir() -> Path:
     path = base / "Duet"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads((data_dir() / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(settings: dict):
+    try:
+        (data_dir() / "settings.json").write_text(json.dumps(settings, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def open_engine(port: int = 0) -> Engine:
+    """Same UDP port every launch, so your code (public ip:port) usually stays the
+    same too and both sides can simply reconnect to the code they saved. A random
+    high port the first time; any port if that one is taken now."""
+    settings = load_settings()
+    port = port or settings.get("udp_port") or random.randint(49152, 64999)
+    try:
+        engine = Engine(port=port)
+    except Exception:
+        engine = Engine(port=0)
+    settings["udp_port"] = engine.local_port
+    save_settings(settings)
+    return engine
 
 
 def pick_port(preferred: int = 47321) -> int:

@@ -5,10 +5,13 @@
 //! Realtime rule: effect objects are built (allocated) on the control thread
 //! and handed to the audio thread in a Box; removed ones are handed back to be
 //! freed there. The audio thread only moves Boxes around inside preallocated Vecs.
+//! That matters most for NAM: loading a model parses a file and allocates
+//! megabytes, all of which happens before the audio thread ever sees it.
 
 use std::f32::consts::PI;
 
-pub const N_KINDS: usize = 6;
+pub const N_KINDS: usize = 7;
+pub const NAM: usize = 6;
 pub const MAX_PARAMS: usize = 3;
 pub const MAX_SLOTS: usize = 8;
 
@@ -25,6 +28,8 @@ pub const FX: [FxInfo; N_KINDS] = [
     FxInfo { name: "tremolo", params: &["rate", "depth"], defaults: [0.4, 0.6, 0.0] },
     FxInfo { name: "delay", params: &["time", "feedback", "mix"], defaults: [0.35, 0.4, 0.35] },
     FxInfo { name: "reverb", params: &["size", "damp", "mix"], defaults: [0.6, 0.4, 0.3] },
+    // input/output: -12..+12 dB around the middle of the knob
+    FxInfo { name: "nam", params: &["input", "output"], defaults: [0.5, 0.5, 0.0] },
 ];
 
 pub fn kind_index(name: &str) -> Option<usize> {
@@ -58,17 +63,31 @@ pub const PRESETS: &[(&str, &[(&str, &[(&str, f32)])])] = &[
     ]),
 ];
 
+/// What we know about a loaded NAM model, for the UI.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelInfo {
+    pub name: String,
+    pub sample_rate: f64,
+    pub includes_cab: Option<bool>,
+    pub loudness: Option<f32>,
+}
+
 /// What a slot holds, without the DSP state: the control side's mirror.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SlotCfg {
     pub kind: usize,
     pub on: bool,
     pub p: [f32; MAX_PARAMS],
+    /// NAM only: the .nam file, and what's in it (None until one is loaded)
+    pub model: Option<String>,
+    pub info: Option<ModelInfo>,
+    /// why the model couldn't be loaded, if it couldn't
+    pub error: Option<String>,
 }
 
 impl SlotCfg {
     pub fn new(kind: usize) -> Self {
-        SlotCfg { kind, on: true, p: FX[kind].defaults }
+        SlotCfg { kind, on: true, p: FX[kind].defaults, model: None, info: None, error: None }
     }
 }
 
@@ -92,15 +111,21 @@ pub trait Effect: Send {
     fn reset(&mut self) {}
 }
 
-pub fn make(kind: usize, sr: f32) -> Box<dyn Effect> {
-    match kind {
+/// Build an effect. Allocates (and for NAM reads + parses the model file), so
+/// never call this on the audio thread.
+pub fn make(cfg: &SlotCfg, sr: f32) -> Result<Box<dyn Effect>, String> {
+    Ok(match cfg.kind {
         0 => Box::new(Compressor::new(sr)),
         1 => Box::new(Drive::new(sr)),
         2 => Box::new(Chorus::new(sr)),
         3 => Box::new(Tremolo { phase: 0.0, sr }),
         4 => Box::new(Delay::new(sr)),
-        _ => Box::new(Reverb::new(sr)),
-    }
+        5 => Box::new(Reverb::new(sr)),
+        _ => Box::new(match &cfg.model {
+            Some(path) => NamAmp::load(path, sr)?.0,
+            None => NamAmp::empty(sr),
+        }),
+    })
 }
 
 /// A slot as the audio thread holds it: settings + the effect's DSP state.
@@ -110,8 +135,17 @@ pub struct Slot {
 }
 
 impl Slot {
-    pub fn new(cfg: SlotCfg, sr: f32) -> Box<Slot> {
-        Box::new(Slot { cfg, fx: make(cfg.kind, sr) })
+    /// For a NAM slot with a model this also fills in `cfg.info`.
+    pub fn new(mut cfg: SlotCfg, sr: f32) -> Result<Box<Slot>, String> {
+        if cfg.kind == NAM {
+            if let Some(path) = cfg.model.clone() {
+                let (amp, info) = NamAmp::load(&path, sr)?;
+                cfg.info = Some(info);
+                return Ok(Box::new(Slot { cfg, fx: Box::new(amp) }));
+            }
+        }
+        let fx = make(&cfg, sr)?;
+        Ok(Box::new(Slot { cfg, fx }))
     }
 }
 
@@ -146,6 +180,15 @@ impl Rack {
         (pos < self.slots.len()).then(|| self.slots.remove(pos))
     }
 
+    /// Swap a slot for a new one (e.g. a NAM slot with a different model); the
+    /// old one comes back so it can be freed elsewhere.
+    pub fn replace(&mut self, pos: usize, slot: Box<Slot>) -> Box<Slot> {
+        match self.slots.get_mut(pos) {
+            Some(s) => std::mem::replace(s, slot),
+            None => slot,
+        }
+    }
+
     pub fn move_slot(&mut self, from: usize, to: usize) {
         if from < self.slots.len() {
             let s = self.slots.remove(from);
@@ -161,6 +204,66 @@ impl Rack {
             }
             s.cfg.on = on;
         }
+    }
+}
+
+// --- NAM amp -----------------------------------------------------------------------
+
+/// A Neural Amp Modeler capture. The model itself (nam-rs) only does the
+/// network's forward pass; like the reference plugin we add input/output trim,
+/// loudness normalisation (to -18 dB, so swapping models doesn't jump in
+/// level) and a DC blocker after it.
+pub struct NamAmp {
+    model: Option<nam_rs::Model>,
+    norm: f32,
+    dc_x: f32,
+    dc_y: f32,
+    dc_r: f32,
+}
+
+impl NamAmp {
+    fn empty(sr: f32) -> Self {
+        NamAmp { model: None, norm: 1.0, dc_x: 0.0, dc_y: 0.0, dc_r: 1.0 - 2.0 * PI * 10.0 / sr }
+    }
+
+    pub fn load(path: &str, sr: f32) -> Result<(Self, ModelInfo), String> {
+        let file = nam_rs::NamModel::from_file(path).map_err(|e| format!("couldn't read {path}: {e}"))?;
+        let model = nam_rs::Model::from_nam(&file).map_err(|e| format!("unsupported model: {e}"))?;
+        let meta = file.metadata_typed();
+        let name = meta.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| {
+            std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+        });
+        let loudness = file.loudness();
+        let info = ModelInfo { name, sample_rate: file.expected_sample_rate(), includes_cab: file.includes_cab(), loudness };
+        let mut amp = NamAmp::empty(sr);
+        amp.norm = loudness.map_or(1.0, |l| db_to_lin(-18.0 - l));
+        amp.model = Some(model);
+        Ok((amp, info))
+    }
+}
+
+impl Effect for NamAmp {
+    fn process(&mut self, p: &[f32; 3], buf: &mut [f32]) {
+        let Some(model) = self.model.as_mut() else { return };
+        let gin = db_to_lin(-12.0 + 24.0 * p[0]);
+        let gout = db_to_lin(-12.0 + 24.0 * p[1]) * self.norm;
+        for x in buf.iter_mut() {
+            *x *= gin;
+        }
+        model.process_buffer(buf);
+        for x in buf.iter_mut() {
+            let y = *x - self.dc_x + self.dc_r * self.dc_y;
+            self.dc_x = *x;
+            self.dc_y = y;
+            *x = y * gout;
+        }
+    }
+    fn reset(&mut self) {
+        if let Some(m) = self.model.as_mut() {
+            m.reset();
+        }
+        self.dc_x = 0.0;
+        self.dc_y = 0.0;
     }
 }
 
@@ -408,14 +511,14 @@ mod tests {
     fn rack_of(cfgs: &[SlotCfg]) -> Rack {
         let mut r = Rack::new();
         for (i, c) in cfgs.iter().enumerate() {
-            r.insert(i, Slot::new(*c, 48000.0)).ok().unwrap();
+            r.insert(i, Slot::new(c.clone(), 48000.0).unwrap()).ok().unwrap();
         }
         r
     }
 
     #[test]
     fn every_effect_is_finite_bounded_and_audible() {
-        for kind in 0..N_KINDS {
+        for kind in 0..NAM {
             for block in [64usize, 128, 512] {
                 let mut r = rack_of(&[SlotCfg::new(kind)]);
                 let mut x = noise(96000);
@@ -463,7 +566,7 @@ mod tests {
     fn rack_order_matters_and_never_grows_past_capacity() {
         // drive then reverb != reverb then drive
         let (d, v) = (SlotCfg::new(1), SlotCfg::new(5));
-        let mut a = rack_of(&[d, v]);
+        let mut a = rack_of(&[d.clone(), v.clone()]);
         let mut b = rack_of(&[v, d]);
         let (mut xa, mut xb) = (noise(4800), noise(4800));
         a.process(&mut xa);
@@ -475,10 +578,55 @@ mod tests {
         let mut full = Rack::new();
         let cap = full.slots.capacity();
         for i in 0..MAX_SLOTS {
-            assert!(full.insert(i, Slot::new(SlotCfg::new(0), 48000.0)).is_ok());
+            assert!(full.insert(i, Slot::new(SlotCfg::new(0), 48000.0).unwrap()).is_ok());
         }
-        assert!(full.insert(0, Slot::new(SlotCfg::new(0), 48000.0)).is_err());
+        assert!(full.insert(0, Slot::new(SlotCfg::new(0), 48000.0).unwrap()).is_err());
         assert_eq!(full.slots.capacity(), cap, "rack reallocated");
+    }
+
+    const TINY_NAM: &str = r#"{
+        "version": "0.5.4", "architecture": "WaveNet",
+        "metadata": {"name": "Tiny Test Amp", "loudness": -24.0},
+        "config": {
+            "layers": [{
+                "input_size": 1, "condition_size": 1, "channels": 1, "head_size": 1,
+                "kernel_size": 1, "dilations": [1], "activation": "ReLU",
+                "gated": false, "head_bias": false
+            }],
+            "head": null, "head_scale": 1.0
+        },
+        "weights": [1.0, 2.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
+    }"#;
+
+    #[test]
+    fn nam_slot_loads_a_model_and_processes() {
+        let path = std::env::temp_dir().join("duet_tiny_test.nam");
+        std::fs::write(&path, TINY_NAM).unwrap();
+        let mut cfg = SlotCfg::new(NAM);
+        cfg.model = Some(path.to_string_lossy().into_owned());
+        let slot = Slot::new(cfg, 48000.0).unwrap();
+        let info = slot.cfg.info.clone().unwrap();
+        assert_eq!(info.name, "Tiny Test Amp");
+        assert_eq!(info.sample_rate, 48000.0);
+        assert_eq!(info.loudness, Some(-24.0));
+        let mut r = Rack::new();
+        r.insert(0, slot).ok().unwrap();
+        let mut x = noise(4800);
+        let before = x.clone();
+        for c in x.chunks_mut(128) {
+            r.process(c);
+        }
+        assert!(x.iter().all(|v| v.is_finite()));
+        assert!(x.iter().zip(&before).any(|(a, b)| (a - b).abs() > 1e-3), "model didn't change the sound");
+        // empty NAM slot (no model yet) passes audio through untouched
+        let mut e = rack_of(&[SlotCfg::new(NAM)]);
+        let mut y = before.clone();
+        e.process(&mut y);
+        assert_eq!(y, before);
+        // a missing file is an error, not a crash
+        let mut bad = SlotCfg::new(NAM);
+        bad.model = Some("Z:/nope/missing.nam".into());
+        assert!(Slot::new(bad, 48000.0).is_err());
     }
 
     #[test]

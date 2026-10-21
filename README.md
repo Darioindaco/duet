@@ -22,11 +22,18 @@ denied the microphone: System Settings → Privacy & Security → Microphone →
 
 ## Using it
 
-1. **Sound:** pick your audio interface (on Windows the `ASIO` entry) and the
-   output. **Same buffer and sample rate on both sides** (128 / 48k is a good
-   start). Press *Start audio*.
-2. **Connect:** *Copy* your code and send it to your partner; paste theirs and
-   press *Connect*. **Both** of you press Connect. That's what gets through your routers.
+Open Duet and sound is on: it picks your audio interface (on Windows the
+`ASIO` one) by itself. The panel on the left (button top-left to show/hide it)
+has two tabs:
+
+1. **Connect:** *Copy* your code and send it to your partner; paste theirs into
+   the box and it connects right away. **Both** of you paste each other's code.
+   That's what gets through your routers. You only do this once: your code stays
+   the same between sessions, so next time Duet reconnects by itself. Once
+   you're connected the panel slides away.
+2. **Sound:** change interface, headphones, sample rate or buffer; it restarts
+   by itself. **Same buffer and sample rate on both sides** (128 / 48k is a good
+   start).
 3. **Mixer:** one strip per input you play into, up to four (*+ Add input*, e.g.
    guitar on In 1 and vocals on In 2). Click a strip's name to rename it; your
    partner sees that name on their side. Per strip:
@@ -44,6 +51,18 @@ denied the microphone: System Settings → Privacy & Security → Microphone →
    Presets replace the strip's whole rack. Effects on your strips are heard by
    your partner; effects on their strips only change what you hear (e.g. some
    reverb on their vocals).
+
+5. **NAM amps:** *+ Add effect → NAM Amp* adds a Neural Amp Modeler slot. Load a
+   capture with **TONE3000** (pick a tone on tone3000.com in your browser; Duet
+   downloads it), **Open…** (any `.nam` file) or the **Library** (everything you
+   loaded before). *Input* drives the amp harder, *Output* sets the level; models
+   are level-matched so switching doesn't jump in volume. If the pedal says the
+   model was captured at another sample rate, click *Switch*.
+   - TONE3000 needs a free **publishable key** once: on tone3000.com go to
+     Settings → API Keys, create one, and paste the `t3k_pub_…` key when Duet asks.
+   - NAM is the heaviest thing in the rack: a *standard* capture uses about a
+     fifth of each audio block on a recent PC. Watch **DSP** in the bottom bar; if
+     it gets near 70%, use the *lite* / *feather* version of a capture.
 
 Everything you set up is remembered for next time.
 
@@ -97,11 +116,12 @@ to it through lock-free queues and atomics.
 | `engine/src/dsp.rs` | The per-block audio work: effects, send, jitter buffer playout, loss concealment, mix |
 | `engine/src/audio.rs` | Sound card via cpal (ASIO / CoreAudio / WASAPI), on one COM-STA thread |
 | `engine/src/jitter.rs` | Jitter buffer: reorder, loss detection, burst-tolerant clock-drift trim |
-| `engine/src/fx.rs` | Pedalboard: compressor, overdrive, chorus, tremolo, delay, Freeverb |
+| `engine/src/fx.rs` | FX racks: compressor, overdrive, chorus, tremolo, delay, Freeverb, NAM amp (nam-rs) |
 | `engine/src/net.rs` | Packet format, connect codes, STUN |
 | `engine/src/signal.rs` | Reliable side channel for the video call setup |
 | `engine/src/lib.rs` | Network threads (receive, punching, ping) and the Python API |
 | `duet.py` | Window (pywebview) and the API the page calls |
+| `t3k.py` | TONE3000: OAuth/PKCE tone picker over a loopback redirect, model download, local library |
 | `ui/index.html` | The interface, incl. the WebRTC video call |
 | `.github/workflows/build.yml` | Builds, tests and smoke-tests the Mac app on every push |
 
