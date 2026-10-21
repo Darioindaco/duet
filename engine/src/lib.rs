@@ -11,6 +11,7 @@ mod fx;
 mod jitter;
 mod net;
 mod signal;
+mod vst;
 
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -430,6 +431,9 @@ impl Engine {
     fn rack_add(&self, target: &str, kind: &str, pos: Option<usize>) -> PyResult<usize> {
         let t = parse_target(target)?;
         let k = kind_index(kind).ok_or_else(|| PyValueError::new_err(format!("no effect {kind}")))?;
+        if k == fx::VST {
+            return Err(PyValueError::new_err("a VST slot needs a plugin: use rack_add_vst"));
+        }
         let mut c = self.inner.ctl.lock().unwrap();
         let rack = &mut mirror(&mut c, t).rack;
         if rack.len() >= MAX_SLOTS {
@@ -515,6 +519,20 @@ impl Engine {
             if let Some(m) = d.get_item("model")? {
                 cfg.model = m.extract::<Option<String>>()?;
             }
+            if let Some(v) = d.get_item("vst")? {
+                if let Ok(v) = v.downcast::<PyDict>() {
+                    let get = |k: &str| -> PyResult<Option<String>> {
+                        Ok(match v.get_item(k)? { Some(x) => x.extract::<Option<String>>()?, None => None })
+                    };
+                    cfg.vst = Some(fx::VstRef {
+                        path: get("path")?.unwrap_or_default(),
+                        cid: get("cid")?.unwrap_or_default(),
+                        name: get("name")?.unwrap_or_default(),
+                        state: get("state")?,
+                        ..Default::default()
+                    });
+                }
+            }
             cfgs.push(cfg);
         }
         self.load_rack(t, cfgs);
@@ -562,6 +580,68 @@ impl Engine {
         Ok(())
     }
 
+    // --- VST3 ----------------------------------------------------------------
+
+    /// The usual VST3 folders on this system.
+    #[staticmethod]
+    fn vst_dirs() -> Vec<String> {
+        vst::default_dirs().into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
+    }
+
+    /// Every .vst3 under these folders.
+    #[staticmethod]
+    fn vst_find(dirs: Vec<String>) -> Vec<String> {
+        let dirs: Vec<std::path::PathBuf> = dirs.into_iter().map(Into::into).collect();
+        vst::find_plugins(&dirs).into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
+    }
+
+    /// The effect classes inside one .vst3: [{"cid", "name", "vendor", "sub", "instrument"}].
+    #[staticmethod]
+    fn vst_scan<'py>(py: Python<'py>, path: String) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let classes = py.allow_threads(|| vst::scan(std::path::Path::new(&path))).map_err(PyRuntimeError::new_err)?;
+        classes.iter().map(|c| {
+            let d = PyDict::new(py);
+            d.set_item("cid", &c.cid)?;
+            d.set_item("name", &c.name)?;
+            d.set_item("vendor", &c.vendor)?;
+            d.set_item("sub", &c.sub)?;
+            d.set_item("instrument", c.is_instrument())?;
+            Ok(d)
+        }).collect()
+    }
+
+    /// Put a VST3 plugin into a rack. Loads and starts it (this can take a moment).
+    #[pyo3(signature = (target, path, cid, name, pos=None))]
+    fn rack_add_vst(&self, py: Python<'_>, target: &str, path: String, cid: String, name: String, pos: Option<usize>) -> PyResult<usize> {
+        let t = parse_target(target)?;
+        if mirror(&mut self.inner.ctl.lock().unwrap(), t).rack.len() >= MAX_SLOTS {
+            return Err(PyValueError::new_err(format!("a rack holds at most {MAX_SLOTS} effects")));
+        }
+        let mut cfg = SlotCfg::new(fx::VST);
+        cfg.vst = Some(fx::VstRef { path, cid, name, ..Default::default() });
+        let sr = self.samplerate();
+        let slot = py.allow_threads(|| Slot::new(cfg, sr)).map_err(PyRuntimeError::new_err)?;
+        let mut c = self.inner.ctl.lock().unwrap();
+        let rack = &mut mirror(&mut c, t).rack;
+        let pos = pos.unwrap_or(rack.len()).min(rack.len());
+        rack.insert(pos, slot.cfg.clone());
+        drop(c);
+        self.cmd(Cmd::RackInsert(t, pos, slot));
+        Ok(pos)
+    }
+
+    /// Show a VST slot's own editor window.
+    fn vst_open_editor(&self, py: Python<'_>, target: &str, pos: usize) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let (id, title) = {
+            let mut c = self.inner.ctl.lock().unwrap();
+            let s = mirror(&mut c, t).rack.get(pos).and_then(|s| s.vst.clone()).ok_or_else(|| PyValueError::new_err("not a VST slot"))?;
+            (s.id, format!("{} · Duet", s.name))
+        };
+        let inst = vst::instance(id).ok_or_else(|| PyRuntimeError::new_err("that plugin isn't running"))?;
+        py.allow_threads(|| inst.show_editor(title)).map_err(PyRuntimeError::new_err)
+    }
+
     /// Start/stop/change the metronome as the leader. Returns the epoch (our block
     /// number where beat 0 falls) to share with the partner.
     fn metro_lead(&self, on: bool, bpm: f32, beats: u32) -> i64 {
@@ -589,8 +669,39 @@ impl Engine {
         self.cmd(Cmd::JitterTarget(blocks.round().clamp(1.0, 64.0) as i64));
     }
 
-    /// The whole mixer as plain data, for the UI.
-    fn mixer<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    /// The whole mixer as plain data, for the UI. With states=True, plugin
+    /// states are read fresh first (for saving; asks every plugin, so not for
+    /// every repaint).
+    #[pyo3(signature = (states=false))]
+    fn mixer<'py>(&self, py: Python<'py>, states: bool) -> PyResult<Bound<'py, PyDict>> {
+        if states {
+            let ids: Vec<(Target, usize, u64)> = {
+                let mut c = self.inner.ctl.lock().unwrap();
+                let mut out = Vec::new();
+                for (side, n) in [(0, MAX_LOCAL), (1, MAX_REMOTE)] {
+                    for i in 0..n {
+                        let t = if side == 0 { Target::Local(i) } else { Target::Remote(i) };
+                        for (pos, s) in mirror(&mut c, t).rack.iter().enumerate() {
+                            if let Some(v) = &s.vst {
+                                out.push((t, pos, v.id));
+                            }
+                        }
+                    }
+                }
+                out
+            };
+            let fresh: Vec<(Target, usize, Option<String>)> = py.allow_threads(|| {
+                ids.into_iter()
+                    .map(|(t, pos, id)| (t, pos, vst::instance(id).and_then(|i| i.state()).map(|s| s.encode())))
+                    .collect()
+            });
+            let mut c = self.inner.ctl.lock().unwrap();
+            for (t, pos, st) in fresh {
+                if let (Some(st), Some(v)) = (st, mirror(&mut c, t).rack.get_mut(pos).and_then(|s| s.vst.as_mut())) {
+                    v.state = Some(st);
+                }
+            }
+        }
         let c = self.inner.ctl.lock().unwrap();
         let strip = |m: &StripMirror| -> PyResult<Bound<'py, PyDict>> {
             let d = PyDict::new(py);
@@ -616,6 +727,17 @@ impl Engine {
                     e.set_item("model_name", slot.info.as_ref().map(|i| i.name.clone()))?;
                     e.set_item("model_sr", slot.info.as_ref().map(|i| i.sample_rate))?;
                     e.set_item("includes_cab", slot.info.as_ref().and_then(|i| i.includes_cab))?;
+                    e.set_item("error", slot.error.clone())?;
+                }
+                if let Some(v) = &slot.vst {
+                    let d = PyDict::new(py);
+                    d.set_item("path", &v.path)?;
+                    d.set_item("cid", &v.cid)?;
+                    d.set_item("name", &v.name)?;
+                    d.set_item("state", v.state.clone())?;
+                    d.set_item("latency", v.latency)?;
+                    d.set_item("has_editor", v.has_editor)?;
+                    e.set_item("vst", d)?;
                     e.set_item("error", slot.error.clone())?;
                 }
                 Ok(e)

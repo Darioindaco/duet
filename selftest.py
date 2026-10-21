@@ -97,7 +97,12 @@ def test_signals():
 def test_effects_cpu():
     """Worst realistic load: 4 inputs, each with all six effects, monitored."""
     e = Engine()
-    kinds = [fx["name"] for fx in Engine.effects()]
+    kinds = [fx["name"] for fx in Engine.effects() if fx["name"] != "vst"]  # a VST slot needs a plugin
+    try:
+        e.rack_add("L0", "vst")
+        raise AssertionError("adding a VST slot without a plugin should be refused")
+    except ValueError:
+        pass
     for i in range(4):
         t = f"L{i}"
         e.strip_set(t, "active", 1)
@@ -461,6 +466,66 @@ def test_tone3000():
     print("tone3000: ok  (PKCE pick, token, models, download without leaking the token, library, loads)")
 
 
+def test_plugin_path():
+    """The vst3 crate's gain example (engine/examples/test_gain.rs), packaged as
+    a .vst3. Built with: cd engine && cargo build --release --example test_gain"""
+    import shutil
+    import tempfile
+    from pathlib import Path
+    ex = Path(__file__).resolve().parent / "engine" / "target" / "release" / "examples"
+    lib = next((p for p in (ex / "test_gain.dll", ex / "libtest_gain.dylib", ex / "libtest_gain.so") if p.exists()), None)
+    if lib is None:
+        return None
+    out = Path(tempfile.mkdtemp()) / "test_gain.vst3"
+    if lib.suffix == ".dll":
+        shutil.copy(lib, out)                       # a single-file .vst3 is fine on Windows
+    else:
+        (out / "Contents" / "MacOS").mkdir(parents=True)
+        shutil.copy(lib, out / "Contents" / "MacOS" / "test_gain")
+        (out / "Contents" / "Info.plist").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+            "<key>CFBundleExecutable</key><string>test_gain</string>"
+            "<key>CFBundleIdentifier</key><string>app.duet.testgain</string>"
+            "<key>CFBundlePackageType</key><string>BNDL</string></dict></plist>")
+    return str(out)
+
+
+def test_vst():
+    path = test_plugin_path()
+    if not path:
+        print("vst: skipped (build the test plugin: cd engine && cargo build --release --example test_gain)")
+        return
+    classes = Engine.vst_scan(path)
+    assert [c["name"] for c in classes] == ["Gain (vst3-rs example plugin)"], classes
+    e = Engine()
+    e.strip_set("L0", "mon", 1)
+    e.rack_add_vst("L0", path, classes[0]["cid"], classes[0]["name"])
+    slot = e.mixer()["local"][0]["rack"][0]
+    assert slot["kind"] == "vst" and slot["vst"]["name"].startswith("Gain"), slot
+    # stereo-only plugin on a mono strip: the host must fall back to stereo and
+    # fold back; at its default gain (1.0) out == in
+    dry = Engine()
+    dry.strip_set("L0", "mon", 1)
+    x = (0.3 * np.random.default_rng(3).standard_normal(N)).astype(np.float32).tolist()
+    for _ in range(5):
+        wet_out, dry_out = e.process(x), dry.process(x)
+    assert np.allclose(wet_out, dry_out, atol=1e-6), np.max(np.abs(np.subtract(wet_out, dry_out)))
+    # state survives save + restore into a fresh engine
+    snap = e.mixer(True)["local"][0]["rack"]
+    assert snap[0]["vst"]["state"], "no plugin state saved"
+    e2 = Engine()
+    e2.strip_set("L0", "mon", 1)
+    e2.rack_load("L0", snap)
+    assert np.allclose(e2.process(x), dry_out, atol=1e-6)
+    # removing it tears the instance down (off the audio thread)
+    e.rack_remove("L0", 0)
+    e.process(x)
+    assert e.mixer()["local"][0]["rack"] == []
+    for z in (e, e2, dry):
+        z.close()
+    print("vst: ok  (scan, load with stereo fallback, audio, state save/restore, teardown)")
+
+
 def test_stun():
     e = Engine()
     e.start()  # the receive thread picks up the STUN reply
@@ -479,6 +544,7 @@ if __name__ == "__main__":
     test_metronome()
     test_nam()
     test_tone3000()
+    test_vst()
     if "--compat" in sys.argv:   # needs git history
         test_old_build_compat()
     if "--stun" in sys.argv:

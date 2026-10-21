@@ -333,9 +333,12 @@ impl Dsp {
         if samplerate != self.samplerate {
             for strip in self.local.iter_mut().chain(self.remote.iter_mut()) {
                 for slot in strip.rack.slots.iter_mut() {
-                    // a model that can't be reloaded keeps its old instance
-                    if let Ok(fx) = crate::fx::make(&slot.cfg, samplerate as f32) {
-                        slot.fx = fx;
+                    // plugins re-setup in place (keeping their state); the rest
+                    // are rebuilt; a model that can't be reloaded keeps its old instance
+                    if !slot.fx.set_sample_rate(samplerate as f32) {
+                        if let Ok(fx) = crate::fx::make(&slot.cfg, samplerate as f32) {
+                            slot.fx = fx;
+                        }
                     }
                 }
             }
@@ -588,6 +591,7 @@ impl Dsp {
         }
         self.master_level = pk.max(self.master_level * 0.9);
 
+        crate::fx::TEMPO_BITS.store((self.metro.bpm as f64).to_bits(), Relaxed);
         // click track: local only, after the mix and after the master fader
         let timeline = if self.metro.leader {
             self.seq as i64

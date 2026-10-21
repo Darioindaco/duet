@@ -10,8 +10,9 @@
 
 use std::f32::consts::PI;
 
-pub const N_KINDS: usize = 7;
+pub const N_KINDS: usize = 8;
 pub const NAM: usize = 6;
+pub const VST: usize = 7;
 pub const MAX_PARAMS: usize = 3;
 pub const MAX_SLOTS: usize = 8;
 
@@ -30,7 +31,12 @@ pub const FX: [FxInfo; N_KINDS] = [
     FxInfo { name: "reverb", params: &["size", "damp", "mix"], defaults: [0.6, 0.4, 0.3] },
     // input/output: -12..+12 dB around the middle of the knob
     FxInfo { name: "nam", params: &["input", "output"], defaults: [0.5, 0.5, 0.0] },
+    // a VST3 plugin; its own controls live in its own window
+    FxInfo { name: "vst", params: &["mix"], defaults: [1.0, 0.0, 0.0] },
 ];
+
+/// Tempo for tempo-synced plugins: the metronome's, written by the audio thread.
+pub static TEMPO_BITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x4059000000000000); // 100.0
 
 pub fn kind_index(name: &str) -> Option<usize> {
     FX.iter().position(|f| f.name == name)
@@ -83,11 +89,26 @@ pub struct SlotCfg {
     pub info: Option<ModelInfo>,
     /// why the model couldn't be loaded, if it couldn't
     pub error: Option<String>,
+    /// VST only: which plugin, and its saved state
+    pub vst: Option<VstRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct VstRef {
+    pub path: String,
+    pub cid: String,
+    pub name: String,
+    /// encoded plugin state (see vst::State); refreshed when the mixer is saved
+    pub state: Option<String>,
+    /// filled in once built
+    pub id: u64,
+    pub latency: u32,
+    pub has_editor: bool,
 }
 
 impl SlotCfg {
     pub fn new(kind: usize) -> Self {
-        SlotCfg { kind, on: true, p: FX[kind].defaults, model: None, info: None, error: None }
+        SlotCfg { kind, on: true, p: FX[kind].defaults, model: None, info: None, error: None, vst: None }
     }
 }
 
@@ -109,6 +130,27 @@ pub fn preset_slots(name: &str) -> Option<Vec<SlotCfg>> {
 pub trait Effect: Send {
     fn process(&mut self, p: &[f32; MAX_PARAMS], buf: &mut [f32]);
     fn reset(&mut self) {}
+    /// Effects that can follow a sample-rate change in place (keeping their
+    /// state) say so; the rest are rebuilt.
+    fn set_sample_rate(&mut self, _sr: f32) -> bool {
+        false
+    }
+}
+
+/// A VST3 plugin in a rack slot.
+pub struct VstEffect {
+    pub proc: crate::vst::VstProc,
+}
+
+impl Effect for VstEffect {
+    fn process(&mut self, p: &[f32; MAX_PARAMS], buf: &mut [f32]) {
+        let tempo = f64::from_bits(TEMPO_BITS.load(std::sync::atomic::Ordering::Relaxed));
+        self.proc.process(buf, p[0], tempo);
+    }
+    fn set_sample_rate(&mut self, sr: f32) -> bool {
+        self.proc.set_sample_rate(sr as f64);
+        true
+    }
 }
 
 /// Build an effect. Allocates (and for NAM reads + parses the model file), so
@@ -121,10 +163,15 @@ pub fn make(cfg: &SlotCfg, sr: f32) -> Result<Box<dyn Effect>, String> {
         3 => Box::new(Tremolo { phase: 0.0, sr }),
         4 => Box::new(Delay::new(sr)),
         5 => Box::new(Reverb::new(sr)),
-        _ => Box::new(match &cfg.model {
+        NAM => Box::new(match &cfg.model {
             Some(path) => NamAmp::load(path, sr)?.0,
             None => NamAmp::empty(sr),
         }),
+        _ => {
+            let v = cfg.vst.as_ref().ok_or("no plugin chosen")?;
+            let state = v.state.as_deref().and_then(crate::vst::State::decode);
+            Box::new(VstEffect { proc: crate::vst::VstProc::create(&v.path, &v.cid, state, sr as f64)? })
+        }
     })
 }
 
@@ -143,6 +190,20 @@ impl Slot {
                 cfg.info = Some(info);
                 return Ok(Box::new(Slot { cfg, fx: Box::new(amp) }));
             }
+        }
+        if cfg.kind == VST {
+            let v = cfg.vst.clone().ok_or("no plugin chosen")?;
+            let state = v.state.as_deref().and_then(crate::vst::State::decode);
+            let proc = crate::vst::VstProc::create(&v.path, &v.cid, state, sr as f64)?;
+            let inst = proc.instance();
+            cfg.vst = Some(VstRef {
+                name: if inst.name.is_empty() { v.name } else { inst.name.clone() },
+                id: proc.id,
+                latency: inst.latency,
+                has_editor: inst.has_editor,
+                ..v
+            });
+            return Ok(Box::new(Slot { cfg, fx: Box::new(VstEffect { proc }) }));
         }
         let fx = make(&cfg, sr)?;
         Ok(Box::new(Slot { cfg, fx }))
@@ -518,7 +579,7 @@ mod tests {
 
     #[test]
     fn every_effect_is_finite_bounded_and_audible() {
-        for kind in 0..NAM {
+        for kind in 0..NAM {  // NAM and VST need a file; tested on their own
             for block in [64usize, 128, 512] {
                 let mut r = rack_of(&[SlotCfg::new(kind)]);
                 let mut x = noise(96000);

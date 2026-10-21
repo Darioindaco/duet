@@ -15,12 +15,29 @@ cpal = "0.15"
 rtrb = "0.3"
 rand = "0.8"
 nam-rs = "0.4"
+vst3 = "0.3"
+libloading = "0.8"
+base64 = "0.22"
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 cpal = { version = "0.15", features = ["asio"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSResponder", "NSGraphics", "NSRunningApplication", "NSApplication"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSThread"] }
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 panic = "unwind"   # a panic in the audio thread must not take Python down with it
+
+[[example]]
+name = "test_gain"
+crate-type = ["cdylib"]
+

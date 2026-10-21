@@ -190,7 +190,7 @@ input[type=text] { font-family: var(--mono); letter-spacing: 0.04em; user-select
 .chip.on { color: var(--text); border-color: var(--me); background: color-mix(in srgb, var(--me) 14%, var(--bg)); }
 .rack-card { display: flex; flex-direction: column; min-height: 0; }
 .rack-head .who { color: var(--c, var(--me)); text-transform: none; letter-spacing: 0; font-size: 13px; }
-.rack { display: flex; gap: 14px; overflow-x: auto; overflow-y: auto; padding: 2px 2px 10px; align-items: flex-start; min-height: 0; flex: 1; }
+.rack { display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; padding: 2px 2px 10px; align-items: flex-start; min-height: 0; flex: 1; }
 .rack .pedal { width: 214px; flex: none; }
 .pedal .tools { display: flex; gap: 2px; margin-left: auto; opacity: 0.55; transition: opacity 0.15s; }
 .pedal:hover .tools { opacity: 1; }
@@ -346,6 +346,21 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 .mitem b { display: block; }
 .mitem span { color: var(--muted); font-size: 12px; }
 
+/* ---------- VST ---------- */
+.rack .pedal.vstp { width: 240px; }
+.pedal .ttl { min-width: 0; }
+.pedal.vstp .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+.openwin { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid rgba(255,255,255,0.14); background: rgba(0,0,0,0.28); border-radius: 10px; padding: 12px 8px; font-weight: 700; font-size: 12.5px; cursor: pointer; }
+.openwin:hover:not(:disabled) { background: rgba(0,0,0,0.45); }
+.openwin:disabled { opacity: 0.45; cursor: default; }
+.mbox.wide { width: min(620px, calc(100vw - 32px)); }
+.vlist { margin-top: 10px; max-height: min(52vh, 460px); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.vitem { text-align: left; border: 1px solid var(--line); background: var(--bg); border-radius: 9px; padding: 8px 12px; cursor: pointer; }
+.vitem:hover { border-color: #9fb4ff; }
+.vitem b { display: block; font-size: 13.5px; }
+.vitem span { color: var(--muted); font-size: 11.5px; }
+.spinner.sm { width: 12px; height: 12px; border-width: 2px; display: inline-block; vertical-align: -2px; margin-right: 6px; }
+
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%) translateY(20px); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 16px; opacity: 0; transition: 0.25s; pointer-events: none; max-width: 560px; font-size: 13px; }
 .toast.show { opacity: 1; transform: translateX(-50%); }
 .toast.bad { border-color: var(--bad); }
@@ -475,6 +490,16 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
     <video id="localV" autoplay playsinline muted hidden></video>
   </div>
 </div>
+<div class="modal" id="vstm" hidden>
+  <div class="mbox wide" role="dialog" aria-modal="true" aria-labelledby="vstTitle">
+    <div class="mhead"><b id="vstTitle">Add a VST3 plugin</b><span id="vstStatus"></span><button class="x" id="vstX" aria-label="Close">✕</button></div>
+    <div class="mbody">
+      <div class="row"><input type="text" id="vstQ" placeholder="Search by name, maker or type" spellcheck="false" autocomplete="off"><button class="btn" id="vstRescan" title="Read every plugin again">Rescan</button></div>
+      <div class="vlist" id="vstList"></div>
+      <p class="fine">Effects from your VST3 folder. Plugins run inside Duet with no extra delay; their own controls open in a separate window.</p>
+    </div>
+  </div>
+</div>
 <div class="modal" id="t3k" hidden>
   <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="t3kTitle">
     <div class="mhead"><b id="t3kTitle">TONE3000</b><span>neural amp models</span><button class="x" id="t3kX" aria-label="Close">✕</button></div>
@@ -506,6 +531,7 @@ const FX = [
     ["size", "Size", pct], ["damp", "Damp", pct], ["mix", "Mix", pct]] },
   { id: "nam", name: "NAM Amp", sub: "neural amp model", color: "#e7dccb", knobs: [
     ["input", "Input", (v) => fmtTrim(v)], ["output", "Output", (v) => fmtTrim(v)]] },
+  { id: "vst", name: "VST3", sub: "plugin", color: "#9fb4ff", knobs: [["mix", "Mix", pct]] },
 ];
 function fmtTrim(v) { const db = -12 + 24 * v; return (db > 0.05 ? "+" : "") + db.toFixed(1) + " dB"; }
 const FX_DEFAULTS = {
@@ -513,6 +539,7 @@ const FX_DEFAULTS = {
   chorus: { rate: 0.3, depth: 0.5, mix: 0.5 }, tremolo: { rate: 0.4, depth: 0.6 },
   delay: { time: 0.35, feedback: 0.4, mix: 0.35 }, reverb: { size: 0.6, damp: 0.4, mix: 0.3 },
   nam: { input: 0.5, output: 0.5 },
+  vst: { mix: 1 },
 };
 
 // ---------- persistence (per machine, best effort) ----------
@@ -822,9 +849,12 @@ function inputCount() {
 }
 
 function saveMixer() {
+  // saved by Python to a file, plugin states included (they can change inside
+  // a plugin's own window without Duet hearing about it, see the autosave too)
   clearTimeout(saveMixer.t);
-  saveMixer.t = setTimeout(async () => { store.set("mixer", await api.mixer()); store.set("names", ui.names); sendNames(); }, 300);
+  saveMixer.t = setTimeout(async () => { store.set("names", ui.names); await api.save_mixer(ui.names); sendNames(); }, 300);
 }
+setInterval(() => ui.mixer && JSON.stringify(ui.mixer).includes('"vst"') && api.save_mixer(ui.names), 20000);
 
 // what the partner should call our channels: the sending strips, in order
 function sendNames() {
@@ -832,7 +862,7 @@ function sendNames() {
   const sent = ui.mixer.local.map((s, i) => [s, i]).filter(([s]) => s.active && s.send);
   const names = sent.map(([, i]) => stripName("L" + i));
   // the effects each sent channel already carries, so the partner can see them
-  const fx = sent.map(([s]) => s.rack.filter((x) => x.on).map((x) => (x.kind === "nam" && x.model_name) || FXMETA[x.kind].name));
+  const fx = sent.map(([s]) => s.rack.filter((x) => x.on).map((x) => (x.kind === "nam" && x.model_name) || (x.kind === "vst" && x.vst?.name) || FXMETA[x.kind].name));
   const msg = JSON.stringify({ app: "names", names, fx });
   if (msg === sendNames.last && Date.now() - sendNames.at < 5000) return;
   sendNames.last = msg; sendNames.at = Date.now();
@@ -934,7 +964,8 @@ function stripEl(t) {
     const shown = cfg.rack.slice(0, 2);
     for (const s of shown) {
       const meta = FXMETA[s.kind];
-      fl.insertAdjacentHTML("beforeend", `<div class="fx${s.on ? "" : " off"}" style="--fxc:${meta.color}" title="${esc(s.model_name || meta.name)}"><i></i>${esc(s.kind === "nam" && s.model_name ? s.model_name : meta.name)}</div>`);
+      const label = s.kind === "nam" && s.model_name ? s.model_name : s.kind === "vst" ? (s.vst?.name || "Plugin") : meta.name;
+      fl.insertAdjacentHTML("beforeend", `<div class="fx${s.on ? "" : " off"}" style="--fxc:${meta.color}" title="${esc(label)}"><i></i>${esc(label)}</div>`);
     }
     if (cfg.rack.length > 2) fl.insertAdjacentHTML("beforeend", `<div class="none">+${cfg.rack.length - 2} more</div>`);
     if (!cfg.rack.length) fl.insertAdjacentHTML("beforeend", `<div class="none">no effects</div>`);
@@ -1077,6 +1108,60 @@ async function loadModel(t, pos, path) {
   await rackChanged(res);
 }
 
+// ---------- VST3 browser ----------
+async function openVstBrowser() {
+  $("vstm").hidden = false;
+  $("vstQ").value = "";
+  $("vstQ").focus();
+  const res = await api.vst_plugins();
+  ui.vstList = res.plugins; ui.vstRes = res;
+  vstRender(res);
+  // new or updated plugins since the last scan get picked up in the background
+  if (!res.status.scanning) { await api.vst_scan(false); }
+  vstPoll();
+}
+
+async function vstPoll() {
+  clearTimeout(vstPoll.t);
+  if ($("vstm").hidden) return;
+  const res = await api.vst_plugins();
+  ui.vstRes = res;
+  if (res.plugins.length !== (ui.vstList || []).length || res.status.scanning !== vstPoll.was) { ui.vstList = res.plugins; vstRender(res); }
+  else vstStatus(res);
+  vstPoll.was = res.status.scanning;
+  if (res.status.scanning) vstPoll.t = setTimeout(vstPoll, 500);
+}
+
+function vstStatus(res) {
+  const s = res.status;
+  $("vstStatus").innerHTML = s.scanning
+    ? `<span class="spinner sm"></span>Scanning plugins… ${s.done}/${s.total}`
+    : `${res.plugins.length} effects` + (res.failed.length ? ` · <span title="${esc(res.failed.map((f) => f.path.split(/[\\/]/).pop() + ": " + f.error).join("\n"))}">${res.failed.length} couldn't be read</span>` : "");
+}
+
+function vstRender(res) {
+  vstStatus(res);
+  const q = $("vstQ").value.trim().toLowerCase();
+  const list = (ui.vstList || []).filter((p) => !q || (p.name + " " + p.vendor + " " + p.sub).toLowerCase().includes(q));
+  const box = $("vstList");
+  if (!list.length) {
+    box.innerHTML = `<div class="empty-rack">${(ui.vstList || []).length ? "Nothing matches that." : res.status.scanning ? "Looking for your plugins…" : "No VST3 effects found in the usual folders."}</div>`;
+    return;
+  }
+  box.innerHTML = list.slice(0, 300).map((p, i) => `<button class="vitem" data-i="${i}"><b>${esc(p.name)}</b><span>${esc(p.vendor)}${p.sub ? " · " + esc(p.sub.replace(/\|/g, ", ")) : ""}</span></button>`).join("");
+  box.onclick = async (e) => {
+    const item = e.target.closest(".vitem");
+    if (!item) return;
+    const p = list[+item.dataset.i];
+    box.innerHTML = `<div class="mwait"><span class="spinner"></span>Loading ${esc(p.name)}… (some plugins take a while)</div>`;
+    const res2 = await api.vst_add(ui.sel, p.path, p.cid, p.name);
+    $("vstm").hidden = true;
+    if (res2 && res2.error) { toast(`Couldn't load ${p.name}: ${res2.error}`, true); return; }
+    await rackChanged(res2);
+    $("rack").scrollLeft = $("rack").scrollWidth;
+  };
+}
+
 // ---------- TONE3000 picker ----------
 async function startT3K(t, pos) {
   ui.t3k = { t, pos };
@@ -1164,8 +1249,11 @@ function renderRack() {
     p.className = "pedal" + (slot.on ? "" : " off") + (slot.kind === "nam" ? " nam" : "");
     p.style.setProperty("--c", meta.color);
     const sub = slot.kind === "nam" && slot.model_name
-      ? (slot.includes_cab === true ? "amp + cab" : slot.includes_cab === false ? "amp only, no cab" : meta.sub) : meta.sub;
-    p.innerHTML = `<div class="top"><div><div class="name">${meta.name}</div><div class="sub">${esc(sub)}</div></div>
+      ? (slot.includes_cab === true ? "amp + cab" : slot.includes_cab === false ? "amp only, no cab" : meta.sub)
+      : slot.kind === "vst" ? "VST3" + (slot.vst?.latency ? ` · ${(slot.vst.latency / ui.rate * 1000).toFixed(1)} ms latency` : "") : meta.sub;
+    const title = slot.kind === "vst" ? (slot.vst?.name || "Plugin") : meta.name;
+    if (slot.kind === "vst") p.classList.add("vstp");
+    p.innerHTML = `<div class="top"><div class="ttl"><div class="name" title="${esc(title)}">${esc(title)}</div><div class="sub">${esc(sub)}</div></div>
       <div class="tools"><button class="l" title="Move left" aria-label="Move left">◀</button><button class="r" title="Move right" aria-label="Move right">▶</button><button class="del" title="Remove" aria-label="Remove">✕</button></div>
       <span class="led"></span></div><div class="knobs"></div>`;
     const knobs = p.querySelector(".knobs");
@@ -1175,6 +1263,22 @@ function renderRack() {
       row.className = "namrow";
       knobs.replaceWith(row);
       row.append(namSection(t, pos, slot), knobs);
+    }
+    if (slot.kind === "vst") {
+      const row = document.createElement("div");
+      row.className = "namrow";
+      knobs.replaceWith(row);
+      const open = document.createElement("button");
+      open.className = "openwin";
+      open.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/></svg>Open window`;
+      open.title = slot.vst?.has_editor ? "Show the plugin's own controls" : "This plugin has no window of its own";
+      open.disabled = !slot.vst?.has_editor;
+      open.onclick = async () => {
+        const res = await api.vst_open(t, pos);
+        if (res && res.error) toast(res.error, true);
+      };
+      row.append(open, knobs);
+      if (slot.error) row.insertAdjacentHTML("beforebegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
     }
     for (const [key, label, fmt] of meta.knobs) {
       knobs.append(knob({ label, value: slot[key], def: FX_DEFAULTS[slot.kind][key], fmt, color: meta.color,
@@ -1194,11 +1298,13 @@ function renderRack() {
 function buildRackControls() {
   const add = $("addFx");
   add.append(new Option("+ Add effect", ""));
-  for (const f of FX) add.append(new Option(f.name, f.id));
+  for (const f of FX) if (f.id !== "vst") add.append(new Option(f.name, f.id));
+  add.append(new Option("VST3 plugin…", "vst"));
   add.onchange = async () => {
     const kind = add.value;
     add.value = "";
     if (!kind) return;
+    if (kind === "vst") { openVstBrowser(); return; }
     if (stripCfg(ui.sel).rack.length >= 8) { toast("A channel holds up to 8 effects."); return; }
     await rackChanged(await api.rack_add(ui.sel, kind));
     $("rack").scrollLeft = $("rack").scrollWidth;
@@ -1338,13 +1444,25 @@ async function boot(a) {
   buildMetronome();
   buildRackControls();
   vSetup();
-  // restore last session's mixer (strips, racks, faders) and channel names
-  const saved = store.get("mixer", null);
-  if (saved) { try { await api.load_mixer(saved); } catch (e) { console.warn("old mixer settings ignored", e); } }
+  // restore last session's mixer (strips, racks incl. plugins, faders) and names;
+  // older versions kept it in browser storage
+  const file = await api.saved_mixer();
+  const saved = (file && file.mixer) || store.get("mixer", null);
+  if (file && file.names) ui.names = { ...file.names, ...ui.names };
+  if (saved) {
+    const hasVst = JSON.stringify(saved).includes('"vst"');
+    if (hasVst) toast("Loading your plugins…");
+    try { await api.load_mixer(saved); } catch (e) { console.warn("old mixer settings ignored", e); }
+  }
   ui.mixer = await api.mixer();
   await refreshLibrary();
   renderStrips();
   renderRack();
+  $("vstX").onclick = () => ($("vstm").hidden = true);
+  $("vstm").onclick = (e) => e.target === $("vstm") && ($("vstm").hidden = true);
+  $("vstQ").oninput = () => ui.vstRes && vstRender(ui.vstRes);
+  $("vstRescan").onclick = async () => { await api.vst_scan(true); vstPoll(); };
+  document.addEventListener("keydown", (e) => e.key === "Escape" && ($("vstm").hidden = true));
   $("t3kX").onclick = t3kClose;
   $("t3k").onclick = (e) => e.target === $("t3k") && t3kClose();
   document.addEventListener("keydown", (e) => e.key === "Escape" && !$("t3k").hidden && t3kClose());

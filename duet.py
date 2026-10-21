@@ -25,6 +25,7 @@ import webview
 
 from duet_engine import Engine
 from t3k import Tone3000
+from vstlib import VstLibrary, scan_main
 
 
 def resource(path: str) -> Path:
@@ -43,6 +44,8 @@ class Api:
         self._audio = False
         self._window = None  # set once the window exists (for file dialogs)
         self._t3k = Tone3000(data_dir() / "models", lambda: load_settings().get("t3k_key"))
+        self._vst = VstLibrary(data_dir() / "vst_cache.json")
+        self._names = {}
         threading.Thread(target=self._discover, daemon=True).start()
 
     def _discover(self):
@@ -232,6 +235,51 @@ class Api:
         except Exception as exc:
             return {"error": str(exc)}
 
+    # --- VST3 plugins --------------------------------------------------------
+
+    def vst_scan(self, force=False):
+        return self._vst.scan(bool(force))
+
+    def vst_status(self):
+        return self._vst.status
+
+    def vst_plugins(self):
+        return {"plugins": self._vst.plugins(), "failed": self._vst.failed(), "status": self._vst.status}
+
+    def vst_add(self, target, path, cid, name):
+        """Load a plugin into a rack. Returns the mixer, or {"error": ...}."""
+        try:
+            self._engine.rack_add_vst(target, path, cid, name)
+        except Exception as exc:
+            return {"error": str(exc)}
+        return self._engine.mixer()
+
+    def vst_open(self, target, pos):
+        try:
+            self._engine.vst_open_editor(target, int(pos))
+            return {"ok": True}
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    # --- mixer persistence: a file, so plugin settings changed in their own
+    #     windows are saved too (on every change and when Duet closes)
+
+    def save_mixer(self, names=None):
+        if names is not None:
+            self._names = names
+        snap = {"mixer": self._engine.mixer(True), "names": self._names}
+        try:
+            (data_dir() / "mixer.json").write_text(json.dumps(snap), encoding="utf-8")
+        except OSError:
+            pass
+        return True
+
+    def saved_mixer(self):
+        try:
+            return json.loads((data_dir() / "mixer.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
     def open_url(self, url):
         if str(url).startswith("https://"):
             webbrowser.open(url)
@@ -242,10 +290,16 @@ class Api:
         self._engine.send_signal(text)
 
     def shutdown(self):
+        self.save_mixer()  # plugin windows may have changed settings since the last save
         self._engine.close()
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--vst-scan":
+        scan_main(sys.argv[2])  # child process of the plugin scanner; exits
+    if sys.platform == "darwin":
+        # plugin windows must live on the main thread, which pywebview runs
+        os.environ["DUET_VST_MAIN_THREAD"] = "1"
     ap = argparse.ArgumentParser(description="Duet: peer-to-peer jamming")
     ap.add_argument("--port", type=int, default=0, help="fixed UDP port (default: the one from last time)")
     ap.add_argument("--debug", action="store_true", help="open the webview dev tools")
