@@ -295,8 +295,8 @@ class Api:
 
 
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == "--vst-scan":
-        scan_main(sys.argv[2])  # child process of the plugin scanner; exits
+    if len(sys.argv) == 4 and sys.argv[1] == "--vst-scan":
+        scan_main(sys.argv[2], sys.argv[3])  # child process of the plugin scanner; exits
     if sys.platform == "darwin":
         # plugin windows must live on the main thread, which pywebview runs
         os.environ["DUET_VST_MAIN_THREAD"] = "1"

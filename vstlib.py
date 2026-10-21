@@ -12,7 +12,9 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -21,10 +23,10 @@ from duet_engine import Engine
 SCAN_TIMEOUT = 30
 
 
-def scan_command(path: str) -> list:
+def scan_command(path: str, out: str) -> list:
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--vst-scan", path]
-    return [sys.executable, str(Path(__file__).with_name("duet.py")), "--vst-scan", path]
+        return [sys.executable, "--vst-scan", path, out]
+    return [sys.executable, str(Path(__file__).with_name("duet.py")), "--vst-scan", path, out]
 
 
 def kill_tree(p: subprocess.Popen):
@@ -42,43 +44,52 @@ def scan_one(path: str, timeout: float = SCAN_TIMEOUT) -> dict:
     """In a child process: {"classes": [...]} or {"error": "..."}. Takes the
     answer as soon as it's printed and kills the child: some plugins hang in
     their own shutdown code (seen with Native Instruments' Qt-based ones)."""
+    # The answer comes back through a file: the packaged app is a windowed
+    # program, and those have no stdout to print to.
+    fd, out = tempfile.mkstemp(prefix="duet_scan_", suffix=".json")
+    os.close(fd)
     try:
-        p = subprocess.Popen(scan_command(path), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        p = subprocess.Popen(scan_command(path, out), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except Exception as exc:  # noqa: BLE001 - reported per plugin
+        os.unlink(out)
         return {"error": str(exc)}
-    result = {}
-
-    def read():
-        for line in p.stdout:
-            if line.startswith("{"):
-                result["line"] = line
-                return
-    reader = threading.Thread(target=read, daemon=True)
-    reader.start()
-    reader.join(timeout)
-    if p.poll() is None:
-        kill_tree(p)
-    if "line" not in result:
-        return {"error": "took too long to load (license dialog?)" if reader.is_alive() else f"scanner crashed ({p.poll()})"}
+    deadline = time.monotonic() + timeout
+    text = ""
     try:
-        return json.loads(result["line"])
+        while time.monotonic() < deadline:
+            text = Path(out).read_text(encoding="utf-8")
+            if text.endswith("\n") or (p.poll() is not None and not text):
+                break
+            time.sleep(0.05)
+        if p.poll() is None:
+            kill_tree(p)
+        if not text.endswith("\n"):
+            return {"error": "took too long to load (license dialog?)" if p.returncode is None or time.monotonic() >= deadline
+                    else f"scanner crashed ({p.returncode})"}
+        return json.loads(text)
     except ValueError:
         return {"error": "scanner said something odd"}
+    finally:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
 
 
-def scan_main(path: str):
+def scan_main(path: str, out: str):
     """Entry point of the child process."""
     try:
-        print(json.dumps({"classes": Engine.vst_scan(path)}))
+        res = {"classes": Engine.vst_scan(path)}
     except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"error": str(exc)}))
-    sys.stdout.flush()
+        res = {"error": str(exc)}
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(json.dumps(res) + "\n")   # the newline marks "complete"
     # Leave without running anyone's shutdown code: os._exit still runs every
     # DLL's detach routine on Windows, and some plugins hang in theirs.
+    # (os.kill on our own pid is TerminateProcess on Windows: no detach code runs)
     if sys.platform == "win32":
-        import ctypes
-        ctypes.windll.kernel32.TerminateProcess(ctypes.windll.kernel32.GetCurrentProcess(), 0)
+        os.kill(os.getpid(), 9)
     os._exit(0)
 
 

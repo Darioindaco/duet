@@ -64,7 +64,23 @@ has two tabs:
      fifth of each audio block on a recent PC. Watch **DSP** in the bottom bar; if
      it gets near 70%, use the *lite* / *feather* version of a capture.
 
-Everything you set up is remembered for next time.
+6. **VST3 plugins:** *+ Add effect → VST3 plugin…* lists the effects in your
+   VST3 folder (search by name, maker or type). *Open window* shows the plugin's
+   own controls; *Mix* blends dry/wet. Plugins run inside Duet with no extra
+   delay. Instruments aren't listed (racks have no MIDI). The first scan takes
+   about half a minute; after that it's instant. A plugin that hangs or shows a
+   license dialog while being scanned is skipped, not fatal.
+7. **Metronome** (next to *Mixer*): on/off, tempo (type it, −/+, or *Tap*) and
+   beats per bar are shared with your partner; the click volume is just yours
+   and the click is never sent. Whoever starts it or changes the tempo leads;
+   the other one's click is lined up with the leader's playing *as it arrives*,
+   so you play along to what you hear. Tempo-synced plugins follow it too.
+
+Effects on your partner's own strips are part of what they send: you hear them
+without doing anything, and their strip shows which ones ("theirs: …").
+Effects you add on their strip only change your own mix.
+
+Everything you set up is remembered for next time, plugin settings included.
 
 **Video:** press *Camera* (top right) to turn yours on; your partner's shows up
 when they do the same. Drag the video panel by its title bar; the arrows button
