@@ -220,6 +220,77 @@ def test_old_build_compat():
     print("old build compat: ok  (new -> old as a mono mix, old -> new as one channel)")
 
 
+def test_partner_fx():
+    """Effects on the partner's own strip are part of what they send: B hears A's
+    delay without having any effects itself."""
+    a, b, _ = connect_pair()
+    a.rack_add("L0", "delay")
+    a.rack_set("L0", 0, "time", 0.0)       # 60 ms = 2880 samples = 22.5 blocks
+    a.rack_set("L0", 0, "feedback", 0.0)
+    a.rack_set("L0", 0, "mix", 1.0)
+    assert b.mixer()["remote"][0]["rack"] == []
+    base = b.state()["packets_in"]
+    hits = []
+    for k in range(60):
+        x = [0.0] * N
+        if k == 5:
+            x[0] = 0.9
+        a.process(x)
+        wait_packets(b, base + k + 1)
+        out = b.process([0.0] * N)
+        for i, v in enumerate(out):
+            if abs(v) > 0.1:
+                hits.append(k * N + i)
+    a.close()
+    b.close()
+    # the note, then its echo 2880 samples later (the delay smooths it over 2 samples)
+    assert hits and any(abs(h - hits[0] - 2880) <= 2 for h in hits), hits[:6]
+    print("partner fx: ok  (her delay is in what you hear, with nothing on your side)")
+
+
+def test_metronome():
+    """Leader A plays exactly on its beats; follower B's click must land on A's
+    playing as it arrives at B (not on A's clock), every beat."""
+    a, b, _ = connect_pair()
+    bpm = 150.0                      # 19200 samples per beat = exactly 150 blocks of 128
+    epoch = a.metro_lead(True, bpm, 4)
+    b.metro_follow(True, bpm, 4, epoch)
+    b.metro_volume(0.0)              # B's output = only A's audio; its beats show in state()
+    a_clicks, heard, b_beats = [], [], []
+    base = b.state()["packets_in"]
+    last_beat_b = b.state()["metro_beat"]
+    seq0 = a.state()  # noqa: F841  (keeps the shapes symmetric for readability)
+    for k in range(700):
+        a_seq = epoch - 2 + k        # metro_lead put beat 0 two blocks ahead
+        x = [0.0] * N
+        if a_seq >= epoch and (a_seq - epoch) % 150 == 0:
+            x[0] = 0.9               # A plays on its beat
+        a_out = a.process(x)
+        loud = max(abs(v) for v in a_out) > 0.05
+        if loud and not (a_clicks and a_clicks[-1][1] == k - 1):
+            a_clicks.append((k, k))      # a click starts (it rings for ~13 blocks)
+        elif loud:
+            a_clicks[-1] = (a_clicks[-1][0], k)
+        wait_packets(b, base + k + 1)
+        out = b.process([0.0] * N)
+        if out[0] > 0.3:
+            heard.append(k)
+        beat = b.state()["metro_beat"]
+        if beat != last_beat_b:
+            b_beats.append(k)
+            last_beat_b = beat
+    synced = b.state()["metro_synced"]
+    a.close()
+    b.close()
+    assert synced, "follower never locked to the leader"
+    assert len(heard) >= 4, heard
+    # each beat B clicks on is the block where A's on-the-beat note arrives
+    assert heard == b_beats[-len(heard):], (heard, b_beats)
+    onsets = [s for s, _ in a_clicks]
+    assert onsets[:4] == [2, 152, 302, 452], onsets[:5]   # the leader hears its own click on time
+    print(f"metronome: ok  (follower's click lands on the leader's playing as heard: blocks {heard[:4]}…)")
+
+
 def standard_nam_file(path):
     """A NAM file with the exact shape of a "standard" capture (2-array WaveNet,
     16/8 channels, 10 dilations each = 13,802 weights). Random weights, so it
@@ -404,6 +475,8 @@ if __name__ == "__main__":
     test_two_engines()
     test_signals()
     test_mixer()
+    test_partner_fx()
+    test_metronome()
     test_nam()
     test_tone3000()
     if "--compat" in sys.argv:   # needs git history

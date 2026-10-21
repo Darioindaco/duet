@@ -562,6 +562,24 @@ impl Engine {
         Ok(())
     }
 
+    /// Start/stop/change the metronome as the leader. Returns the epoch (our block
+    /// number where beat 0 falls) to share with the partner.
+    fn metro_lead(&self, on: bool, bpm: f32, beats: u32) -> i64 {
+        // a couple of blocks ahead so beat 0 isn't already half gone when it lands
+        let epoch = self.inner.shared.seq.load(Relaxed) as i64 + 2;
+        self.cmd(Cmd::Metro { on, bpm, beats, leader: true, epoch });
+        epoch
+    }
+
+    /// Follow the partner's metronome (epoch on their timeline).
+    fn metro_follow(&self, on: bool, bpm: f32, beats: u32, epoch: i64) {
+        self.cmd(Cmd::Metro { on, bpm, beats, leader: false, epoch });
+    }
+
+    fn metro_volume(&self, volume: f32) {
+        self.cmd(Cmd::MetroVolume(volume));
+    }
+
     fn set_master(&self, value: f64) {
         self.inner.ctl.lock().unwrap().master = value as f32;
         self.cmd(Cmd::Master(value as f32));
@@ -700,6 +718,8 @@ impl Engine {
         d.set_item("lat_out_ms", s.lat_out_us.load(Relaxed) as f64 / 1000.0)?;
         d.set_item("cpu_us", s.cpu_ns.load(Relaxed) as f64 / 1000.0)?;
         d.set_item("raw_in_peak", s.raw_in_peak.get())?;
+        d.set_item("metro_beat", s.metro_beat.load(Relaxed) as i64 - 1)?;
+        d.set_item("metro_synced", s.metro_synced.load(Relaxed))?;
         d.set_item("in_callbacks", s.in_callbacks.load(Relaxed))?;
         d.set_item("ring_empty", s.ring_empty.load(Relaxed))?;
         for (k, v) in [

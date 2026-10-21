@@ -128,8 +128,9 @@ impl JitterBuffer {
     }
 
     /// Next block into `out` (channel-major, stride MAX_FRAME, `n` samples per
-    /// channel). Returns the channel count, or None when there's nothing to play.
-    pub fn pop(&mut self, out: &mut [f32], n: usize) -> Option<usize> {
+    /// channel). Returns (channel count, the block's sequence number), or None when
+    /// there's nothing to play.
+    pub fn pop(&mut self, out: &mut [f32], n: usize) -> Option<(usize, i64)> {
         if !self.started {
             let first = self.min_seq()?;
             if self.highest - first + 1 < self.target {
@@ -184,7 +185,7 @@ impl JitterBuffer {
             }
             self.next = Some(next + 1);
             self.starved = 0;
-            return Some(slot.channels);
+            return Some((slot.channels, next));
         }
         if self.highest > next {
             // later frames are here, so this one is lost: move on
@@ -277,14 +278,14 @@ mod tests {
         jb.push(0, 4, 2, 2, n, &b);
         jb.push(0, 4, 0, 2, n, &a);
         let mut out = vec![0f32; MAX_CH * MAX_FRAME];
-        assert_eq!(jb.pop(&mut out, n), Some(4));
+        assert_eq!(jb.pop(&mut out, n), Some((4, 0)));
         for ch in 0..4 {
             assert_eq!(out[ch * MAX_FRAME], (ch + 1) as f32);
         }
         // block 1: second group lost -> channels 2-3 silent, 0-1 still play
         jb.push(1, 4, 0, 2, n, &a);
         jb.push(2, 4, 0, 2, n, &a); // keeps the buffer moving
-        assert_eq!(jb.pop(&mut out, n), Some(4));
+        assert_eq!(jb.pop(&mut out, n), Some((4, 1)));
         assert_eq!((out[0], out[MAX_FRAME], out[2 * MAX_FRAME], out[3 * MAX_FRAME]), (1.0, 2.0, 0.0, 0.0));
     }
 }

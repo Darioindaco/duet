@@ -281,6 +281,29 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 .vempty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); font-size: 13px; }
 .vempty[hidden] { display: none; }
 
+/* ---------- metronome ---------- */
+.metro { display: flex; align-items: center; gap: 6px; margin-left: 14px; padding: 3px 8px 3px 3px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); text-transform: none; letter-spacing: 0; }
+.mtog { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--muted); border-radius: 9px; padding: 5px 8px; cursor: pointer; }
+.mtog.on { color: #111; background: var(--warn); border-color: transparent; }
+.beatdot { width: 8px; height: 8px; border-radius: 50%; background: rgba(0,0,0,0.3); transition: background 60ms; }
+.mtog:not(.on) .beatdot { background: var(--line-2); }
+.beatdot.tick { background: #fff; }
+.beatdot.accent { background: #fff; box-shadow: 0 0 8px #fff; }
+.bpm { display: flex; align-items: center; gap: 2px; font-size: 11px; color: var(--muted); }
+.bpm button { width: 22px; height: 24px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--panel-2); cursor: pointer; line-height: 1; }
+.bpm input { width: 44px; text-align: center; padding: 3px 2px; font: 700 13px/1 inherit; font-family: inherit; letter-spacing: 0; font-variant-numeric: tabular-nums; border-radius: 6px; -moz-appearance: textfield; }
+.bpm input::-webkit-inner-spin-button, .bpm input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.bpm span { margin-left: 3px; }
+.tap { border: 1px solid var(--line-2); background: var(--panel-2); border-radius: 7px; padding: 4px 8px; font-size: 11px; font-weight: 700; cursor: pointer; color: var(--muted); }
+.tap:active { background: var(--line-2); color: var(--text); }
+#beatsSel { width: auto; padding: 3px 22px 3px 7px; font-size: 11px; border-radius: 7px; background-position: calc(100% - 12px) 52%, calc(100% - 8px) 52%; }
+#metroVol .knob { width: 34px; }
+#metroVol .knob .kv, #metroVol .knob .kl { display: none; }
+.msync { font-size: 11px; color: var(--faint); white-space: nowrap; min-width: 0; }
+.msync.follow { color: var(--partner); }
+.strip .srclbl.theirs { color: var(--partner); opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; display: block; text-align: center; line-height: 22px; }
+@media (max-width: 1180px) { .metro .tap, .msync { display: none; } }
+
 /* ---------- NAM pedal ---------- */
 .rack .pedal.nam { width: 360px; }
 .namrow { display: flex; gap: 8px; width: 100%; align-items: center; }
@@ -396,6 +419,17 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
       <section class="card">
         <div class="sect-head">
           <h2>Mixer</h2>
+          <div class="metro" id="metro" title="Shared metronome: tempo and on/off are the same for both of you; the volume is just yours">
+            <button class="mtog" id="metroBtn" aria-label="Metronome on/off">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3h7l4 18h-15z"/><path d="M12 15 17 6"/><path d="M7 17h10"/></svg>
+              <span class="beatdot" id="beatDot"></span>
+            </button>
+            <div class="bpm"><button id="bpmMinus" aria-label="Slower">−</button><input id="bpm" type="number" min="40" max="240" step="1" value="100" aria-label="Tempo in BPM"><button id="bpmPlus" aria-label="Faster">+</button><span>BPM</span></div>
+            <button class="tap" id="tapBtn" title="Tap the tempo">Tap</button>
+            <select id="beatsSel" aria-label="Beats per bar"><option value="2">2/4</option><option value="3">3/4</option><option value="4" selected>4/4</option><option value="6">6/8</option></select>
+            <div id="metroVol"></div>
+            <span class="msync" id="metroSync"></span>
+          </div>
           <div class="spacer"></div>
           <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Raise it if you hear crackles.">
             Safety buffer
@@ -558,7 +592,7 @@ let init = null;
 const ui = {
   block: store.get("block", 128), rate: store.get("rate", 48000), buffer: store.get("buffer", 3),
   audio: false, audioWanted: true, connected: false, sbOpen: true, tab: "connect",
-  mixer: null, sel: "L0", names: store.get("names", {}), partnerNames: [], remoteCount: 0,
+  mixer: null, sel: "L0", names: store.get("names", {}), partnerNames: [], partnerFx: [], remoteCount: 0,
   meters: {}, inChannels: 0,
 };
 
@@ -606,6 +640,81 @@ function deviceChanged(reset = true) {
 }
 
 function setHint(id, text, kind = "") { const h = $(id); h.textContent = text; h.className = "hint" + (kind ? " " + kind : ""); }
+
+// ---------- shared metronome ----------
+// On/off, tempo and beats are shared; whoever changes them leads (their engine
+// clicks on its own clock, the partner's engine on the leader's audio as it
+// arrives). Volume stays local.
+const metro = { on: false, bpm: store.get("bpm", 100), beats: store.get("beats", 4), vol: store.get("metroVol", 0.6), leader: true, epoch: 0 };
+
+async function metroLead() {
+  metro.leader = true;
+  metro.epoch = await api.metro_lead(metro.on, metro.bpm, metro.beats);
+  store.set("bpm", metro.bpm); store.set("beats", metro.beats);
+  sendMetro();
+  paintMetro();
+}
+
+function sendMetro() {
+  if (!ui.connected || !metro.leader) return;
+  api.send_signal(JSON.stringify({ app: "metro", on: metro.on, bpm: metro.bpm, beats: metro.beats, epoch: metro.epoch }));
+}
+
+function metroFromPartner(msg) {
+  Object.assign(metro, { on: !!msg.on, bpm: +msg.bpm, beats: +msg.beats, epoch: +msg.epoch, leader: false });
+  api.metro_follow(metro.on, metro.bpm, metro.beats, metro.epoch);
+  paintMetro();
+}
+
+function paintMetro() {
+  $("metroBtn").classList.toggle("on", metro.on);
+  if (document.activeElement !== $("bpm")) $("bpm").value = Math.round(metro.bpm);
+  $("beatsSel").value = String(metro.beats);
+  const s = $("metroSync");
+  s.className = "msync" + (metro.on && !metro.leader ? " follow" : "");
+  s.textContent = !metro.on ? "" : !ui.connected ? "just you" : metro.leader ? "you lead" : "following partner";
+}
+
+function setBpm(v) {
+  metro.bpm = Math.max(40, Math.min(240, Math.round(v)));
+  $("bpm").value = metro.bpm;
+  clearTimeout(setBpm.t);
+  setBpm.t = setTimeout(metroLead, 250);
+}
+
+function buildMetronome() {
+  $("metroBtn").onclick = () => { metro.on = !metro.on; metroLead(); };
+  $("bpmMinus").onclick = () => setBpm(metro.bpm - 1);
+  $("bpmPlus").onclick = () => setBpm(metro.bpm + 1);
+  $("bpm").onchange = () => setBpm(+$("bpm").value || metro.bpm);
+  $("bpm").onkeydown = (e) => e.key === "Enter" && $("bpm").blur();
+  $("beatsSel").onchange = () => { metro.beats = +$("beatsSel").value; metroLead(); };
+  const taps = [];
+  $("tapBtn").onclick = () => {
+    const now = performance.now();
+    if (taps.length && now - taps[taps.length - 1] > 2000) taps.length = 0;
+    taps.push(now);
+    if (taps.length >= 2) {
+      const gaps = taps.slice(-5).map((t, i, a) => (i ? t - a[i - 1] : null)).filter(Boolean);
+      setBpm(60000 / (gaps.reduce((x, y) => x + y) / gaps.length));
+    }
+  };
+  $("metroVol").append(knob({ label: "Click", value: metro.vol, def: 0.6, size: 30, color: "var(--warn)",
+    onChange: (v) => { metro.vol = v; store.set("metroVol", v); api.metro_volume(v); } }));
+  api.metro_volume(metro.vol);
+  api.metro_lead(false, metro.bpm, metro.beats).then((e) => (metro.epoch = e));
+  paintMetro();
+}
+
+function paintBeat(beat) {
+  if (beat === paintBeat.last) return;
+  paintBeat.last = beat;
+  const dot = $("beatDot");
+  if (!metro.on || beat < 0) { dot.className = "beatdot"; return; }
+  dot.className = "beatdot " + (beat % metro.beats === 0 ? "accent" : "tick");
+  clearTimeout(paintBeat.t);
+  paintBeat.t = setTimeout(() => (dot.className = "beatdot"), 110);
+}
 
 // ---------- side panel ----------
 function setStatus(id, kind, title, sub) {
@@ -714,14 +823,20 @@ function inputCount() {
 
 function saveMixer() {
   clearTimeout(saveMixer.t);
-  saveMixer.t = setTimeout(async () => { store.set("mixer", await api.mixer()); store.set("names", ui.names); }, 300);
+  saveMixer.t = setTimeout(async () => { store.set("mixer", await api.mixer()); store.set("names", ui.names); sendNames(); }, 300);
 }
 
 // what the partner should call our channels: the sending strips, in order
 function sendNames() {
   if (!ui.connected) return;
-  const names = ui.mixer.local.map((s, i) => (s.active && s.send ? stripName("L" + i) : null)).filter((n) => n !== null);
-  api.send_signal(JSON.stringify({ app: "names", names }));
+  const sent = ui.mixer.local.map((s, i) => [s, i]).filter(([s]) => s.active && s.send);
+  const names = sent.map(([, i]) => stripName("L" + i));
+  // the effects each sent channel already carries, so the partner can see them
+  const fx = sent.map(([s]) => s.rack.filter((x) => x.on).map((x) => (x.kind === "nam" && x.model_name) || FXMETA[x.kind].name));
+  const msg = JSON.stringify({ app: "names", names, fx });
+  if (msg === sendNames.last && Date.now() - sendNames.at < 5000) return;
+  sendNames.last = msg; sendNames.at = Date.now();
+  api.send_signal(msg);
 }
 
 async function setStrip(t, key, value) {
@@ -805,7 +920,10 @@ function stripEl(t) {
     }
   } else {
     const l = document.createElement("div");
-    l.className = "srclbl"; l.textContent = t === "M" ? "out" : "from partner";
+    const theirs = t[0] === "R" ? ui.partnerFx[+t.slice(1)] || [] : [];
+    l.className = "srclbl" + (theirs.length ? " theirs" : "");
+    l.textContent = t === "M" ? "out" : theirs.length ? "theirs: " + theirs.join(", ") : "from partner";
+    if (theirs.length) l.title = `Effects on their side, already in what you hear: ${theirs.join(" → ")}`;
     el.append(l);
   }
 
@@ -1035,7 +1153,10 @@ function renderRack() {
   for (const c of $("presets").children) c.classList.remove("on");
   if (!cfg.rack.length) {
     rack.innerHTML = `<div class="empty-rack"><b>No effects on this channel yet.</b><br>Add one with the menu on the right, or start from a preset.
-      ${t[0] === "L" ? "Your partner hears these effects; turn on MON to hear them yourself." : "These effects only change what you hear."}</div>`;
+      ${t[0] === "L" ? "Your partner hears these effects; turn on MON to hear them yourself."
+        : (ui.partnerFx[+t.slice(1)] || []).length
+          ? `Their own effects (${esc(ui.partnerFx[+t.slice(1)].join(", "))}) are already in what you hear. Effects you add here only change your own mix.`
+          : "Effects you add here only change what you hear."}</div>`;
   }
   cfg.rack.forEach((slot, pos) => {
     const meta = FXMETA[slot.kind];
@@ -1124,7 +1245,12 @@ function paint(s) {
   }
   if (!s.connected && paint.wasConnected) paint.lostOnce = true;
   paint.wasConnected = s.connected;
-  if (s.connected !== ui.connected) { ui.connected = s.connected; if (s.connected) sendNames(); }
+  if (s.connected !== ui.connected) {
+    ui.connected = s.connected;
+    if (s.connected) { sendNames.last = null; sendNames(); sendMetro(); }
+    paintMetro();
+  }
+  if (s.metro) paintBeat(s.metro.beat);
   vOnConnection(s.connected);
   for (const sig of s.signals || []) vReceive(sig);
   if (s.warning) setHint("connHint", s.warning, "warn");
@@ -1209,6 +1335,7 @@ async function boot(a) {
     setTimeout(() => { b.textContent = "Copy"; b.classList.remove("done"); }, 1600);
   };
   buildSafety();
+  buildMetronome();
   buildRackControls();
   vSetup();
   // restore last session's mixer (strips, racks, faders) and channel names
@@ -1348,7 +1475,8 @@ window.vReceive = vReceive;
 function vReceive(raw) {
   let msg;
   try { msg = JSON.parse(raw); } catch { return; }
-  if (msg.app === "names") { ui.partnerNames = msg.names || []; renderStrips(); renderRack(); return; }
+  if (msg.app === "names") { ui.partnerNames = msg.names || []; ui.partnerFx = msg.fx || []; renderStrips(); renderRack(); return; }
+  if (msg.app === "metro") { metroFromPartner(msg); return; }
   const r = (vc.remote[msg.sid] ||= { next: 0, buf: {} });
   r.buf[msg.n] = msg;
   while (r.buf[r.next]) {
@@ -1413,7 +1541,10 @@ function demoApi() {
   const copy = () => JSON.parse(JSON.stringify(mixer));
   let t = 0, connected = false, calling = false, code = "";
   setTimeout(() => (code = "KJFXZ-4HCOP-AKRMW-I4JZQ"), 700);
-  if (location.search.includes("connected")) setTimeout(() => window.vReceive && vReceive(JSON.stringify({ app: "names", names: ["Vocals", "Keys"] })), 900);
+  if (location.search.includes("connected")) setTimeout(() => {
+    vReceive(JSON.stringify({ app: "names", names: ["Vocals", "Keys"], fx: [["Compressor", "Reverb"], []] }));
+    vReceive(JSON.stringify({ app: "metro", on: true, bpm: 92, beats: 4, epoch: 5 }));
+  }, 900);
   return {
     init: async () => ({
       inputs: [{ id: "ASIO|Focusrite USB ASIO", name: "Focusrite USB ASIO", api: "ASIO", inputs: 2 }, { id: "WASAPI|Analogue 1 + 2", name: "Analogue 1 + 2 (Focusrite USB Audio)", api: "WASAPI", inputs: 2 }],
@@ -1429,6 +1560,7 @@ function demoApi() {
     strip_set: async (tg, k, v) => { target(tg)[k] = typeof target(tg)[k] === "boolean" ? !!v : v; },
     set_master: async (v) => { mixer.master = v; },
     set_buffer: async () => {},
+    metro_lead: async () => 1000, metro_follow: async () => {}, metro_volume: async () => {},
     rack_add: async (tg, kind) => { target(tg).rack.push(slot(kind)); return copy(); },
     rack_remove: async (tg, pos) => { target(tg).rack.splice(pos, 1); return copy(); },
     rack_move: async (tg, a, b) => { const r = target(tg).rack; r.splice(b, 0, r.splice(a, 1)[0]); return copy(); },

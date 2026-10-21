@@ -50,6 +50,9 @@ pub enum Cmd {
     RackParam(Target, usize, usize, f32),
     Master(f32),
     JitterTarget(i64),
+    /// Shared metronome. `epoch` is the leader's block number where beat 0 falls.
+    Metro { on: bool, bpm: f32, beats: u32, leader: bool, epoch: i64 },
+    MetroVolume(f32),
 }
 
 /// One received audio packet, from the network thread to the audio thread.
@@ -114,6 +117,12 @@ pub struct Shared {
     pub cushion_frames: AtomicU64,
     pub test_signal_loss: AtomicF32,
     pub streaming: std::sync::atomic::AtomicBool,
+    /// our block counter (the seq of the block being processed)
+    pub seq: AtomicU64,
+    /// metronome: beat number + 1 of the last click (0 = none yet), for the UI's blinker
+    pub metro_beat: AtomicU64,
+    /// metronome: is our click locked to the partner's timeline yet (follower)
+    pub metro_synced: std::sync::atomic::AtomicBool,
 }
 
 pub fn encode_peer(a: SocketAddrV4) -> u64 {
@@ -175,6 +184,72 @@ impl Strip {
     }
 }
 
+/// The click track. Lives entirely in the audio thread; only your own ears get
+/// it (it's added after the mix, never sent).
+///
+/// Sync with latency in mind: the leader (whoever started it or last changed
+/// the tempo) clicks on its own block timeline. The follower clicks on the
+/// leader's timeline *as it arrives*: the jitter buffer knows which of the
+/// leader's blocks is playing right now, so the follower's click lands exactly
+/// on the leader's audio as heard, which is what the follower plays along to.
+struct Metro {
+    on: bool,
+    bpm: f32,
+    beats: u32,
+    leader: bool,
+    epoch: i64,
+    volume: f32,
+    last_beat: i64,
+    left: usize, // samples of the current click still to play
+    len: usize,
+    phase: f32,
+    inc: f32,
+    accent: bool,
+}
+
+impl Metro {
+    fn new() -> Self {
+        Metro { on: false, bpm: 100.0, beats: 4, leader: true, epoch: 0, volume: 0.6, last_beat: i64::MIN,
+                left: 0, len: 1, phase: 0.0, inc: 0.0, accent: false }
+    }
+
+    /// Add this block's clicks to `l`/`r`. `timeline` is the block number on the
+    /// leader's timeline that this block corresponds to.
+    fn render(&mut self, timeline: i64, frame: usize, sr: f32, l: &mut [f32], r: &mut [f32], shared: &Shared) {
+        if !self.on {
+            self.left = 0;
+            return;
+        }
+        let spb = sr as f64 * 60.0 / self.bpm.max(20.0) as f64; // samples per beat
+        let start = (timeline - self.epoch) as f64 * frame as f64;
+        for k in 0..l.len() {
+            let pos = start + k as f64;
+            if pos >= 0.0 {
+                let beat = (pos / spb).floor() as i64;
+                if beat != self.last_beat {
+                    self.last_beat = beat;
+                    self.accent = beat.rem_euclid(self.beats.max(1) as i64) == 0;
+                    let hz = if self.accent { 1760.0 } else { 1175.0 };
+                    self.inc = 2.0 * std::f32::consts::PI * hz / sr;
+                    self.phase = 0.0;
+                    self.len = (sr * 0.035) as usize;
+                    self.left = self.len;
+                    shared.metro_beat.store((beat + 1).max(0) as u64, Relaxed);
+                }
+            }
+            if self.left > 0 {
+                let t = 1.0 - self.left as f32 / self.len as f32;
+                let env = (1.0 - t).powi(3) * if self.accent { 1.0 } else { 0.7 };
+                let s = self.phase.sin() * env * self.volume * 0.5;
+                self.phase += self.inc;
+                self.left -= 1;
+                l[k] += s;
+                r[k] += s;
+            }
+        }
+    }
+}
+
 pub struct Dsp {
     pub frame: usize,
     pub samplerate: u32,
@@ -197,6 +272,9 @@ pub struct Dsp {
     mix_l: Vec<f32>,
     mix_r: Vec<f32>,
     master_level: f32,
+    metro: Metro,
+    /// partner's block number minus ours, learned from what the jitter buffer plays
+    remote_offset: Option<i64>,
 }
 
 #[inline]
@@ -243,6 +321,8 @@ impl Dsp {
             mix_l: vec![0.0; MAX_FRAME],
             mix_r: vec![0.0; MAX_FRAME],
             master_level: 0.0,
+            metro: Metro::new(),
+            remote_offset: None,
         }
     }
 
@@ -336,6 +416,16 @@ impl Dsp {
                     self.jitter.target = t;
                     self.shared.jitter_target.store(t as u64, Relaxed);
                 }
+                Cmd::Metro { on, bpm, beats, leader, epoch } => {
+                    let m = &mut self.metro;
+                    m.on = on;
+                    m.bpm = bpm;
+                    m.beats = beats.max(1);
+                    m.leader = leader;
+                    m.epoch = epoch;
+                    m.last_beat = i64::MIN; // the first beat on the new grid clicks
+                }
+                Cmd::MetroVolume(v) => self.metro.volume = v,
             }
         }
     }
@@ -345,6 +435,7 @@ impl Dsp {
         if epoch != self.epoch {
             self.epoch = epoch;
             self.jitter.reset();
+            self.remote_offset = None;
         }
         while let Ok(pkt) = self.incoming.pop() {
             let count = pkt.count.max(1) as usize;
@@ -374,7 +465,6 @@ impl Dsp {
             return;
         }
         let seq = self.seq;
-        self.seq = self.seq.wrapping_add(1);
 
         if self.shared.peer_protocol.load(Relaxed) < 2 {
             // an old build on the other end: one mono mix, the original format
@@ -448,7 +538,9 @@ impl Dsp {
 
         // --- partner's strips ---
         match self.jitter.pop(&mut self.rx, n) {
-            Some(c) => {
+            Some((c, rseq)) => {
+                // which of the partner's blocks is playing now, relative to ours
+                self.remote_offset = Some(rseq - self.seq as i64);
                 self.remote_count = c;
                 self.plc_gain = 1.0;
                 for (i, strip) in self.remote.iter_mut().enumerate().take(c) {
@@ -495,6 +587,26 @@ impl Dsp {
             pk = pk.max(l.abs()).max(r.abs());
         }
         self.master_level = pk.max(self.master_level * 0.9);
+
+        // click track: local only, after the mix and after the master fader
+        let timeline = if self.metro.leader {
+            self.seq as i64
+        } else {
+            self.seq as i64 + self.remote_offset.unwrap_or(0)
+        };
+        self.shared.metro_synced.store(self.metro.leader || self.remote_offset.is_some(), Relaxed);
+        let (ml, mr) = (&mut self.mix_l[..n], &mut self.mix_r[..n]);
+        ml.fill(0.0);
+        mr.fill(0.0);
+        self.metro.render(timeline, n, self.samplerate as f32, ml, mr, &self.shared);
+        if self.metro.on {
+            for k in 0..n {
+                out[2 * k] += ml[k];
+                out[2 * k + 1] += mr[k];
+            }
+        }
+        self.shared.seq.store(self.seq as u64, Relaxed);
+        self.seq = self.seq.wrapping_add(1);
 
         let sh = &self.shared;
         for (i, s) in self.local.iter().enumerate() {

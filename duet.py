@@ -163,12 +163,24 @@ class Api:
                         "block": frame / sr * 1000},
             "levels": {"local": s["local_levels"], "remote": s["remote_levels"], "master": s["master_level"]},
             "remoteChannels": s["remote_channels"],
+            "metro": {"beat": s["metro_beat"], "synced": s["metro_synced"]},
             "stats": {k: s[k] for k in ("depth", "underruns", "lost", "late", "trimmed", "xruns")},
             "cpu": s["cpu_us"],
             "dspLoad": s["cpu_us"] / (frame / sr * 1e6) if frame else 0.0,
             "warning": s["warning"],
             "signals": self._engine.drain_signals(),
         }
+
+    # --- shared metronome -----------------------------------------------------
+
+    def metro_lead(self, on, bpm, beats):
+        return self._engine.metro_lead(bool(on), float(bpm), int(beats))
+
+    def metro_follow(self, on, bpm, beats, epoch):
+        self._engine.metro_follow(bool(on), float(bpm), int(beats), int(epoch))
+
+    def metro_volume(self, volume):
+        self._engine.metro_volume(float(volume))
 
     # --- NAM amps and TONE3000 ---------------------------------------------
 
