@@ -12,9 +12,15 @@ jobs:
         include:
           - os: macos-14          # Apple Silicon (M1 and newer)
             arch: apple-silicon
+            rustflags: ""
           - os: macos-15-intel    # older Intel MacBooks
             arch: intel
+            # Every Intel Mac that runs macOS 11+ is Haswell or newer, so AVX2/FMA
+            # are always there; NAM's maths runs much faster with them.
+            rustflags: "-C target-cpu=haswell"
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

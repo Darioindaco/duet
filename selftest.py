@@ -272,7 +272,8 @@ def test_nam():
     assert np.all(np.isfinite(out_nam)) and np.max(np.abs(np.subtract(out_nam, out_dry))) > 1e-3
     us = e.state()["cpu_us"]
     print(f"nam: ok  (standard-size model: {us:.0f} us per block of {N / SR * 1e6:.0f} us)")
-    assert us < 1500, us
+    # what matters: one standard model fits in a block with room to spare
+    assert us < 0.75 * N / SR * 1e6, us
     # saved and restored with the mixer, model included
     snap = e.mixer()["local"][0]["rack"]
     e2 = Engine()
