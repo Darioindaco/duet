@@ -51,21 +51,20 @@ class Api:
         return {
             "inputs": inputs, "outputs": outputs,
             "defaultInput": din, "defaultOutput": dout,
-            "fx": self._engine.fx_state(),
             "presets": Engine.presets(),
+            "effects": Engine.effects(),
             "platform": sys.platform,
         }
 
     def start_audio(self, cfg):
-        channel = None if cfg["channel"] == "mix" else int(cfg["channel"])
         try:
-            lin, lout = self._engine.start_audio(str(cfg["input"]), str(cfg["output"]), channel,
-                                                 int(cfg["samplerate"]), int(cfg["block"]))
+            lin, lout, n_in = self._engine.start_audio(str(cfg["input"]), str(cfg["output"]),
+                                                       int(cfg["samplerate"]), int(cfg["block"]))
         except Exception as exc:
             self._audio = False
             return {"ok": False, "error": str(exc)}
         self._audio = True
-        return {"ok": True, "latencyIn": lin, "latencyOut": lout}
+        return {"ok": True, "latencyIn": lin, "latencyOut": lout, "inChannels": n_in}
 
     def stop_audio(self):
         self._engine.stop_audio()
@@ -89,19 +88,56 @@ class Api:
         except Exception:
             return False
 
-    # --- live controls -------------------------------------------------------
+    # --- mixer (strips "L0".."L3" = mine, "R0".."R7" = the partner's) -------
 
-    def set_fx(self, effect, key, value):
-        self._engine.set_fx(effect, key, float(value))
+    def mixer(self):
+        return self._engine.mixer()
 
-    def fx_state(self):
-        return self._engine.fx_state()
+    def strip_set(self, target, key, value):
+        self._engine.strip_set(target, key, float(value))
 
-    def preset(self, name):
-        return self._engine.preset(name)
+    def set_master(self, value):
+        self._engine.set_master(float(value))
 
-    def set_mix(self, key, value):
-        self._engine.set_mix(key, float(value))
+    def set_buffer(self, blocks):
+        self._engine.set_buffer(float(blocks))
+
+    def rack_add(self, target, kind):
+        self._engine.rack_add(target, kind)
+        return self._engine.mixer()
+
+    def rack_remove(self, target, pos):
+        self._engine.rack_remove(target, int(pos))
+        return self._engine.mixer()
+
+    def rack_move(self, target, frm, to):
+        self._engine.rack_move(target, int(frm), int(to))
+        return self._engine.mixer()
+
+    def rack_set(self, target, pos, key, value):
+        self._engine.rack_set(target, int(pos), key, float(value))
+
+    def rack_preset(self, target, name):
+        self._engine.rack_preset(target, name)
+        return self._engine.mixer()
+
+    def rack_load(self, target, slots):
+        self._engine.rack_load(target, list(slots))
+
+    def load_mixer(self, cfg):
+        """Restore a mixer() snapshot from an earlier session."""
+        e = self._engine
+        keys = ("input", "gain", "pan", "fader", "mute", "solo", "send", "mon", "active")
+        for side, prefix in (("local", "L"), ("remote", "R")):
+            for i, strip in enumerate(cfg.get(side, [])[:4 if side == "local" else 8]):
+                t = f"{prefix}{i}"
+                for k in keys:
+                    if k in strip:
+                        e.strip_set(t, k, float(strip[k]))
+                e.rack_load(t, list(strip.get("rack", [])))
+        if "master" in cfg:
+            e.set_master(float(cfg["master"]))
+        return True
 
     # --- polled ~12x per second by the page ----------------------------------
 
@@ -119,7 +155,8 @@ class Api:
                         "buffer": s["jitter_target"] * frame / sr * 1000,
                         "card": (s["lat_in_ms"] + s["lat_out_ms"]) if self._audio else 0.0,
                         "block": frame / sr * 1000},
-            "levels": {"me": s["in_level"], "partner": s["out_level"]},
+            "levels": {"local": s["local_levels"], "remote": s["remote_levels"], "master": s["master_level"]},
+            "remoteChannels": s["remote_channels"],
             "stats": {k: s[k] for k in ("depth", "underruns", "lost", "late", "trimmed", "xruns")},
             "cpu": s["cpu_us"],
             "warning": s["warning"],

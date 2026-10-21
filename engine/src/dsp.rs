@@ -1,38 +1,70 @@
-//! What runs once per audio block. Everything here is realtime-safe: no
-//! locks shared with other threads, no allocation, no Python. Other threads
-//! talk to it through lock-free queues (commands in, packets in) and atomics
-//! (levels and stats out).
+//! What runs once per audio block: the mixer. Everything here is realtime-safe:
+//! no locks shared with other threads, no allocation, no Python. Other threads
+//! talk to it through lock-free queues (commands and packets in, retired
+//! effect objects out) and atomics (levels and stats out).
+//!
+//! Signal flow per block:
+//!   interface inputs -> local strip: gain -> FX rack -> [send to partner]
+//!                                                     -> [Mon] pan/fader -> master
+//!   partner channels -> jitter buffer -> remote strip: gain -> FX rack -> pan/fader -> master
+//!   master fader -> stereo out
 
 use std::net::{SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 
-use crate::fx::{Chain, FxParams, Reverb, MAX_PARAMS};
-use crate::jitter::{JitterBuffer, MAX_FRAME};
+use crate::fx::{Rack, Slot};
+use crate::jitter::{JitterBuffer, MAX_CH, MAX_FRAME};
 use crate::net;
+
+pub const MAX_LOCAL: usize = 4;
+pub const MAX_REMOTE: usize = MAX_CH;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Local(usize),
+    Remote(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripParam {
+    Active,
+    Input,
+    Gain,
+    Pan,
+    Fader,
+    Mute,
+    Solo,
+    Send,
+    Mon,
+}
 
 /// Messages from the control side into the audio thread.
 pub enum Cmd {
-    FxOn(usize, bool),
-    FxParam(usize, usize, f32),
-    FxAll(FxParams),
-    RemoteGain(f32),
-    MonitorGain(f32),
+    Strip(Target, StripParam, f32),
+    RackInsert(Target, usize, Box<Slot>),
+    RackRemove(Target, usize),
+    RackMove(Target, usize, usize),
+    RackOn(Target, usize, bool),
+    RackParam(Target, usize, usize, f32),
+    Master(f32),
     JitterTarget(i64),
-    Room(f32),
 }
 
-/// One received audio frame, handed from the network thread to the audio thread.
+/// One received audio packet, from the network thread to the audio thread.
 #[derive(Clone, Copy)]
 pub struct InPacket {
     pub seq: u32,
-    pub len: u16,
+    pub total: u8,
+    pub first: u8,
+    pub count: u8,
+    pub len: u16, // samples per channel
     pub data: [i16; MAX_FRAME],
 }
 
 impl Default for InPacket {
     fn default() -> Self {
-        InPacket { seq: 0, len: 0, data: [0; MAX_FRAME] }
+        InPacket { seq: 0, total: 1, first: 0, count: 1, len: 0, data: [0; MAX_FRAME] }
     }
 }
 
@@ -54,8 +86,12 @@ pub struct Shared {
     pub peer: AtomicU64,
     /// bumped whenever the partner (re)appears, so the audio thread resets its buffer
     pub peer_epoch: AtomicU64,
-    pub in_level: AtomicF32,
-    pub out_level: AtomicF32,
+    pub peer_protocol: AtomicU64,
+    pub local_levels: [AtomicF32; MAX_LOCAL],
+    pub remote_levels: [AtomicF32; MAX_REMOTE],
+    pub master_level: AtomicF32,
+    pub remote_channels: AtomicU64,
+    pub sent_channels: AtomicU64,
     pub underruns: AtomicU64,
     pub lost: AtomicU64,
     pub late: AtomicU64,
@@ -68,13 +104,15 @@ pub struct Shared {
     pub lat_out_us: AtomicU64,
     pub samplerate: AtomicU64,
     pub frame: AtomicU64,
+    pub in_channels: AtomicU64,
     pub blocks: AtomicU64,
     pub cpu_ns: AtomicU64, // smoothed process() time per block
-    pub raw_in_peak: AtomicF32, // straight from the input callback, before anything else
+    pub raw_in_peak: AtomicF32,
     pub in_callbacks: AtomicU64,
-    pub ring_empty: AtomicU64, // output needed input that hadn't arrived yet
-    pub cushion_frames: AtomicU64, // extra input->output delay outside ASIO
-    pub test_signal_loss: AtomicF32, // selftest: drop this share of signal packets
+    pub ring_empty: AtomicU64,
+    pub cushion_frames: AtomicU64,
+    pub test_signal_loss: AtomicF32,
+    pub streaming: std::sync::atomic::AtomicBool,
 }
 
 pub fn encode_peer(a: SocketAddrV4) -> u64 {
@@ -85,29 +123,86 @@ pub fn decode_peer(v: u64) -> Option<SocketAddrV4> {
     (v >> 63 == 1).then(|| SocketAddrV4::new(((v >> 16) as u32).into(), v as u16))
 }
 
+/// Settings of one channel strip. Shared shape between the control-side mirror
+/// and the audio thread.
+#[derive(Clone, Copy, Debug)]
+pub struct StripSettings {
+    pub active: bool,
+    pub input: usize,
+    pub gain: f32,
+    pub pan: f32, // -1 .. 1
+    pub fader: f32,
+    pub mute: bool,
+    pub solo: bool,
+    pub send: bool,
+    pub mon: bool,
+}
+
+impl StripSettings {
+    pub fn local(input: usize) -> Self {
+        StripSettings { active: false, input, gain: 1.0, pan: 0.0, fader: 1.0, mute: false, solo: false, send: true, mon: false }
+    }
+    pub fn remote() -> Self {
+        StripSettings { active: true, input: 0, gain: 1.0, pan: 0.0, fader: 1.0, mute: false, solo: false, send: false, mon: true }
+    }
+    pub fn set(&mut self, p: StripParam, v: f32) {
+        match p {
+            StripParam::Active => self.active = v != 0.0,
+            StripParam::Input => self.input = v.max(0.0) as usize,
+            StripParam::Gain => self.gain = v,
+            StripParam::Pan => self.pan = v.clamp(-1.0, 1.0),
+            StripParam::Fader => self.fader = v,
+            StripParam::Mute => self.mute = v != 0.0,
+            StripParam::Solo => self.solo = v != 0.0,
+            StripParam::Send => self.send = v != 0.0,
+            StripParam::Mon => self.mon = v != 0.0,
+        }
+    }
+}
+
+struct Strip {
+    s: StripSettings,
+    rack: Rack,
+    buf: Vec<f32>,
+    last: Vec<f32>, // remote strips: last good block, for concealment
+    level: f32,
+}
+
+impl Strip {
+    fn new(s: StripSettings) -> Self {
+        Strip { s, rack: Rack::new(), buf: vec![0.0; MAX_FRAME], last: vec![0.0; MAX_FRAME], level: 0.0 }
+    }
+}
+
 pub struct Dsp {
     pub frame: usize,
     pub samplerate: u32,
-    chain: Chain,
-    room: Reverb,
-    room_params: [f32; MAX_PARAMS],
-    room_on: bool,
+    local: Vec<Strip>,
+    remote: Vec<Strip>,
+    master: f32,
     jitter: JitterBuffer,
     cmds: rtrb::Consumer<Cmd>,
     incoming: rtrb::Consumer<InPacket>,
+    retired: rtrb::Producer<Box<Slot>>,
     socket: Arc<UdpSocket>,
     shared: Arc<Shared>,
     seq: u32,
     epoch: u64,
-    remote_gain: f32,
-    monitor_gain: f32,
     plc_gain: f32,
-    last: Vec<f32>,
-    remote: Vec<f32>,
+    remote_count: usize,
+    rx: Vec<f32>, // jitter output, channel-major, stride MAX_FRAME
     unpacked: Vec<f32>,
     send_buf: Vec<u8>,
-    in_level: f32,
-    out_level: f32,
+    mix_l: Vec<f32>,
+    mix_r: Vec<f32>,
+    master_level: f32,
+}
+
+#[inline]
+fn pan_gains(pan: f32) -> (f32, f32) {
+    // constant power: -3 dB each side in the middle
+    let a = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+    (a.cos(), a.sin())
 }
 
 impl Dsp {
@@ -116,47 +211,50 @@ impl Dsp {
         frame: usize,
         cmds: rtrb::Consumer<Cmd>,
         incoming: rtrb::Consumer<InPacket>,
+        retired: rtrb::Producer<Box<Slot>>,
         socket: Arc<UdpSocket>,
         shared: Arc<Shared>,
     ) -> Self {
-        let sr = samplerate as f32;
         shared.samplerate.store(samplerate as u64, Relaxed);
         shared.frame.store(frame as u64, Relaxed);
         shared.jitter_target.store(3, Relaxed);
+        let mut local: Vec<Strip> = (0..MAX_LOCAL).map(|i| Strip::new(StripSettings::local(i))).collect();
+        local[0].s.active = true;
         Dsp {
             frame,
             samplerate,
-            chain: Chain::new(sr),
-            room: Reverb::new(sr),
-            room_params: [0.6, 0.4, 0.0],
-            room_on: false,
+            local,
+            remote: (0..MAX_REMOTE).map(|_| Strip::new(StripSettings::remote())).collect(),
+            master: 1.0,
             jitter: JitterBuffer::new(3),
             cmds,
             incoming,
+            retired,
             socket,
             shared,
             seq: 0,
             epoch: 0,
-            remote_gain: 1.0,
-            monitor_gain: 0.0,
             plc_gain: 0.0,
-            last: vec![0.0; MAX_FRAME],
-            remote: vec![0.0; MAX_FRAME],
+            remote_count: 0,
+            rx: vec![0.0; MAX_CH * MAX_FRAME],
             unpacked: vec![0.0; MAX_FRAME],
-            send_buf: Vec::with_capacity(net::HEADER + 2 * MAX_FRAME),
-            in_level: 0.0,
-            out_level: 0.0,
+            send_buf: Vec::with_capacity(net::HEADER + 3 + net::MAX_AUDIO_PAYLOAD + 2 * MAX_FRAME),
+            mix_l: vec![0.0; MAX_FRAME],
+            mix_r: vec![0.0; MAX_FRAME],
+            master_level: 0.0,
         }
     }
 
-    /// Change sample rate / block size. Allocates: only call while no stream runs.
+    /// Change sample rate / block size. Rebuilds effect state, so it allocates:
+    /// only call while no stream runs.
     pub fn set_format(&mut self, samplerate: u32, frame: usize) {
         let frame = frame.min(MAX_FRAME);
         if samplerate != self.samplerate {
-            let params = self.chain.params;
-            self.chain = Chain::new(samplerate as f32);
-            self.chain.params = params;
-            self.room = Reverb::new(samplerate as f32);
+            for strip in self.local.iter_mut().chain(self.remote.iter_mut()) {
+                for slot in strip.rack.slots.iter_mut() {
+                    slot.fx = crate::fx::make(slot.cfg.kind, samplerate as f32);
+                }
+            }
         }
         self.samplerate = samplerate;
         self.frame = frame;
@@ -165,97 +263,240 @@ impl Dsp {
         self.shared.frame.store(frame as u64, Relaxed);
     }
 
+    fn strip(&mut self, t: Target) -> Option<&mut Strip> {
+        match t {
+            Target::Local(i) => self.local.get_mut(i),
+            Target::Remote(i) => self.remote.get_mut(i),
+        }
+    }
+
+    fn retire(&mut self, slot: Box<Slot>) {
+        // hand it back so it's freed off the audio thread; if that queue is
+        // somehow full, freeing here is the lesser evil
+        let _ = self.retired.push(slot);
+    }
+
+    /// Apply queued commands outside the audio callback (no stream running).
+    pub fn apply_pending(&mut self) {
+        self.apply_commands();
+    }
+
     fn apply_commands(&mut self) {
         while let Ok(cmd) = self.cmds.pop() {
             match cmd {
-                Cmd::FxOn(i, on) => self.chain.set_on(i, on),
-                Cmd::FxParam(i, k, v) => self.chain.params.p[i][k] = v,
-                Cmd::FxAll(p) => {
-                    for i in 0..p.on.len() {
-                        self.chain.set_on(i, p.on[i]);
+                Cmd::Strip(t, p, v) => {
+                    if let Some(s) = self.strip(t) {
+                        s.s.set(p, v);
                     }
-                    self.chain.params.p = p.p;
                 }
-                Cmd::RemoteGain(g) => self.remote_gain = g,
-                Cmd::MonitorGain(g) => self.monitor_gain = g,
+                Cmd::RackInsert(t, pos, slot) => {
+                    let rejected = match self.strip(t) {
+                        Some(s) => s.rack.insert(pos, slot).err(),
+                        None => Some(slot),
+                    };
+                    if let Some(slot) = rejected {
+                        self.retire(slot);
+                    }
+                }
+                Cmd::RackRemove(t, pos) => {
+                    if let Some(slot) = self.strip(t).and_then(|s| s.rack.remove(pos)) {
+                        self.retire(slot);
+                    }
+                }
+                Cmd::RackMove(t, from, to) => {
+                    if let Some(s) = self.strip(t) {
+                        s.rack.move_slot(from, to);
+                    }
+                }
+                Cmd::RackOn(t, pos, on) => {
+                    if let Some(s) = self.strip(t) {
+                        s.rack.set_on(pos, on);
+                    }
+                }
+                Cmd::RackParam(t, pos, k, v) => {
+                    if let Some(slot) = self.strip(t).and_then(|s| s.rack.slots.get_mut(pos)) {
+                        if k < slot.cfg.p.len() {
+                            slot.cfg.p[k] = v;
+                        }
+                    }
+                }
+                Cmd::Master(v) => self.master = v,
                 Cmd::JitterTarget(t) => {
                     self.jitter.target = t;
                     self.shared.jitter_target.store(t as u64, Relaxed);
-                }
-                Cmd::Room(v) => {
-                    if v > 0.001 && !self.room_on {
-                        self.room.reset();
-                    }
-                    self.room_on = v > 0.001;
-                    self.room_params[2] = v;
                 }
             }
         }
     }
 
-    /// One block: `input` is our mono signal (effects are applied in place),
-    /// `out` receives what to play. Both are exactly `self.frame` long.
-    pub fn process(&mut self, input: &mut [f32], out: &mut [f32]) {
-        let t0 = std::time::Instant::now();
-        let n = input.len();
-        self.apply_commands();
-
+    fn take_packets(&mut self) {
         let epoch = self.shared.peer_epoch.load(Relaxed);
         if epoch != self.epoch {
             self.epoch = epoch;
             self.jitter.reset();
         }
         while let Ok(pkt) = self.incoming.pop() {
-            let len = pkt.len as usize;
-            for (d, s) in self.unpacked[..len].iter_mut().zip(&pkt.data[..len]) {
+            let count = pkt.count.max(1) as usize;
+            let total_samples = (pkt.len as usize * count).min(MAX_FRAME);
+            for (d, s) in self.unpacked[..total_samples].iter_mut().zip(&pkt.data[..total_samples]) {
                 *d = *s as f32 / 32767.0;
             }
-            self.jitter.push(pkt.seq, &self.unpacked[..len]);
+            self.jitter.push(pkt.seq, pkt.total as usize, pkt.first as usize, count, pkt.len as usize,
+                             &self.unpacked[..total_samples]);
         }
+    }
 
-        self.chain.process(input);
+    /// Send every strip with Send on, as one block split into MTU-sized packets.
+    fn send(&mut self, n: usize) {
+        let Some(peer) = decode_peer(self.shared.peer.load(Relaxed)) else { return };
+        let sending: [usize; MAX_LOCAL] = std::array::from_fn(|i| i);
+        let mut list = [0usize; MAX_LOCAL];
+        let mut total = 0;
+        for &i in sending.iter() {
+            if self.local[i].s.active && self.local[i].s.send {
+                list[total] = i;
+                total += 1;
+            }
+        }
+        self.shared.sent_channels.store(total as u64, Relaxed);
+        if total == 0 {
+            return;
+        }
+        let seq = self.seq;
+        self.seq = self.seq.wrapping_add(1);
 
-        if let Some(peer) = decode_peer(self.shared.peer.load(Relaxed)) {
+        if self.shared.peer_protocol.load(Relaxed) < 2 {
+            // an old build on the other end: one mono mix, the original format
             self.send_buf.clear();
             self.send_buf.extend_from_slice(net::MAGIC);
             self.send_buf.push(net::T_AUDIO);
-            self.send_buf.extend_from_slice(&self.seq.to_be_bytes());
-            for s in input.iter() {
-                let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-                self.send_buf.extend_from_slice(&v.to_le_bytes());
+            self.send_buf.extend_from_slice(&seq.to_be_bytes());
+            for k in 0..n {
+                let v: f32 = list[..total].iter().map(|&i| self.local[i].buf[k]).sum();
+                self.send_buf.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
             }
             let _ = self.socket.send_to(&self.send_buf, peer);
-            self.seq = self.seq.wrapping_add(1);
+            return;
         }
 
-        let remote = &mut self.remote[..n];
-        if self.jitter.pop(remote) {
-            self.last[..n].copy_from_slice(remote);
-            self.plc_gain = 1.0;
-        } else {
-            // concealment: fade the last good frame out instead of a hard click
-            self.plc_gain *= 0.5;
-            for (r, l) in remote.iter_mut().zip(&self.last[..n]) {
-                *r = l * self.plc_gain;
+        let per_packet = (net::MAX_AUDIO_PAYLOAD / (2 * n)).max(1);
+        let mut first = 0;
+        while first < total {
+            let count = per_packet.min(total - first);
+            self.send_buf.clear();
+            self.send_buf.extend_from_slice(net::MAGIC);
+            self.send_buf.push(net::T_AUDIO_MC);
+            self.send_buf.extend_from_slice(&seq.to_be_bytes());
+            self.send_buf.extend_from_slice(&[total as u8, first as u8, count as u8]);
+            for &i in &list[first..first + count] {
+                for &s in &self.local[i].buf[..n] {
+                    self.send_buf.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+                }
+            }
+            let _ = self.socket.send_to(&self.send_buf, peer);
+            first += count;
+        }
+    }
+
+    /// One block. `input` is interleaved, `in_ch` channels; `out` is
+    /// interleaved stereo (2 * frame). Both are exactly `self.frame` frames.
+    pub fn process(&mut self, input: &[f32], in_ch: usize, out: &mut [f32]) {
+        let t0 = std::time::Instant::now();
+        let n = self.frame;
+        self.apply_commands();
+        self.take_packets();
+
+        let any_solo = self.local.iter().chain(self.remote.iter()).any(|s| s.s.active && s.s.solo);
+        let audible = |s: &StripSettings| !s.mute && (!any_solo || s.solo);
+        self.mix_l[..n].fill(0.0);
+        self.mix_r[..n].fill(0.0);
+
+        // --- my strips ---
+        for strip in self.local.iter_mut() {
+            if !strip.s.active {
+                continue;
+            }
+            let ch = strip.s.input;
+            let g = strip.s.gain;
+            for k in 0..n {
+                strip.buf[k] = if ch < in_ch { input[k * in_ch + ch] * g } else { 0.0 };
+            }
+            strip.rack.process(&mut strip.buf[..n]);
+            let pk = strip.buf[..n].iter().fold(0f32, |a, v| a.max(v.abs()));
+            strip.level = pk.max(strip.level * 0.9);
+            if strip.s.mon && audible(&strip.s) {
+                let (l, r) = pan_gains(strip.s.pan);
+                let f = strip.s.fader;
+                for k in 0..n {
+                    self.mix_l[k] += strip.buf[k] * f * l;
+                    self.mix_r[k] += strip.buf[k] * f * r;
+                }
             }
         }
-        if self.room_on {
-            self.room.process(&self.room_params, remote);
+        self.send(n);
+
+        // --- partner's strips ---
+        match self.jitter.pop(&mut self.rx, n) {
+            Some(c) => {
+                self.remote_count = c;
+                self.plc_gain = 1.0;
+                for (i, strip) in self.remote.iter_mut().enumerate().take(c) {
+                    strip.buf[..n].copy_from_slice(&self.rx[i * MAX_FRAME..i * MAX_FRAME + n]);
+                    strip.last[..n].copy_from_slice(&strip.buf[..n]);
+                }
+            }
+            None => {
+                // concealment: fade the last good block out instead of a hard click
+                self.plc_gain *= 0.5;
+                let g = self.plc_gain;
+                for strip in self.remote.iter_mut().take(self.remote_count) {
+                    for k in 0..n {
+                        strip.buf[k] = strip.last[k] * g;
+                    }
+                }
+            }
+        }
+        for strip in self.remote.iter_mut().take(self.remote_count) {
+            let g = strip.s.gain;
+            for v in strip.buf[..n].iter_mut() {
+                *v *= g;
+            }
+            strip.rack.process(&mut strip.buf[..n]);
+            let pk = strip.buf[..n].iter().fold(0f32, |a, v| a.max(v.abs()));
+            strip.level = pk.max(strip.level * 0.9);
+            if audible(&strip.s) {
+                let (l, r) = pan_gains(strip.s.pan);
+                let f = strip.s.fader;
+                for k in 0..n {
+                    self.mix_l[k] += strip.buf[k] * f * l;
+                    self.mix_r[k] += strip.buf[k] * f * r;
+                }
+            }
         }
 
-        let (rg, mg) = (self.remote_gain, self.monitor_gain);
-        let (mut pk_in, mut pk_out) = (0f32, 0f32);
-        for i in 0..n {
-            pk_in = pk_in.max(input[i].abs());
-            pk_out = pk_out.max(remote[i].abs());
-            out[i] = remote[i] * rg + input[i] * mg;
+        // --- master ---
+        let m = self.master;
+        let mut pk = 0f32;
+        for k in 0..n {
+            let (l, r) = (self.mix_l[k] * m, self.mix_r[k] * m);
+            out[2 * k] = l;
+            out[2 * k + 1] = r;
+            pk = pk.max(l.abs()).max(r.abs());
         }
-        self.in_level = pk_in.max(self.in_level * 0.9);
-        self.out_level = pk_out.max(self.out_level * 0.9);
+        self.master_level = pk.max(self.master_level * 0.9);
 
         let sh = &self.shared;
-        sh.in_level.set(self.in_level);
-        sh.out_level.set(self.out_level);
+        for (i, s) in self.local.iter().enumerate() {
+            sh.local_levels[i].set(s.level);
+        }
+        for (i, s) in self.remote.iter_mut().enumerate() {
+            if i >= self.remote_count {
+                s.level = 0.0;
+            }
+            sh.remote_levels[i].set(s.level);
+        }
+        sh.master_level.set(self.master_level);
+        sh.remote_channels.store(self.remote_count as u64, Relaxed);
         let st = self.jitter.stats;
         sh.underruns.store(st.underruns, Relaxed);
         sh.lost.store(st.lost, Relaxed);

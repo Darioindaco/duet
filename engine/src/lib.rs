@@ -21,8 +21,8 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use dsp::{decode_peer, encode_peer, Cmd, Dsp, InPacket, Shared};
-use fx::{fx_index, param_index, FxParams, FX};
+use dsp::{decode_peer, encode_peer, Cmd, Dsp, InPacket, Shared, StripParam, StripSettings, Target, MAX_LOCAL, MAX_REMOTE};
+use fx::{kind_index, param_index, preset_slots, Slot, SlotCfg, FX, MAX_SLOTS};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -35,7 +35,16 @@ struct Ctl {
     signals: signal::Signals,
     stun_txid: [u8; 12],
     stun_reply: Option<Vec<u8>>,
-    fx: FxParams, // mirror of what the audio thread has
+    // mirror of the mixer the audio thread has (the UI reads this, never the audio side)
+    local: Vec<StripMirror>,
+    remote: Vec<StripMirror>,
+    master: f32,
+}
+
+#[derive(Clone)]
+struct StripMirror {
+    s: StripSettings,
+    rack: Vec<SlotCfg>,
 }
 
 struct Inner {
@@ -44,6 +53,8 @@ struct Inner {
     ctl: Mutex<Ctl>,
     cmds: Mutex<rtrb::Producer<Cmd>>,
     incoming: Mutex<Option<rtrb::Producer<InPacket>>>,
+    /// effect objects the audio thread is done with, freed here instead of there
+    retired: Mutex<rtrb::Consumer<Box<Slot>>>,
     running: AtomicBool,
     start: Instant,
 }
@@ -71,6 +82,12 @@ impl Inner {
     }
     fn cmd(&self, c: Cmd) {
         let _ = self.cmds.lock().unwrap().push(c);
+    }
+    /// Drop effect objects the audio thread handed back (freeing happens here,
+    /// not in the callback).
+    fn free_retired(&self) {
+        let mut r = self.retired.lock().unwrap();
+        while r.pop().is_ok() {}
     }
     fn now(&self) -> f64 {
         self.start.elapsed().as_secs_f64()
@@ -110,6 +127,8 @@ impl Inner {
                     let sr = u32::from_be_bytes([body[0], body[1], body[2], body[3]]) as u64;
                     let fr = u16::from_be_bytes([body[4], body[5]]) as u64;
                     let (my_sr, my_fr) = (self.shared.samplerate.load(Relaxed), self.shared.frame.load(Relaxed));
+                    let proto = if body.len() >= 7 { body[6] } else { 1 };
+                    self.shared.peer_protocol.store(proto as u64, Relaxed);
                     c.warning = if (sr, fr) != (my_sr, my_fr) {
                         format!("Partner runs {sr} Hz / {fr} buffer, you run {my_sr} Hz / {my_fr}. Match them.")
                     } else {
@@ -124,12 +143,24 @@ impl Inner {
             self.ctl.lock().unwrap().last_heard = Some(Instant::now());
 
             match ptype {
-                net::T_AUDIO => {
-                    let samples = (body.len() / 2).min(jitter::MAX_FRAME);
+                net::T_AUDIO | net::T_AUDIO_MC => {
+                    // T_AUDIO (protocol 1) is one mono channel; T_AUDIO_MC has a
+                    // 3-byte header: total channels, first channel, channels here
+                    let (total, first, count, pcm) = if ptype == net::T_AUDIO {
+                        (1u8, 0u8, 1u8, body)
+                    } else if body.len() >= 3 && body[2] > 0 {
+                        (body[0], body[1], body[2], &body[3..])
+                    } else {
+                        continue;
+                    };
+                    let samples = (pcm.len() / 2).min(jitter::MAX_FRAME);
                     pkt.seq = seq;
-                    pkt.len = samples as u16;
+                    pkt.total = total;
+                    pkt.first = first;
+                    pkt.count = count;
+                    pkt.len = (samples / count as usize) as u16;
                     for i in 0..samples {
-                        pkt.data[i] = i16::from_le_bytes([body[2 * i], body[2 * i + 1]]);
+                        pkt.data[i] = i16::from_le_bytes([pcm[2 * i], pcm[2 * i + 1]]);
                     }
                     if let Some(tx) = self.incoming.lock().unwrap().as_mut() {
                         let _ = tx.push(*pkt);
@@ -169,9 +200,10 @@ impl Inner {
         let mut hello = Vec::with_capacity(16);
         let mut pkt = Vec::with_capacity(32);
         while self.running.load(Relaxed) {
-            let mut body = [0u8; 6];
+            let mut body = [0u8; 7];
             body[..4].copy_from_slice(&(self.shared.samplerate.load(Relaxed) as u32).to_be_bytes());
-            body[4..].copy_from_slice(&(self.shared.frame.load(Relaxed) as u16).to_be_bytes());
+            body[4..6].copy_from_slice(&(self.shared.frame.load(Relaxed) as u16).to_be_bytes());
+            body[6] = net::PROTOCOL;
             net::pack(net::T_HELLO, 0, &body, &mut hello);
             if !self.connected() {
                 // punch: keep firing at every candidate until one gets through
@@ -218,12 +250,16 @@ impl Engine {
         let socket = UdpSocket::bind(("0.0.0.0", port)).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         socket.set_read_timeout(Some(Duration::from_millis(200))).ok();
         disable_udp_connreset(&socket);
-        let local = SocketAddrV4::new(net::local_ip(), socket.local_addr().unwrap().port());
+        let local_addr = SocketAddrV4::new(net::local_ip(), socket.local_addr().unwrap().port());
         let socket = Arc::new(socket);
         let shared = Arc::new(Shared::default());
         let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(1024);
         let (pkt_tx, pkt_rx) = rtrb::RingBuffer::new(512);
-        let dsp = Dsp::new(48000, 128, cmd_rx, pkt_rx, socket.clone(), shared.clone());
+        let (ret_tx, ret_rx) = rtrb::RingBuffer::new(256);
+        let dsp = Dsp::new(48000, 128, cmd_rx, pkt_rx, ret_tx, socket.clone(), shared.clone());
+        let mut local: Vec<StripMirror> =
+            (0..MAX_LOCAL).map(|i| StripMirror { s: StripSettings::local(i), rack: vec![] }).collect();
+        local[0].s.active = true; // same default as the audio side
         let inner = Arc::new(Inner {
             socket,
             shared,
@@ -235,14 +271,17 @@ impl Engine {
                 signals: signal::Signals::new(),
                 stun_txid: [0; 12],
                 stun_reply: None,
-                fx: FxParams::default(),
+                local,
+                remote: vec![StripMirror { s: StripSettings::remote(), rack: vec![] }; MAX_REMOTE],
+                master: 1.0,
             }),
             cmds: Mutex::new(cmd_tx),
             incoming: Mutex::new(Some(pkt_tx)),
+            retired: Mutex::new(ret_rx),
             running: AtomicBool::new(false),
             start: Instant::now(),
         });
-        Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), local, public: Mutex::new(None) })
+        Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), local: local_addr, public: Mutex::new(None) })
     }
 
     /// Start the network threads.
@@ -327,86 +366,214 @@ impl Engine {
         ))
     }
 
-    /// Open the sound card. Returns (input latency ms, output latency ms).
-    #[pyo3(signature = (input, output, channel, samplerate, frame))]
-    fn start_audio(&self, py: Python<'_>, input: String, output: String, channel: Option<usize>, samplerate: u32, frame: usize) -> PyResult<(f32, f32)> {
-        let args = audio::StartArgs { input, output, channel, samplerate, frame, dsp: self.dsp.clone(), shared: self.inner.shared.clone() };
-        let ok = py.allow_threads(|| self.audio.start(args)).map_err(PyRuntimeError::new_err)?;
-        Ok((ok.lat_in_ms, ok.lat_out_ms))
+    /// Open the sound card (all its inputs; strips pick theirs).
+    /// Returns (input latency ms, output latency ms, number of inputs).
+    #[pyo3(signature = (input, output, samplerate, frame))]
+    fn start_audio(&self, py: Python<'_>, input: String, output: String, samplerate: u32, frame: usize) -> PyResult<(f32, f32, u16)> {
+        let args = audio::StartArgs { input, output, samplerate, frame, dsp: self.dsp.clone(), shared: self.inner.shared.clone() };
+        let res = py.allow_threads(|| self.audio.start(args));
+        self.inner.shared.streaming.store(res.is_ok(), Relaxed);
+        let ok = res.map_err(PyRuntimeError::new_err)?;
+        Ok((ok.lat_in_ms, ok.lat_out_ms, ok.in_channels))
     }
 
     fn stop_audio(&self, py: Python<'_>) {
         py.allow_threads(|| self.audio.stop());
+        self.inner.shared.streaming.store(false, Relaxed);
     }
 
     /// Run one block without a sound card (tests). Not while a stream is running.
-    fn process(&self, input: Vec<f32>) -> Vec<f32> {
-        let mut input = input;
-        let mut out = vec![0f32; input.len()];
-        self.dsp.lock().unwrap().process(&mut input, &mut out);
-        out
+    /// One block of interleaved input with `channels` interface inputs in; the
+    /// left output channel out (or the right with right=True). Call set_format
+    /// first if the block isn't 128.
+    #[pyo3(signature = (input, channels=1, right=false))]
+    fn process(&self, input: Vec<f32>, channels: usize, right: bool) -> Vec<f32> {
+        let frames = input.len() / channels.max(1);
+        let mut out = vec![0f32; 2 * frames];
+        self.dsp.lock().unwrap().process(&input, channels.max(1), &mut out);
+        self.inner.free_retired();
+        out.chunks_exact(2).map(|p| p[right as usize]).collect()
     }
 
     fn set_format(&self, samplerate: u32, frame: usize) {
         self.dsp.lock().unwrap().set_format(samplerate, frame);
     }
 
-    // --- controls ------------------------------------------------------------------
+    // --- mixer ---------------------------------------------------------------------
+    // Strips are addressed as "L0".."L3" (my inputs) and "R0".."R7" (the
+    // partner's channels, in the order they send them). Every change updates
+    // the mirror here and sends one command to the audio thread.
 
-    fn set_fx(&self, effect: &str, key: &str, value: f64) -> PyResult<()> {
-        let i = fx_index(effect).ok_or_else(|| PyValueError::new_err(format!("no effect {effect}")))?;
+    /// Strip setting: active, input, gain, pan, fader, mute, solo, send, mon.
+    fn strip_set(&self, target: &str, key: &str, value: f64) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let p = match key {
+            "active" => StripParam::Active,
+            "input" => StripParam::Input,
+            "gain" => StripParam::Gain,
+            "pan" => StripParam::Pan,
+            "fader" => StripParam::Fader,
+            "mute" => StripParam::Mute,
+            "solo" => StripParam::Solo,
+            "send" => StripParam::Send,
+            "mon" => StripParam::Mon,
+            _ => return Err(PyValueError::new_err(format!("no strip setting {key}"))),
+        };
         let mut c = self.inner.ctl.lock().unwrap();
-        if key == "on" {
-            c.fx.on[i] = value != 0.0;
-            self.inner.cmd(Cmd::FxOn(i, value != 0.0));
-        } else {
-            let k = param_index(i, key).ok_or_else(|| PyValueError::new_err(format!("no param {key}")))?;
-            c.fx.p[i][k] = value as f32;
-            self.inner.cmd(Cmd::FxParam(i, k, value as f32));
+        mirror(&mut c, t).s.set(p, value as f32);
+        self.cmd(Cmd::Strip(t, p, value as f32));
+        Ok(())
+    }
+
+    /// Add an effect to a strip's rack (at `pos`, default the end). Returns its position.
+    #[pyo3(signature = (target, kind, pos=None))]
+    fn rack_add(&self, target: &str, kind: &str, pos: Option<usize>) -> PyResult<usize> {
+        let t = parse_target(target)?;
+        let k = kind_index(kind).ok_or_else(|| PyValueError::new_err(format!("no effect {kind}")))?;
+        let mut c = self.inner.ctl.lock().unwrap();
+        let rack = &mut mirror(&mut c, t).rack;
+        if rack.len() >= MAX_SLOTS {
+            return Err(PyValueError::new_err(format!("a rack holds at most {MAX_SLOTS} effects")));
+        }
+        let pos = pos.unwrap_or(rack.len()).min(rack.len());
+        let cfg = SlotCfg::new(k);
+        rack.insert(pos, cfg);
+        // built (allocated) here, on the control side, then moved into the audio thread
+        self.cmd(Cmd::RackInsert(t, pos, Slot::new(cfg, self.samplerate())));
+        Ok(pos)
+    }
+
+    fn rack_remove(&self, target: &str, pos: usize) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let mut c = self.inner.ctl.lock().unwrap();
+        let rack = &mut mirror(&mut c, t).rack;
+        if pos < rack.len() {
+            rack.remove(pos);
+            self.cmd(Cmd::RackRemove(t, pos));
         }
         Ok(())
     }
 
-    fn fx_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let fx = self.inner.ctl.lock().unwrap().fx;
-        let d = PyDict::new(py);
-        for (i, info) in FX.iter().enumerate() {
-            let e = PyDict::new(py);
-            e.set_item("on", fx.on[i])?;
-            for (k, name) in info.params.iter().enumerate() {
-                e.set_item(*name, fx.p[i][k])?;
-            }
-            d.set_item(info.name, e)?;
+    fn rack_move(&self, target: &str, from: usize, to: usize) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let mut c = self.inner.ctl.lock().unwrap();
+        let rack = &mut mirror(&mut c, t).rack;
+        if from < rack.len() {
+            let s = rack.remove(from);
+            let to = to.min(rack.len());
+            rack.insert(to, s);
+            self.cmd(Cmd::RackMove(t, from, to));
         }
+        Ok(())
+    }
+
+    /// Slot setting: "on" or one of the effect's parameter names (0..1).
+    fn rack_set(&self, target: &str, pos: usize, key: &str, value: f64) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let mut c = self.inner.ctl.lock().unwrap();
+        let Some(slot) = mirror(&mut c, t).rack.get_mut(pos) else {
+            return Err(PyValueError::new_err(format!("no slot {pos}")));
+        };
+        if key == "on" {
+            slot.on = value != 0.0;
+            self.cmd(Cmd::RackOn(t, pos, slot.on));
+        } else {
+            let k = param_index(slot.kind, key)
+                .ok_or_else(|| PyValueError::new_err(format!("{} has no {key}", FX[slot.kind].name)))?;
+            slot.p[k] = value as f32;
+            self.cmd(Cmd::RackParam(t, pos, k, value as f32));
+        }
+        Ok(())
+    }
+
+    /// Replace a strip's whole rack with a preset's effects.
+    fn rack_preset(&self, target: &str, name: &str) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let slots = preset_slots(name).ok_or_else(|| PyValueError::new_err(format!("no preset {name}")))?;
+        self.load_rack(t, slots);
+        Ok(())
+    }
+
+    /// Replace a strip's rack with explicit slots: [{"kind", "on", <param>: value}].
+    fn rack_load(&self, target: &str, slots: Vec<Bound<'_, PyDict>>) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let mut cfgs = Vec::new();
+        for d in slots.iter().take(MAX_SLOTS) {
+            let kind: String = d.get_item("kind")?.ok_or_else(|| PyValueError::new_err("slot without kind"))?.extract()?;
+            let Some(k) = kind_index(&kind) else { continue };
+            let mut cfg = SlotCfg::new(k);
+            if let Some(on) = d.get_item("on")? {
+                cfg.on = on.extract()?;
+            }
+            for (i, name) in FX[k].params.iter().enumerate() {
+                if let Some(v) = d.get_item(*name)? {
+                    cfg.p[i] = v.extract::<f32>()?;
+                }
+            }
+            cfgs.push(cfg);
+        }
+        self.load_rack(t, cfgs);
+        Ok(())
+    }
+
+    fn set_master(&self, value: f64) {
+        self.inner.ctl.lock().unwrap().master = value as f32;
+        self.cmd(Cmd::Master(value as f32));
+    }
+
+    fn set_buffer(&self, blocks: f64) {
+        self.cmd(Cmd::JitterTarget(blocks.round().clamp(1.0, 64.0) as i64));
+    }
+
+    /// The whole mixer as plain data, for the UI.
+    fn mixer<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let c = self.inner.ctl.lock().unwrap();
+        let strip = |m: &StripMirror| -> PyResult<Bound<'py, PyDict>> {
+            let d = PyDict::new(py);
+            let s = &m.s;
+            d.set_item("active", s.active)?;
+            d.set_item("input", s.input)?;
+            d.set_item("gain", s.gain)?;
+            d.set_item("pan", s.pan)?;
+            d.set_item("fader", s.fader)?;
+            d.set_item("mute", s.mute)?;
+            d.set_item("solo", s.solo)?;
+            d.set_item("send", s.send)?;
+            d.set_item("mon", s.mon)?;
+            let rack = m.rack.iter().map(|slot| -> PyResult<Bound<'py, PyDict>> {
+                let e = PyDict::new(py);
+                e.set_item("kind", FX[slot.kind].name)?;
+                e.set_item("on", slot.on)?;
+                for (i, name) in FX[slot.kind].params.iter().enumerate() {
+                    e.set_item(*name, slot.p[i])?;
+                }
+                Ok(e)
+            }).collect::<PyResult<Vec<_>>>()?;
+            d.set_item("rack", rack)?;
+            Ok(d)
+        };
+        let d = PyDict::new(py);
+        d.set_item("local", c.local.iter().map(strip).collect::<PyResult<Vec<_>>>()?)?;
+        d.set_item("remote", c.remote.iter().map(strip).collect::<PyResult<Vec<_>>>()?)?;
+        d.set_item("master", c.master)?;
         Ok(d)
     }
 
-    fn preset<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyDict>> {
-        {
-            let mut c = self.inner.ctl.lock().unwrap();
-            if !c.fx.apply_preset(name) {
-                return Err(PyValueError::new_err(format!("no preset {name}")));
-            }
-            self.inner.cmd(Cmd::FxAll(c.fx));
-        }
-        self.fx_state(py)
+    /// [{"name", "params": [...], "defaults": [...]}] for every effect type.
+    #[staticmethod]
+    fn effects<'py>(py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        FX.iter().map(|f| {
+            let d = PyDict::new(py);
+            d.set_item("name", f.name)?;
+            d.set_item("params", f.params.to_vec())?;
+            d.set_item("defaults", f.defaults[..f.params.len()].to_vec())?;
+            Ok(d)
+        }).collect()
     }
 
     #[staticmethod]
     fn presets() -> Vec<&'static str> {
         fx::PRESETS.iter().map(|(n, _)| *n).collect()
-    }
-
-    fn set_mix(&self, key: &str, value: f64) -> PyResult<()> {
-        let v = value as f32;
-        self.inner.cmd(match key {
-            "partner" => Cmd::RemoteGain(v),
-            "monitor" => Cmd::MonitorGain(v),
-            "buffer" => Cmd::JitterTarget(value.round().clamp(1.0, 64.0) as i64),
-            "room" => Cmd::Room(v),
-            _ => return Err(PyValueError::new_err(format!("no mix control {key}"))),
-        });
-        Ok(())
     }
 
     // --- signaling -----------------------------------------------------------------
@@ -451,6 +618,7 @@ impl Engine {
     }
 
     fn state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.inner.free_retired();
         let i = &self.inner;
         let s = &i.shared;
         let connected = i.connected();
@@ -467,8 +635,13 @@ impl Engine {
         d.set_item("samplerate", s.samplerate.load(Relaxed))?;
         d.set_item("frame", s.frame.load(Relaxed))?;
         d.set_item("jitter_target", s.jitter_target.load(Relaxed))?;
-        d.set_item("in_level", s.in_level.get())?;
-        d.set_item("out_level", s.out_level.get())?;
+        d.set_item("local_levels", s.local_levels.iter().map(|l| l.get()).collect::<Vec<_>>())?;
+        d.set_item("remote_levels", s.remote_levels.iter().map(|l| l.get()).collect::<Vec<_>>())?;
+        d.set_item("master_level", s.master_level.get())?;
+        d.set_item("remote_channels", s.remote_channels.load(Relaxed))?;
+        d.set_item("sent_channels", s.sent_channels.load(Relaxed))?;
+        d.set_item("in_channels", s.in_channels.load(Relaxed))?;
+        d.set_item("peer_protocol", s.peer_protocol.load(Relaxed))?;
         let cushion_ms = s.cushion_frames.load(Relaxed) as f64 * 1000.0 / s.samplerate.load(Relaxed).max(1) as f64;
         d.set_item("lat_in_ms", s.lat_in_us.load(Relaxed) as f64 / 1000.0 + cushion_ms)?;
         d.set_item("lat_out_ms", s.lat_out_us.load(Relaxed) as f64 / 1000.0)?;
@@ -483,6 +656,57 @@ impl Engine {
             d.set_item(k, v.load(Relaxed))?;
         }
         Ok(d)
+    }
+}
+
+impl Engine {
+    fn samplerate(&self) -> f32 {
+        self.inner.shared.samplerate.load(Relaxed) as f32
+    }
+
+    /// Queue a command for the audio thread. With no stream running nothing
+    /// would drain the queue (and it would fill up and drop commands), so then
+    /// apply it right away.
+    fn cmd(&self, c: Cmd) {
+        self.inner.cmd(c);
+        if !self.inner.shared.streaming.load(Relaxed) {
+            if let Ok(mut d) = self.dsp.try_lock() {
+                d.apply_pending();
+            }
+            self.inner.free_retired();
+        }
+    }
+
+    fn load_rack(&self, t: Target, slots: Vec<SlotCfg>) {
+        let sr = self.samplerate();
+        let mut c = self.inner.ctl.lock().unwrap();
+        let rack = &mut mirror(&mut c, t).rack;
+        for _ in 0..rack.len() {
+            self.cmd(Cmd::RackRemove(t, 0));
+        }
+        rack.clear();
+        for (i, s) in slots.into_iter().take(MAX_SLOTS).enumerate() {
+            rack.push(s);
+            self.cmd(Cmd::RackInsert(t, i, Slot::new(s, sr)));
+        }
+    }
+}
+
+fn parse_target(s: &str) -> PyResult<Target> {
+    let bad = || PyValueError::new_err(format!("strip {s:?}: use L0-L{} or R0-R{}", MAX_LOCAL - 1, MAX_REMOTE - 1));
+    let (side, n) = s.split_at(1.min(s.len()));
+    let i: usize = n.parse().map_err(|_| bad())?;
+    match side {
+        "L" if i < MAX_LOCAL => Ok(Target::Local(i)),
+        "R" if i < MAX_REMOTE => Ok(Target::Remote(i)),
+        _ => Err(bad()),
+    }
+}
+
+fn mirror(c: &mut Ctl, t: Target) -> &mut StripMirror {
+    match t {
+        Target::Local(i) => &mut c.local[i],
+        Target::Remote(i) => &mut c.remote[i],
     }
 }
 
