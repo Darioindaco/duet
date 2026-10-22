@@ -78,7 +78,8 @@ has two tabs:
    delay. (Instruments are under *Instruments*, below.) The first scan takes
    about half a minute; after that it's instant. A plugin that hangs or shows a
    license dialog while being scanned is skipped, not fatal.
-7. **Metronome** (next to *Mixer*): on/off, tempo (type it, −/+, or *Tap*) and
+7. **Metronome** (*Jam* in the top bar, for playing live; its tempo is its own,
+   apart from the song's): on/off, tempo (type it, −/+, or *Tap*) and
    beats per bar are shared with your partner; the click volume is just yours
    and the click is never sent. Whoever starts it or changes the tempo leads;
    the other one's click is lined up with the leader's playing *as it arrives*,
@@ -91,9 +92,11 @@ the same time, like a shared document: the song is open on both computers and
 every change (a new track, a moved clip, the tempo) shows up on the other side
 right away. The green dot on the song name means you're in the same song.
 
-1. **Tracks:** *+ Track* adds one. Under its name you pick **who plays on it and
-   from which input**: *You · Guitar* or *Partner · Vocals*. Orange tracks are
-   yours, teal ones your partner's.
+1. **Tracks:** *+ Track* asks what goes on it. **Audio · line in**: pick **who
+   plays on it and from which input** (*You · Guitar* or *Partner · Vocals*);
+   it's armed right away. **Software instrument**: a drum kit, the synth or a VST,
+   with a pattern for it already in the song at the playhead, and the sequencer
+   open to write in. Orange tracks are yours, teal ones your partner's.
 2. **Arm** the tracks you want to record (the red dot). Arm yours and theirs at
    once to record both of you in one go.
 3. **Record** (the red button, or *R*). With *1 bar count-in* on you get a bar
@@ -127,7 +130,7 @@ Click in the ruler to move the playhead, drag in the ruler to mark a loop.
 *Space* plays and stops, *R* records, *Ctrl + scroll* zooms. *Click* gives you
 a metronome while the song plays (just for you).
 
-**Export** (top right of the playlist) saves the song as a 24-bit WAV: just the
+**Export** (the song menu top left, or *Ctrl+E*) saves the song as a 24-bit WAV: just the
 mix, or the mix plus every track on its own (stems, e.g. to mix it further in
 another program), the whole song or just the loop. It renders faster than real
 time and the sound keeps running meanwhile. What you hear is what you get: the
@@ -176,19 +179,36 @@ the other one stays saved.
 The **Sequencer** tab works like FL Studio's channel rack and piano roll, in
 the shared song (your partner sees every note you place, and you theirs).
 
-- **Channels** are the song's instruments: *+ Channel* → Drum kit, Synth or a
-  VST instrument. A channel is also a track in the playlist and a strip in the
-  mixer (*Sound* opens its knobs, pads and effects there).
+- **Channels** are the song's instruments: *+ Track → Software instrument* in the
+  playlist, or *+ Channel* here (it joins the open pattern). A channel is also a
+  track in the playlist and a strip in the mixer (*Sound* opens its knobs, pads
+  and effects there).
 - **Patterns** hold notes for any number of channels. Pick one at the top (or
   *+ New pattern*), set its length (1–8 bars); *⋯* renames, copies, clears or
   deletes it.
 - **Steps:** every channel has a row of 16th-note steps per bar; a drum kit has a
   row per pad (*All pads* shows all 16). Click a step to switch it on or off.
-- **Piano roll** (below) for the selected channel: click to draw a note, drag to
-  move it (up/down changes the pitch), drag its right end to make it longer,
-  right-click to delete. Notes snap to the grid (*Snap*, or hold *Alt*). The bars
-  underneath are the velocities: drag them up or down. Click a key on the left to
-  hear it. *Ctrl+A*, *Delete* and *Ctrl+Z* work here too.
+- **Piano roll** (below; drag the bar above it for more or less room) for the
+  selected channel: click to draw a note, drag to move it (up/down changes the
+  pitch), drag its right end to make it longer. Notes snap to the grid (*Snap*,
+  or hold *Alt*). The bars underneath are the velocities: drag them up or down
+  (or *Alt + scroll* on a note). Click a key on the left to hear it. The other
+  channels' notes show faintly behind, to write against.
+
+  | | |
+  |---|---|
+  | Erase | right-click, or hold the right button and drag over notes |
+  | Select | *Shift* (or *Ctrl*) + drag a box on empty space; *Shift*-click a note; *Ctrl+A* |
+  | Copy while moving | *Ctrl* + drag a note |
+  | Copy / cut / paste | *Ctrl+C* / *Ctrl+X* / *Ctrl+V* (pastes at the mouse) |
+  | Duplicate | *Ctrl+B* puts a copy right after the selection |
+  | Quantize | *Ctrl+Q*, with a bar to pick the grid (triplets too), the strength and whether the ends line up |
+  | Humanize | *Ctrl+H* loosens the timing and velocity a little |
+  | Legato | *Ctrl+L*: every note lasts until the next one |
+  | Move | arrows: a semitone (*Shift* / *Ctrl*: an octave), a grid step left/right |
+  | Delete, undo | *Delete*, *Ctrl+Z* / *Ctrl+Y* |
+
+  *Ctrl+Q*, *H* and *L* work on the selection, or on all of the channel's notes.
 - **▶** plays the pattern on its own, looped (*space*), while you work on it.
 - **Into the song:** *+ Into the song* puts the pattern in the playlist at the
   playhead, or double-click an empty spot in the playlist. A pattern block plays

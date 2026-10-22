@@ -38,7 +38,7 @@ body {
   overflow: hidden;
 }
 button, input, select { font: inherit; color: inherit; }
-.app { display: grid; grid-template-rows: auto 1fr auto; height: 100%; gap: 14px; padding: 16px 18px 14px; }
+.app { display: grid; grid-template-rows: auto 1fr auto; height: 100%; gap: 10px; padding: 10px 14px 12px; }
 
 /* ---------- header ---------- */
 header { display: flex; align-items: center; gap: 18px; min-width: 0; }
@@ -240,7 +240,14 @@ input[type=text] { font-family: var(--mono); letter-spacing: 0.04em; user-select
 .knob.big { width: 64px; }
 
 /* ---------- footer ---------- */
-footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; }
+footer { display: grid; grid-template-columns: 1fr auto auto; gap: 18px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px 8px 16px; }
+.ftog { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--faint); cursor: pointer; }
+.ftog:hover { background: var(--line); color: var(--text); }
+/* folded: just a thin line with the button */
+footer.min { grid-template-columns: 1fr auto; padding: 0 4px; height: 20px; gap: 0; border-color: transparent; background: none; margin-top: -6px; }
+footer.min .fmain, footer.min .stats { display: none; }
+footer.min::before { content: ""; height: 1px; background: var(--line); }
+footer.min .ftog { transform: rotate(180deg); height: 18px; }
 .lbar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: #0a090d; }
 .lbar i { display: block; height: 100%; transition: width 0.3s; }
 .legend { display: flex; gap: 16px; margin-top: 7px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
@@ -374,27 +381,51 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 </head>
 <body>
 <div class="app">
-  <header>
+  <!-- one bar, like FL's: the song, the views, the song's transport, the jam metronome (its own tempo), the connection -->
+  <header class="transport">
+    <button class="songbtn" id="songBtn" title="The song: rename it, start a new one, open another"><span class="sh" id="songShared"></span><span class="nm" id="songName">Song</span>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
     <button class="iconbtn sq" id="sbToggle" title="Show / hide the Connect & Sound panel" aria-label="Toggle side panel">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
     </button>
-    <div class="brand">
-      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
-        <defs><linearGradient id="lg" x1="0" x2="1"><stop offset="0" stop-color="#ff9548"/><stop offset="1" stop-color="#4fd6c6"/></linearGradient></defs>
-        <rect width="34" height="34" rx="10" fill="#1d1a25" stroke="#2a2634"/>
-        <path d="M6 17c3 0 3-7 6-7s3 14 6 14 3-10 5-10 2 6 5 6" fill="none" stroke="url(#lg)" stroke-width="2.6" stroke-linecap="round"/>
-      </svg>
-      <h1><span>Duet</span></h1>
-    </div>
     <div class="seg views" id="viewSeg" role="tablist"><button data-v="song">Playlist</button><button data-v="seq">Sequencer</button><button data-v="mixer">Mixer</button></div>
-    <button class="songbtn" id="songBtn"><span class="sh" id="songShared"></span><span class="nm" id="songName">Song</span>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+    <div class="tgrp" title="The song: play, record and its tempo">
+      <button class="tbtn play" id="tpPlay" title="Play / stop the song (space)" aria-label="Play or stop"></button>
+      <button class="tbtn rec" id="tpRec" title="Record (R): every armed track, yours and your partner's" aria-label="Record">
+        <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="currentColor"/></svg></button>
+      <div class="lcd" id="lcd"><b id="tpPos">1.1.00</b><span id="tpTime">0:00.0</span></div>
+      <div class="bpm" title="The song's tempo"><input id="songBpm" type="number" min="40" max="240" step="1" value="120" aria-label="Song tempo in BPM"><span>BPM</span></div>
+      <select id="songBeats" aria-label="Beats per bar"><option value="2">2/4</option><option value="3">3/4</option><option value="4">4/4</option><option value="6">6/8</option></select>
+      <button class="ttog" id="tgClick" title="Click while the song plays (just for you)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3h7l4 18h-15z"/><path d="M12 15 17 6"/><path d="M7 17h10"/></svg></button>
+      <button class="ttog" id="tgCount" title="Count in one bar before recording">1 bar</button>
+      <button class="ttog loop" id="tgLoop" title="Loop the marked part (drag in the ruler to mark it)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M3 11V9a4 4 0 0 1 4-4h13"/><path d="M7 22l-3-3 3-3"/><path d="M21 13v2a4 4 0 0 1-4 4H4"/></svg></button>
+      <div class="zoom">
+        <button id="undoBtn" title="Undo (ctrl+Z): your own last change" aria-label="Undo">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+        <button id="redoBtn" title="Redo (ctrl+Y)" aria-label="Redo">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+      </div>
+    </div>
+    <div class="tgrp metro" id="metro" title="Jam metronome, for playing live: its own tempo, separate from the song's. Tempo and on/off are the same for both of you; the volume is just yours">
+      <span class="tglbl">Jam</span>
+      <button class="mtog" id="metroBtn" aria-label="Metronome on/off">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3h7l4 18h-15z"/><path d="M12 15 17 6"/><path d="M7 17h10"/></svg>
+        <span class="beatdot" id="beatDot"></span>
+      </button>
+      <div class="bpm"><button id="bpmMinus" aria-label="Slower">−</button><input id="bpm" type="number" min="40" max="240" step="1" value="100" aria-label="Tempo in BPM"><button id="bpmPlus" aria-label="Faster">+</button></div>
+      <button class="tap" id="tapBtn" title="Tap the tempo">Tap</button>
+      <select id="beatsSel" aria-label="Beats per bar"><option value="2">2/4</option><option value="3">3/4</option><option value="4" selected>4/4</option><option value="6">6/8</option></select>
+      <div id="metroVol"></div>
+      <span class="msync" id="metroSync"></span>
+    </div>
+    <div class="spacer"></div>
     <div class="phere" id="pHere" hidden><span class="pdot"></span><button class="ptxt" id="pHereTxt">Partner</button>
       <button class="pfollow" id="pFollow" title="Keep your view on your partner's: the same view, pattern and spot in the song, until you do something yourself">Follow</button></div>
-    <div class="spacer"></div>
-    <div class="latency-big" id="bigLat">
+    <div class="latency-big" id="bigLat" title="The delay from your partner's instrument to your ears">
       <div class="num" id="bigLatNum">--<small>ms</small></div>
-      <div class="lbl">partner → your ears</div>
+      <div class="lbl">partner → you</div>
     </div>
     <button class="iconbtn" id="keysBtn" title="Play the selected instrument with your computer keyboard">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M7 5v8M12 5v8M17 5v8"/><path d="M5.5 5v5h3V5M15.5 5v5h3V5"/></svg>
@@ -449,38 +480,17 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
     <div class="right">
       <div class="view" id="viewSong" hidden>
         <section class="card song">
-          <div class="transport">
-            <button class="tbtn play" id="tpPlay" title="Play / stop (space)" aria-label="Play or stop"></button>
-            <button class="tbtn rec" id="tpRec" title="Record (R): every armed track, yours and your partner's" aria-label="Record">
-              <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="currentColor"/></svg></button>
-            <div class="lcd" id="lcd"><b id="tpPos">1.1.00</b><span id="tpTime">0:00.0</span></div>
-            <div class="bpm"><input id="songBpm" type="number" min="40" max="240" step="1" value="120" aria-label="Song tempo in BPM"><span>BPM</span></div>
-            <select id="songBeats" aria-label="Beats per bar"><option value="2">2/4</option><option value="3">3/4</option><option value="4">4/4</option><option value="6">6/8</option></select>
-            <button class="ttog" id="tgClick" title="Click while the song plays (just for you)">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3h7l4 18h-15z"/><path d="M12 15 17 6"/><path d="M7 17h10"/></svg><span class="tgl-label">Click</span></button>
-            <button class="ttog" id="tgCount" title="Count in one bar before recording">1 bar<span class="tgl-label">&nbsp;count-in</span></button>
-            <button class="ttog loop" id="tgLoop" title="Loop the marked part (drag in the ruler to mark it)">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M3 11V9a4 4 0 0 1 4-4h13"/><path d="M7 22l-3-3 3-3"/><path d="M21 13v2a4 4 0 0 1-4 4H4"/></svg><span class="tgl-label">Loop</span></button>
-            <select id="snapSel" aria-label="Snap to grid"></select>
-            <div class="spacer"></div>
-            <div class="xfer" id="xfer"></div>
-            <div class="zoom">
-              <button id="undoBtn" title="Undo (ctrl+Z): your own last change" aria-label="Undo">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
-              <button id="redoBtn" title="Redo (ctrl+Y)" aria-label="Redo">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
-            </div>
-            <button class="ttog" id="exportBtn" title="Save the song as a WAV file">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span class="tgl-label">Export</span></button>
-            <div class="zoom"><button id="zoomOut" title="Zoom out (ctrl + scroll)" aria-label="Zoom out">−</button><button id="zoomIn" title="Zoom in (ctrl + scroll)" aria-label="Zoom in">+</button></div>
-          </div>
           <div class="arr">
-            <div class="corner"><button class="addtrack" id="addTrack">+ Track</button></div>
+            <div class="corner"><button class="addtrack" id="addTrack">+ Track</button><div class="spacer"></div>
+              <button class="cbtn" id="snapBtn" aria-label="Snap to grid">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 3v9a7 7 0 0 0 14 0V3"/><path d="M5 7h4M15 7h4"/><path d="M9 3v9a3 3 0 0 0 6 0V3"/></svg><span id="snapLbl"></span></button>
+              <button class="cbtn" id="zoomOut" title="Zoom out (ctrl + scroll)" aria-label="Zoom out">−</button><button class="cbtn" id="zoomIn" title="Zoom in (ctrl + scroll)" aria-label="Zoom in">+</button></div>
             <div class="rulerwrap"><canvas id="ruler" title="Click: jump here. Drag: mark the loop."></canvas></div>
             <div class="theads"><div class="theads-in" id="theadsIn"></div></div>
             <div class="lanewrap" id="lanewrap">
               <canvas id="lanesCv"></canvas><canvas id="lanesOv"></canvas>
               <div class="lanes" id="lanes"><div id="lanesSize"></div></div>
+              <div class="xfer" id="xfer"></div>
             </div>
           </div>
         </section>
@@ -496,11 +506,18 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
             <button class="ttog" id="patPlace" title="Put the pattern in the playlist at the playhead (or double-click an empty spot in the playlist)">+ Into the song</button>
             <button class="pwho" id="seqWho" hidden></button>
             <div class="spacer"></div>
-            <select id="addChannel" class="addfx" aria-label="Add a channel"><option value="">+ Channel</option><option value="drums">Drum kit</option><option value="synth">Synth</option><option value="vst">VST instrument…</option></select>
+            <button class="ttog" id="addChannel" title="Add an instrument: drum kit, synth or VST">+ Channel</button>
           </div>
           <div class="chanrows" id="chanRows"></div>
-          <div class="prhead"><h2 id="prTitle">Piano roll</h2><div class="spacer"></div>
-            <span class="prhint">Click: a note · drag: move / longer · right-click: delete · alt: no snap</span>
+          <div class="seqsplit" id="seqSplit" title="Drag: more room for the channel rack or the piano roll. Double-click: back to auto"></div>
+          <div class="prhead"><h2 id="prTitle">Piano roll</h2>
+            <div class="qbar" id="qBar" hidden><b>Quantize</b>
+              <select id="qGrid" aria-label="Quantize to"></select>
+              <select id="qStr" aria-label="Strength" title="How far the notes move toward the grid"></select>
+              <button class="ttog" id="qEnds" title="Also line up where the notes end">Ends</button>
+              <button class="qx" id="qX" aria-label="Close" title="Done (Esc)">✕</button></div>
+            <div class="spacer"></div>
+            <span class="prhint" title="Shift/ctrl + drag on empty space: select a box · ctrl + drag a note: copy · arrows: move the selection · ctrl+C / X / V: copy, cut, paste at the mouse · ctrl+B: duplicate · ctrl+Q: quantize · ctrl+H: humanize · ctrl+L: legato · alt + scroll on a note: velocity">Click: note · right-drag: erase · shift-drag: select · ctrl+Q / H / B / L · hover for more</span>
             <select id="prSnap" aria-label="Snap"></select>
             <div class="zoom"><button id="prZoomOut" aria-label="Zoom out">−</button><button id="prZoomIn" aria-label="Zoom in">+</button></div></div>
           <div class="prwrap" id="prWrap">
@@ -515,17 +532,6 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
       <section class="card">
         <div class="sect-head">
           <h2>Mixer</h2>
-          <div class="metro" id="metro" title="Shared metronome: tempo and on/off are the same for both of you; the volume is just yours">
-            <button class="mtog" id="metroBtn" aria-label="Metronome on/off">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3h7l4 18h-15z"/><path d="M12 15 17 6"/><path d="M7 17h10"/></svg>
-              <span class="beatdot" id="beatDot"></span>
-            </button>
-            <div class="bpm"><button id="bpmMinus" aria-label="Slower">−</button><input id="bpm" type="number" min="40" max="240" step="1" value="100" aria-label="Tempo in BPM"><button id="bpmPlus" aria-label="Faster">+</button><span>BPM</span></div>
-            <button class="tap" id="tapBtn" title="Tap the tempo">Tap</button>
-            <select id="beatsSel" aria-label="Beats per bar"><option value="2">2/4</option><option value="3">3/4</option><option value="4" selected>4/4</option><option value="6">6/8</option></select>
-            <div id="metroVol"></div>
-            <span class="msync" id="metroSync"></span>
-          </div>
           <div class="spacer"></div>
           <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Auto finds the smallest one without crackles; − / + set it yourself.">
             Safety buffer
@@ -551,12 +557,14 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
     </div>
   </main>
 
-  <footer>
-    <div>
+  <footer id="footer">
+    <div class="fmain">
       <div class="lbar" id="lbar"></div>
       <div class="legend" id="legend"></div>
     </div>
     <div class="stats" id="stats"></div>
+    <button class="ftog" id="ftToggle" title="Hide / show the connection stats" aria-label="Hide or show the stats">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
   </footer>
 </div>
 <div class="video" id="video" hidden>
@@ -591,6 +599,28 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 </div>
 <div class="menu" id="songMenu" hidden></div>
 <div class="menu ctx" id="ctxMenu" hidden></div>
+<div class="modal" id="newTrackM" hidden>
+  <div class="mbox wide" role="dialog" aria-modal="true" aria-labelledby="ntTitle">
+    <div class="mhead"><b id="ntTitle">New track</b><span>What goes on it?</span><button class="x" id="ntX" aria-label="Close">✕</button></div>
+    <div class="mbody">
+      <div class="ntkinds">
+        <button class="ntkind" data-k="inst">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M7 5v8M12 5v8M17 5v8"/><path d="M5.5 5v5h3V5M15.5 5v5h3V5"/></svg>
+          <b>Software instrument</b><span>A drum kit, the synth or a VST. Write notes for it, or play it with a MIDI keyboard.</span></button>
+        <button class="ntkind" data-k="audio">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/></svg>
+          <b>Audio · line in</b><span>Record a guitar, a mic… from your interface, or from your partner's.</span></button>
+      </div>
+      <div class="ntopts" id="ntOpts"></div>
+      <div class="ntfoot" id="ntFoot" hidden>
+        <input type="text" id="ntName" placeholder="Name" spellcheck="false" autocomplete="off" aria-label="Track name">
+        <button class="ttog" id="ntArm" title="Arm it, so Record records on it right away">Arm</button>
+        <button class="btn primary" id="ntGo">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal" id="exportm" hidden>
   <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="exTitle">
     <div class="mhead"><b id="exTitle">Export</b><span>WAV, 24-bit stereo</span><button class="x" id="exX" aria-label="Close">✕</button></div>
@@ -1375,10 +1405,9 @@ function vstRender(res) {
     if (!item) return;
     const p = list[+item.dataset.i];
     box.innerHTML = `<div class="mwait"><span class="spinner"></span>Loading ${esc(p.name)}… (some plugins take a while)</div>`;
-    if (ui.vstMode === "inst" && ui.instFor === "new-channel") {
+    if (ui.vstMode === "inst" && (ui.instFor === "new-channel" || ui.instFor === "new-track")) {
       $("vstm").hidden = true;
-      makeChannel({ kind: "vst", vst: { path: p.path, cid: p.cid, name: p.name } }, p.name);
-      setMainView("seq");
+      createInstrumentTrack({ kind: "vst", vst: { path: p.path, cid: p.cid, name: p.name } }, ui.instName || uniqueTrackName(p.name), ui.instFor === "new-track");
       return;
     }
     if (ui.vstMode === "inst") {
@@ -1722,6 +1751,9 @@ async function boot(a) {
   for (const t of document.querySelectorAll(".tab")) t.onclick = () => setTab(t.dataset.tab);
   $("sbClose").onclick = () => setSidebar(false);
   $("sbToggle").onclick = () => setSidebar(!ui.sbOpen);
+  const foldStats = (min) => { $("footer").classList.toggle("min", min); store.set("statsMin", min); };
+  foldStats(store.get("statsMin", false));
+  $("ftToggle").onclick = () => foldStats(!$("footer").classList.contains("min"));
   $("pill").onclick = () => openPanel("connect");
   setTab(store.get("tab", "connect"));
   setSidebar(store.get("sidebar", true));

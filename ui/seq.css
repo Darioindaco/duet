@@ -7,23 +7,28 @@
 #patSel { min-width: 160px; font-weight: 650; }
 #patPlay.on { background: var(--ok); color: #062012; border-color: transparent; }
 
-.chanrows { flex: 0 1 auto; max-height: 42%; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
-.chan { --c: var(--me); display: grid; grid-template-columns: 236px 1fr; gap: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 11px; padding: 6px; }
+/* compact, like FL's channel rack: fixed-size steps instead of stretching over the whole width */
+.chanrows { --stepw: 16px; --steph: 15px; flex: 0 1 auto; max-height: 42%; min-height: 40px; overflow: auto; display: flex; flex-direction: column; gap: 3px; padding-right: 2px; }
+.chan { --c: var(--me); display: grid; grid-template-columns: 184px max-content; gap: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px 6px 3px 3px; width: max-content; min-width: 100%; }
 .chan.partner { --c: var(--partner); }
 .chan.sel { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset; }
-.chead { display: flex; flex-direction: column; gap: 5px; padding: 2px 4px; cursor: pointer; border-left: 3px solid var(--c); border-radius: 2px; }
-.cname b { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cname span { font-size: 11px; color: var(--muted); }
-.ctools { display: flex; align-items: center; gap: 4px; }
-.ctools .tb { width: 24px; height: 22px; font-size: 10px; }
-.ctools .hs { width: 64px; flex: none; }
-.ctools .fxb { height: 22px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--muted); font-size: 10px; font-weight: 750; cursor: pointer; }
-.cgrid { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-x: auto; }
-.srow { display: grid; grid-template-columns: 82px 1fr; gap: 6px; align-items: center; }
-.rname { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.chead { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 1px 4px; cursor: pointer; border-left: 3px solid var(--c); border-radius: 2px; position: sticky; left: 0; background: var(--bg); z-index: 1; }
+.cname { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.cname b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cname span { font-size: 10px; color: var(--muted); white-space: nowrap; flex: none; }
+.ctools { display: flex; align-items: center; gap: 3px; }
+.ctools .tb { width: 20px; height: 18px; font-size: 9.5px; }
+.ctools .hs { width: 46px; flex: none; height: 18px; }
+.ctools .fxb { height: 18px; padding: 0 5px; border-radius: 5px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--muted); font-size: 9.5px; font-weight: 750; cursor: pointer; }
+.cgrid { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; }
+.srow { display: grid; grid-template-columns: 62px max-content; gap: 5px; align-items: center; }
+.rname { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .rname:hover { color: var(--text); }
-.cells { display: grid; gap: 3px; }
-.step { height: 20px; border-radius: 4px; border: 1px solid #000; cursor: pointer; padding: 0; background: #2b2733; }
+.cells { display: grid; gap: 2px; }
+.step { width: var(--stepw); height: var(--steph); border-radius: 3px; border: 1px solid #000; cursor: pointer; padding: 0; background: #2b2733; }
+.seqsplit { flex: none; height: 7px; margin: -4px 0; cursor: row-resize; position: relative; }
+.seqsplit::after { content: ""; position: absolute; left: 50%; top: 2px; width: 44px; height: 3px; margin-left: -22px; border-radius: 2px; background: var(--line-2); }
+.seqsplit:hover::after, .seqsplit.drag::after { background: var(--muted); }
 .step.odd { background: #221f29; }
 .step.bar { box-shadow: -2px 0 0 rgba(255,255,255,0.12); }
 .step:hover { filter: brightness(1.35); }
@@ -33,10 +38,16 @@
 .seq-empty b { color: var(--muted); }
 
 .prhead { display: flex; align-items: center; gap: 8px; }
-.prhead h2 { margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+.prhead h2 { margin: 0; white-space: nowrap; flex: none; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
 .prhead .who { text-transform: none; letter-spacing: 0; color: var(--text); font-size: 13px; }
 .prhead select { width: auto; padding: 5px 24px 5px 8px; font-size: 12px; border-radius: 8px; background-position: calc(100% - 12px) 52%, calc(100% - 8px) 52%; }
-.prhint { font-size: 11px; color: var(--faint); }
+.prhint { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; cursor: help; }
+.qbar { display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: 9px; border: 1px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--panel-2)); font-size: 12px; }
+.qbar[hidden] { display: none; }
+.qbar b { color: var(--warn); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.qbar .ttog { height: 26px; }
+.qx { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 2px 6px; }
+.qx:hover { color: var(--text); }
 .prwrap { flex: 1; min-height: 160px; display: grid; grid-template-columns: 74px 1fr; grid-template-rows: 1fr 54px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #0c0b10; }
 .prkeys { position: relative; overflow: hidden; border-right: 1px solid var(--line); background: #e9e6ee; }
 #prKeysIn { position: absolute; left: 0; right: 0; top: 0; }
@@ -51,4 +62,4 @@
 #prVel { display: block; border-top: 1px solid var(--line); cursor: ns-resize; }
 #viewSeq { grid-template-rows: 1fr; }
 .ctools .fxb { white-space: nowrap; }
-.minipr { display: block; width: 100%; height: 44px; border-radius: 6px; cursor: pointer; }
+.minipr { display: block; width: calc(16 * (var(--stepw) + 2px) + 72px); height: 34px; border-radius: 6px; cursor: pointer; }

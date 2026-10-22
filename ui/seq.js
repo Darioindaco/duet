@@ -52,7 +52,7 @@ function seqSetup() {
   };
   $("patPlace").onclick = placePattern;
   $("patMore").onclick = patMenu;
-  $("addChannel").onchange = () => { const v = $("addChannel").value; $("addChannel").value = ""; if (v) addChannel(v); };
+  $("addChannel").onclick = () => openNewTrack("seq", "inst");
   const snap = $("prSnap");
   for (const [label, v] of PR_SNAPS) snap.append(new Option("Snap: " + label, v, false, v === seq.snap));
   snap.onchange = () => { seq.snap = +snap.value; store.set("prSnap", seq.snap); };
@@ -62,27 +62,206 @@ function seqSetup() {
   pr.addEventListener("scroll", () => { $("prKeysIn").style.transform = `translateY(${-pr.scrollTop}px)`; prDraw(); });
   pr.addEventListener("pointerdown", prDown);
   pr.addEventListener("pointermove", prHover);
-  pr.addEventListener("contextmenu", (e) => { e.preventDefault(); prErase(e); });
-  pr.addEventListener("wheel", (e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); prZoom(e.deltaY < 0 ? 1.15 : 1 / 1.15); } }, { passive: false });
+  pr.addEventListener("pointerleave", () => (seq.mouse = null));
+  pr.addEventListener("contextmenu", (e) => e.preventDefault()); // right button erases (prDown)
+  pr.addEventListener("wheel", prWheel, { passive: false });
   $("prVel").addEventListener("pointerdown", velDown);
   new ResizeObserver(() => prDraw()).observe($("prWrap"));
   document.addEventListener("keydown", seqKeys);
+  splitSetup();
+  quantSetup();
+}
+
+// the bar between the channel rack and the piano roll: drag it to share the room
+function splitSetup() {
+  const rows = $("chanRows"), bar = $("seqSplit");
+  const h = store.get("seqRackH", null);
+  if (h) rows.style.maxHeight = h + "px";
+  bar.onpointerdown = (e) => {
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    bar.classList.add("drag");
+    const y0 = e.clientY, h0 = rows.getBoundingClientRect().height;
+    const card = rows.closest(".seqcard").getBoundingClientRect().height;
+    bar.onpointermove = (ev) => {
+      const v = Math.round(Math.max(40, Math.min(card - 220, h0 + ev.clientY - y0)));
+      rows.style.maxHeight = rows.style.height = v + "px";
+    };
+    bar.onpointerup = () => {
+      bar.onpointermove = bar.onpointerup = null;
+      bar.classList.remove("drag");
+      rows.style.height = "";
+      store.set("seqRackH", parseInt(rows.style.maxHeight, 10));
+    };
+  };
+  bar.ondblclick = () => { rows.style.maxHeight = ""; store.set("seqRackH", null); };
 }
 
 function seqKeys(e) {
-  if (ui.view !== "seq" || e.target.closest("input, select, textarea") || !$("vstm").hidden) return;
+  if (ui.view !== "seq" || e.target.closest("input, select, textarea") || !$("vstm").hidden || !$("newTrackM").hidden) return;
+  const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
   if (e.code === "Space") { e.preventDefault(); $("patPlay").click(); }
   else if ((e.key === "Delete" || e.key === "Backspace") && seq.sel.size) {
     e.preventDefault();
     const ids = [...seq.sel]; seq.sel.clear();
     songEdit(ids.map((id) => ["note", id, { del: true }]));
-  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
-    e.preventDefault();
-    for (const n of patNotes(seq.pat, seq.channel)) seq.sel.add(n.id);
-    prDraw();
-  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
-  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
+  } else if (e.key === "Escape") { quantClose(); seq.sel.clear(); prDraw(); }
+  else if (e.key.startsWith("Arrow") && seq.sel.size) { e.preventDefault(); nudgeSel(e); }
+  else if (!ctrl) return;
+  else if (k === "a") { e.preventDefault(); for (const n of patNotes(seq.pat, seq.channel)) seq.sel.add(n.id); prDraw(); }
+  else if (k === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+  else if (k === "y") { e.preventDefault(); redo(); }
+  else if (k === "c" || k === "x") { e.preventDefault(); copyNotes(k === "x"); }
+  else if (k === "v") { e.preventDefault(); pasteNotes(); }
+  else if (k === "b") { e.preventDefault(); duplicateNotes(); }
+  else if (k === "h") { e.preventDefault(); humanize(); }
+  else if (k === "q") { e.preventDefault(); quantOpen(); }
+  else if (k === "l") { e.preventDefault(); legato(); }
+  else if (k === "e") { e.preventDefault(); openExport(); }
 }
+
+// ---------- piano roll tools (FL style) ----------
+// The selection, or every note of the channel in the pattern when nothing is selected.
+function targetNotes() {
+  const all = seq.pat && seq.channel ? patNotes(seq.pat, seq.channel) : [];
+  const sel = all.filter((n) => seq.sel.has(n.id));
+  return sel.length ? sel : all;
+}
+const prStep = () => seq.snap || STEP;
+const ceilTo = (b, g) => Math.ceil(b / g - 1e-9) * g;
+
+function copyNotes(cut) {
+  const ns = patNotes(seq.pat, seq.channel).filter((n) => seq.sel.has(n.id));
+  if (!ns.length) return;
+  const min = Math.min(...ns.map((n) => n.start)), end = Math.max(...ns.map((n) => n.start + n.len));
+  seq.clip = { min, span: ceilTo(end - min, prStep()), cut,
+    notes: ns.map((n) => ({ start: n.start - min, len: n.len, key: n.key, vel: n.vel })) };
+  if (cut) { seq.sel.clear(); songEdit(ns.map((n) => ["note", n.id, { del: true }])); }
+  else toast(`Copied ${ns.length} note${ns.length === 1 ? "" : "s"}. Ctrl+V pastes at the mouse.`);
+}
+
+// at the mouse when it's over the roll; else right after what was copied (or where it was cut from)
+function pasteNotes() {
+  const c = seq.clip, t = prChannel();
+  if (!c || !t) return;
+  if (!curPattern()) newPattern();
+  const at = seq.mouse ? Math.max(0, Math.floor(seq.mouse.beat / prStep()) * prStep()) : c.cut ? c.min : c.min + c.span;
+  placeNotes(c.notes.map((n) => ({ ...n, start: at + n.start })), t);
+  if (!seq.mouse && !c.cut) c.min += c.span; // pasting again goes on after it
+}
+
+function placeNotes(notes, t) {
+  const ch = [];
+  seq.sel.clear();
+  for (const n of notes) {
+    const id = newId("n");
+    seq.sel.add(id);
+    ch.push(["note", id, { pattern: seq.pat, track: t.id, start: n.start, len: n.len, key: n.key, vel: n.vel }]);
+  }
+  songEdit(ch);
+}
+
+// ctrl+B: a copy of the selection right after itself
+function duplicateNotes() {
+  const ns = patNotes(seq.pat, seq.channel).filter((n) => seq.sel.has(n.id));
+  if (!ns.length) return;
+  const min = Math.min(...ns.map((n) => n.start)), end = Math.max(...ns.map((n) => n.start + n.len));
+  const span = ceilTo(end - min, prStep());
+  placeNotes(ns.map((n) => ({ ...n, start: n.start + span })), prChannel());
+}
+
+// ctrl+H: a little looser timing and velocity, so it doesn't sound like a machine
+function humanize() {
+  const ns = targetNotes();
+  if (!ns.length) return;
+  const r = () => Math.random() * 2 - 1;
+  songEdit(ns.map((n) => ["note", n.id, { start: Math.max(0, n.start + r() * 0.02),
+    vel: Math.max(1, Math.min(127, Math.round((n.vel ?? 100) + r() * 12))) }]));
+  toast(`Humanized ${ns.length} note${ns.length === 1 ? "" : "s"}.`);
+}
+
+// ctrl+L: every note lasts until the next one starts
+function legato() {
+  const ns = targetNotes().slice().sort((a, b) => a.start - b.start);
+  const starts = [...new Set(ns.map((n) => n.start))];
+  const ch = [];
+  for (const n of ns) {
+    const next = starts.find((s) => s > n.start + 1e-6);
+    if (next != null) ch.push(["note", n.id, { len: next - n.start }]);
+  }
+  songEdit(ch);
+}
+
+// arrows: up/down a semitone (shift or ctrl: an octave), left/right a grid step (shift: 1/32)
+function nudgeSel(e) {
+  const ns = patNotes(seq.pat, seq.channel).filter((n) => seq.sel.has(n.id));
+  if (!ns.length) return;
+  const big = e.shiftKey || e.ctrlKey || e.metaKey;
+  const dk = { ArrowUp: big ? 12 : 1, ArrowDown: big ? -12 : -1 }[e.key] || 0;
+  let db = { ArrowRight: 1, ArrowLeft: -1 }[e.key] || 0;
+  db *= e.shiftKey ? 0.125 : prStep();
+  db = Math.max(db, -Math.min(...ns.map((n) => n.start)));
+  if (dk && ns.some((n) => n.key + dk < 0 || n.key + dk > 127)) return;
+  songEdit(ns.map((n) => ["note", n.id, dk ? { key: n.key + dk } : { start: n.start + db }]));
+  if (dk && ns.length === 1) audition(prChannel(), ns[0].key);
+}
+
+// ctrl + scroll: zoom. alt + scroll over a note: its velocity (or the selection's)
+function prWheel(e) {
+  if (e.ctrlKey || e.metaKey) { e.preventDefault(); prZoom(e.deltaY < 0 ? 1.15 : 1 / 1.15); return; }
+  if (!e.altKey) return;
+  const h = prHit(prPoint(e));
+  if (!h) return;
+  e.preventDefault();
+  const ns = seq.sel.has(h.n.id) ? patNotes(seq.pat, seq.channel).filter((n) => seq.sel.has(n.id)) : [h.n];
+  const dv = e.deltaY < 0 ? 4 : -4;
+  for (const n of ns) n.vel = Math.max(1, Math.min(127, (n.vel ?? 100) + dv));
+  prDraw();
+  clearTimeout(seq.wheelT);
+  seq.wheelT = setTimeout(() => songEdit(ns.map((n) => ["note", n.id, { vel: n.vel }])), 300);
+}
+
+// ctrl+Q: quantize right away, then a bar to change how (it redoes it from where the notes were)
+const QGRIDS = [["1/4", 1], ["1/8", 0.5], ["1/16", 0.25], ["1/32", 0.125], ["1/8 triplet", 1 / 3], ["1/16 triplet", 1 / 6]];
+function quantSetup() {
+  const g = $("qGrid"), s = $("qStr");
+  for (const [label, v] of QGRIDS) g.append(new Option(label, v));
+  for (const v of [100, 75, 50, 25]) s.append(new Option(v + "%", v / 100));
+  g.value = String(store.get("qGrid", 0.25));
+  s.value = String(store.get("qStr", 1));
+  $("qEnds").classList.toggle("on", store.get("qEnds", false));
+  g.onchange = () => { store.set("qGrid", +g.value); quantApply(); };
+  s.onchange = () => { store.set("qStr", +s.value); quantApply(); };
+  $("qEnds").onclick = () => { $("qEnds").classList.toggle("on"); store.set("qEnds", $("qEnds").classList.contains("on")); quantApply(); };
+  $("qX").onclick = quantClose;
+}
+function quantOpen() {
+  const ns = targetNotes();
+  if (!ns.length) return;
+  seq.quant = Object.fromEntries(ns.map((n) => [n.id, { start: n.start, len: n.len }]));
+  $("qBar").hidden = false;
+  quantApply();
+}
+function quantApply() {
+  if (!seq.quant) return;
+  const g = +$("qGrid").value, s = +$("qStr").value, ends = $("qEnds").classList.contains("on");
+  const live = new Set(patNotes(seq.pat, seq.channel).map((n) => n.id));
+  const ch = [];
+  for (const [id, o] of Object.entries(seq.quant)) {
+    if (!live.has(id)) continue;
+    const start = o.start + (Math.round(o.start / g) * g - o.start) * s;
+    const f = { start, len: o.len };
+    if (ends) {
+      const end = o.start + o.len;
+      let qe = Math.round(end / g) * g;
+      if (qe <= Math.round(o.start / g) * g) qe = Math.round(o.start / g) * g + g;
+      f.len = Math.max(0.03125, end + (qe - end) * s - start);
+    }
+    ch.push(["note", id, f]);
+  }
+  songEdit(ch);
+}
+function quantClose() { seq.quant = null; $("qBar").hidden = true; }
 
 // ---------- patterns ----------
 function newPattern(name) {
@@ -131,23 +310,33 @@ function patMenu(e) {
 }
 
 // ---------- channels ----------
-function addChannel(kind) {
-  if (kind === "vst") { ui.instFor = "new-channel"; openVstBrowser("inst"); return; }
-  makeChannel({ kind, ...(INST_DEFAULTS[kind] || {}) }, INST[kind].name);
-}
-
-// a channel is a song track with an instrument
-function makeChannel(inst, name) {
+// an instrument track (from the New track window). With place: a pattern for
+// it too, in the song at the playhead, so you can start writing right away.
+function createInstrumentTrack(inst, name, place) {
   const v = song.view;
   const order = v.tracks.reduce((a, t) => Math.max(a, t.order || 0), 0) + 1;
   const id = newId("t");
+  const ch = [["track", id, { name, order, owner: v.me, src: 0, arm: false, vol: 0.8, pan: 0, rack: [], inst }]];
+  if (place) {
+    const pid = newId("p"), drums = inst.kind === "drums" || /drum/i.test(inst.vst?.name || "");
+    const at = Math.max(0, Math.floor(curPos() / bpb() + 1e-9) * bpb());
+    // drums: a one-bar loop, repeated over four bars; anything else: four bars to write in
+    ch.push(["pattern", pid, { name, len: (drums ? 1 : 4) * bpb() }],
+      ["clip", newId("c"), { track: id, pattern: pid, start: at, blen: 4 * bpb(), boff: 0 }]);
+    seq.pat = pid;
+  }
   seq.channel = id;
-  songEdit([["track", id, { name, order, owner: v.me, src: 0, arm: false, vol: 0.8, pan: 0, rack: [], inst }]]);
+  seq.sel.clear();
+  seq.prTop = null;
+  songEdit(ch);
+  setMainView("seq");
+  syncMidiTarget();
 }
 
 function selectChannel(tid) {
   seq.channel = tid;
   seq.sel.clear();
+  quantClose();
   seq.prTop = null; // scroll the piano roll to this channel's notes
   seqRender();
   syncMidiTarget();
@@ -210,7 +399,7 @@ function renderRackRows() {
     tools.append(edit);
     if (drums) {
       const more = document.createElement("button");
-      more.className = "fxb"; more.textContent = seq.allPads[t.id] ? "Fewer" : "All pads";
+      more.className = "fxb"; more.textContent = seq.allPads[t.id] ? "Less" : "All";
       more.title = "Show every pad, or just the usual ones";
       more.onclick = (e) => { e.stopPropagation(); seq.allPads[t.id] = !seq.allPads[t.id]; renderRackRows(); };
       tools.append(more);
@@ -246,7 +435,7 @@ function renderRackRows() {
       row.firstChild.onpointerdown = (e) => { e.preventDefault(); audition(t, key); };
       const cells = document.createElement("div");
       cells.className = "cells";
-      cells.style.gridTemplateColumns = `repeat(${steps}, minmax(14px, 1fr))`;
+      cells.style.gridTemplateColumns = `repeat(${steps}, var(--stepw))`;
       for (let s = 0; s < steps; s++) {
         const at = s * STEP;
         const hit = notes.find((n) => n.key === key && Math.abs(n.start - at) < 1e-6);
@@ -370,8 +559,21 @@ function prDraw() {
     return;
   }
   const col = t.mine ? song.colors.me : song.colors.partner;
+  // ghost notes: the pattern's other melodic channels, faint, to write against
+  if (!isDrums(t)) {
+    ctx.fillStyle = "rgba(239,234,244,0.13)";
+    for (const nn of patNotes(p.id)) {
+      if (nn.track === t.id || isDrums(channels().find((c) => c.id === nn.track))) continue;
+      const x = nn.start * ppb - sx, y = (hi - nn.key) * rh - sy;
+      if (x > w || y > h || y + rh < 0) continue;
+      ctx.fillRect(x + 0.5, y + 2.5, Math.max(3, nn.len * ppb - 1), rh - 5);
+    }
+  }
   const d = seq.drag;
-  const notes = patNotes(p.id, t.id).map((nn) => (d && d.moved && d.res[nn.id] ? { ...nn, ...d.res[nn.id] } : nn));
+  const own = patNotes(p.id, t.id).filter((nn) => !(d && d.erased && d.erased.has(nn.id)));
+  const notes = d && d.copy
+    ? [...own, ...(d.moved ? d.sel.map((nn) => ({ ...nn, ...d.res[nn.id], id: "copy" + nn.id })) : [])]
+    : own.map((nn) => (d && d.moved && d.res[nn.id] ? { ...nn, ...d.res[nn.id] } : nn));
   if (d && d.ghost) notes.push(d.ghost);
   for (const nn of notes) {
     const x = nn.start * ppb - sx, y = (hi - nn.key) * rh - sy, nw = Math.max(3, nn.len * ppb - 1);
@@ -396,6 +598,14 @@ function prDraw() {
     const px = (curPos() % plen) * ppb - sx;
     ctx.fillStyle = "#efeaf4";
     ctx.fillRect(Math.round(px), 0, 1, h);
+  }
+  if (d && d.mode === "box" && d.moved) {
+    const x0 = Math.min(d.b0, d.b1) * ppb - sx, x1 = Math.max(d.b0, d.b1) * ppb - sx;
+    const y0 = (hi - Math.max(d.k0, d.k1)) * rh - sy, y1 = (hi - Math.min(d.k0, d.k1) + 1) * rh - sy;
+    ctx.fillStyle = "rgba(239,234,244,0.08)";
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.strokeStyle = "rgba(239,234,244,0.6)";
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
   }
   hereDrawRoll(ctx, sx, sy, hi, w, h);
   velDraw(notes, t, sx);
@@ -447,12 +657,17 @@ function prHit(pt) {
 const prSnap = (b, free) => (free || !seq.snap ? b : Math.round(b / seq.snap) * seq.snap);
 
 function prHover(e) {
+  const pt = prPoint(e);
+  seq.mouse = pt.inside ? pt : null;
   if (seq.drag || e.buttons) return;
-  const h = prPoint(e).inside ? prHit(prPoint(e)) : null;
-  $("prLanes").style.cursor = h ? (h.zone === "end" ? "e-resize" : "grab") : "crosshair";
+  const h = pt.inside ? prHit(pt) : null;
+  $("prLanes").style.cursor = h ? (h.zone === "end" ? "e-resize" : (e.ctrlKey || e.metaKey) ? "copy" : "grab") : "crosshair";
 }
 
+// Left: draw a note / move it / stretch its end (ctrl: move a copy). Shift or
+// ctrl on empty space: drag a box to select. Right: erase, also by dragging over notes.
 function prDown(e) {
+  if (e.button === 2) { prErase(e); return; }
   if (e.button !== 0) return;
   const t = prChannel();
   let p = curPattern();
@@ -465,24 +680,32 @@ function prDown(e) {
   const free = e.altKey;
   const drums = isDrums(t);
   let d;
-  if (!h) {
+  if (!h && (e.shiftKey || e.ctrlKey || e.metaKey)) {
+    d = { mode: "box", b0: pt.beat, k0: pt.key, b1: pt.beat, k1: pt.key, keep: new Set(seq.sel), moved: false, res: {} };
+  } else if (!h) {
     // draw a new note, and drag to stretch it
     const start = Math.max(0, Math.floor(pt.beat / (seq.snap || STEP)) * (seq.snap || STEP));
     const len = seq.lastLen || (drums ? STEP : 1);
     d = { mode: "new", ghost: { id: "ghost", pattern: p.id, track: t.id, start, len, key: pt.key, vel: 100 }, moved: true, res: {} };
     audition(t, pt.key);
-    if (!e.shiftKey) seq.sel.clear();
+    seq.sel.clear();
   } else {
+    const copy = (e.ctrlKey || e.metaKey) && h.zone === "body";
     if (e.shiftKey) { seq.sel.has(h.n.id) ? seq.sel.delete(h.n.id) : seq.sel.add(h.n.id); prDraw(); return; }
     if (!seq.sel.has(h.n.id)) { seq.sel.clear(); seq.sel.add(h.n.id); }
     const sel = patNotes(p.id, t.id).filter((n) => seq.sel.has(n.id));
-    d = { mode: h.zone === "end" ? "len" : "move", anchor: h.n, grab: pt.beat - h.n.start, key0: pt.key, sel, moved: false, res: {}, x0: e.clientX, y0: e.clientY };
+    d = { mode: h.zone === "end" ? "len" : "move", copy, anchor: h.n, grab: pt.beat - h.n.start, key0: pt.key, sel, moved: false, res: {}, x0: e.clientX, y0: e.clientY };
     if (d.mode === "move") audition(t, h.n.key, h.n.vel);
   }
   seq.drag = d;
   const move = (ev) => {
     const q = prPoint(ev);
-    if (d.mode === "new") {
+    if (d.mode === "box") {
+      d.b1 = q.beat; d.k1 = q.key; d.moved = true;
+      const b0 = Math.min(d.b0, d.b1), b1 = Math.max(d.b0, d.b1), k0 = Math.min(d.k0, d.k1), k1 = Math.max(d.k0, d.k1);
+      seq.sel = new Set(d.keep);
+      for (const n of patNotes(p.id, t.id)) if (n.key >= k0 && n.key <= k1 && n.start < b1 && n.start + n.len > b0) seq.sel.add(n.id);
+    } else if (d.mode === "new") {
       d.ghost.len = Math.max(seq.snap || STEP, prSnap(q.beat, ev.altKey) - d.ghost.start) || d.ghost.len;
       if (q.beat <= d.ghost.start + (seq.snap || STEP)) d.ghost.len = seq.lastLen || (drums ? STEP : 1);
     } else {
@@ -503,11 +726,14 @@ function prDown(e) {
     lanes.removeEventListener("pointermove", move);
     lanes.removeEventListener("pointerup", up);
     seq.drag = null;
-    if (d.mode === "new") {
+    if (d.mode === "box") { /* the selection is already made */ }
+    else if (d.mode === "new") {
       const id = newId("n");
       seq.lastLen = d.ghost.len;
       seq.sel.clear(); seq.sel.add(id);
       songEdit([["note", id, { pattern: d.ghost.pattern, track: d.ghost.track, start: d.ghost.start, len: d.ghost.len, key: d.ghost.key, vel: d.ghost.vel }]]);
+    } else if (d.moved && d.copy) {
+      placeNotes(d.sel.map((n) => ({ ...n, ...d.res[n.id] })), t);
     } else if (d.moved) {
       if (d.mode === "len") seq.lastLen = d.res[d.anchor.id]?.len || seq.lastLen;
       songEdit(Object.entries(d.res).map(([id, f]) => ["note", id, f]));
@@ -519,9 +745,28 @@ function prDown(e) {
   prDraw();
 }
 
+// right button: erase what's under it, and everything you drag over; one undo step for the lot
 function prErase(e) {
-  const h = prHit(prPoint(e));
-  if (h) { seq.sel.delete(h.n.id); songEdit([["note", h.n.id, { del: true }]]); }
+  if (!prChannel() || !curPattern()) return;
+  const lanes = $("prLanes");
+  lanes.setPointerCapture(e.pointerId);
+  const d = { mode: "erase", erased: new Set(), res: {} };
+  seq.drag = d;
+  const hit = (ev) => {
+    const h = prHit(prPoint(ev));
+    if (h && !d.erased.has(h.n.id)) { d.erased.add(h.n.id); seq.sel.delete(h.n.id); prDraw(); }
+  };
+  const up = () => {
+    lanes.removeEventListener("pointermove", hit);
+    lanes.removeEventListener("pointerup", up);
+    seq.drag = null;
+    songEdit([...d.erased].map((id) => ["note", id, { del: true }]));
+    prDraw();
+  };
+  lanes.style.cursor = "not-allowed";
+  lanes.addEventListener("pointermove", hit);
+  lanes.addEventListener("pointerup", up);
+  hit(e);
 }
 
 // velocity lane: drag up/down over the bars (selected notes move together)
