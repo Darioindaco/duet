@@ -45,6 +45,17 @@ FIELDS = {
 }
 
 
+# what a field reads as when it was never set (to undo setting it)
+FIELD_DEFAULTS = {
+    "meta": META_DEFAULTS,
+    "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "del": False},
+    "clip": {"gain": 1.0, "offset": 0.0, "fade_in": 0.0, "fade_out": 0.0, "del": False},
+    "file": {"del": False},
+}
+# controls you turn rather than click: a run of turns is one undo step
+CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack"}
+UNDO_DEPTH = 200
+
 # ids and file names end up in paths: only plain names, whatever the partner sends
 SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
 
@@ -190,6 +201,8 @@ class Daw:
         self.cursor = 0.0  # playhead while stopped, in beats
         self.play_from = 0.0
         self.rec: dict | None = None
+        self.undos: list[dict] = []  # your own edits only: undo never takes back the partner's work
+        self.redos: list[dict] = []
         self.last_sum = 0.0
         self.mismatches = 0
         self.last_snap = 0.0
@@ -258,6 +271,8 @@ class Daw:
         self.wanted.clear()
         self.sent_desc = None
         self.cursor = 0.0
+        self.undos.clear()
+        self.redos.clear()
         self.p = p
         self._remember(p.pid)
         self._changed()
@@ -286,15 +301,69 @@ class Daw:
     def edit(self, changes: list) -> dict:
         """Changes from the UI: [[kind, id, {field: value}]]. A new id makes a new object."""
         with self.lock:
-            ops = []
-            for ch in changes:
-                kind, oid, fields = ch
-                if kind not in KINDS:
-                    continue
-                fields = {f: v for f, v in fields.items() if f in FIELDS[kind]}
-                if fields:
-                    ops.append(self.p.make_op(kind, str(oid), fields, self.me))
-            self._apply(ops, local=True)
+            self._do(changes)
+            return self.view()
+
+    def _do(self, changes: list, undoable: bool = True):
+        """Make local changes: stamp, apply, send, and remember how to undo them."""
+        forward, inverse = [], []
+        for ch in changes:
+            kind, oid, fields = ch
+            if kind not in KINDS or not isinstance(fields, dict):
+                continue
+            oid = str(oid)
+            fields = {f: v for f, v in fields.items() if f in FIELDS[kind]}
+            if not fields:
+                continue
+            before = self._before(kind, oid, fields)
+            if "del" in before and "del" not in fields:
+                fields["del"] = False  # a new object: so redoing it after an undo brings it back
+            forward.append([kind, oid, fields])
+            inverse.append([kind, oid, before])
+        if not forward:
+            return
+        self._apply([self.p.make_op(k, i, f, self.me) for k, i, f in forward], local=True)
+        if not undoable:
+            return
+        keys = sorted((k, i, f) for k, i, fs in forward for f in fs)
+        top = self.undos[-1] if self.undos else None
+        now = time.monotonic()
+        if (top and top["keys"] == keys and now - top["t"] < 1.5
+                and all(f in CONTINUOUS for _, _, f in keys)):
+            top["forward"], top["t"] = forward, now  # still turning the same knob
+        else:
+            self.undos.append({"forward": forward, "inverse": inverse, "keys": keys, "t": now})
+            del self.undos[:-UNDO_DEPTH]
+        self.redos.clear()
+
+    def _before(self, kind: str, oid: str, fields: dict) -> dict:
+        """What `fields` of an object are now (for an object that doesn't exist yet: deleted)."""
+        obj = self.p.objs[kind].get(oid)
+        if obj is None:
+            return {"del": True}
+        out = {}
+        for f in fields:
+            if f in obj:
+                out[f] = json.loads(json.dumps(obj[f]))
+            elif f in FIELD_DEFAULTS[kind]:
+                out[f] = json.loads(json.dumps(FIELD_DEFAULTS[kind][f]))
+        return out
+
+    def undo(self) -> dict:
+        with self.lock:
+            if self.undos:
+                step = self.undos.pop()
+                self._apply([self.p.make_op(k, i, f, self.me) for k, i, f in reversed(step["inverse"])], local=True)
+                self.redos.append(step)
+            return self.view()
+
+    def redo(self) -> dict:
+        with self.lock:
+            if self.redos:
+                step = self.redos.pop()
+                self._apply([self.p.make_op(k, i, f, self.me) for k, i, f in step["forward"]], local=True)
+                step["t"] = 0.0  # never merge into a redone step
+                self.undos.append(step)
             return self.view()
 
     def set_local(self, key: str, value, track: str | None = None):
@@ -315,20 +384,19 @@ class Daw:
                 return
             rack = [clean_slot(x) for x in self.e.mixer()["tracks"][slot]["rack"]]
             self.sent_rack[slot] = rack
-            self._apply([self.p.make_op("track", tid, {"rack": rack}, self.me)], local=True)
+            self._do([["track", tid, {"rack": rack}]])
 
     def sync_rack_states(self, tracks: list):
         """Plugin settings changed in a plugin's own window don't pass through
         Duet: with the freshly read mixer, put any that changed into the song."""
         with self.lock:
-            ops = []
+            changes = []
             for tid, slot in self.slots.items():
                 rack = [clean_slot(x) for x in tracks[slot]["rack"]]
                 if any(x.get("vst") for x in rack) and rack != self.p.live("track").get(tid, {}).get("rack"):
                     self.sent_rack[slot] = rack
-                    ops.append(self.p.make_op("track", tid, {"rack": rack}, self.me))
-            if ops:
-                self._apply(ops, local=True)
+                    changes.append(["track", tid, {"rack": rack}])
+            self._do(changes, undoable=False)
 
     def _apply(self, ops: list, local: bool):
         changed = False
@@ -406,7 +474,7 @@ class Daw:
         rec, self.rec = self.rec, None
         if rec and takes:
             spb = self._spb()
-            ops = []
+            changes = []
             for take in takes:
                 if take["error"] or not take["frames"]:
                     if take["error"]:
@@ -415,7 +483,7 @@ class Daw:
                 key = take["key"]
                 self.peak_cache[key] = base64.b64encode(take["peaks"]).decode()
                 self.loaded.add(key)
-                ops.append(self.p.make_op("file", key, {"frames": take["frames"], "sr": take["sr"], "owner": self.me}, self.me))
+                changes.append(["file", key, {"frames": take["frames"], "sr": take["sr"], "owner": self.me}])
                 # where the take's first sample belongs on the timeline: what the
                 # sound cards added is taken off, so it lines up with what you heard
                 first = take["first"] - take["comp"] - self.rec_offset
@@ -426,12 +494,12 @@ class Daw:
                     continue
                 for tid, src in rec["tracks"].items():
                     if src == take["src"]:
-                        ops.append(self.p.make_op("clip", new_id("c"), {
+                        changes.append(["clip", new_id("c"), {
                             "track": tid, "file": key, "start": start / spb, "offset": offset, "len": length,
-                            "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}, self.me))
+                            "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}])
                 if take["dropped"]:
                     self.notices.append("The recording skipped a little (the disk couldn't keep up).")
-            self._apply(ops, local=True)
+            self._do(changes)  # one undo step takes the whole take back out
             self._flush()
         self.cursor = self.play_from  # back to where you started, like FL
         self.e.daw_locate(self.cursor * self._spb())
@@ -445,6 +513,40 @@ class Daw:
             if self._playing():
                 self.e.daw_locate(self.cursor * self._spb())
             self.version += 1
+
+    # --- export --------------------------------------------------------------------
+
+    def export(self, mix: str | None, stems_dir: str | None, loop: bool) -> dict:
+        """Render the song (or just the loop) to WAV: the mix, and with stems_dir
+        every track on its own too. Runs in the background (engine.daw_export_status)."""
+        with self.lock:
+            spb, m = self._spb(), self.p.meta()
+            clips = list(self.p.live("clip").values())
+            if loop and m["loop"] and m["loop_end"] > m["loop_start"]:
+                start, end = m["loop_start"] * spb, m["loop_end"] * spb  # exact, so it loops
+            else:
+                if not clips:
+                    return {"error": "Nothing to export yet: record something first."}
+                start = 0.0
+                end = max(float(c.get("start", 0)) * spb + float(c.get("len", 0)) for c in clips) + 2.0  # + reverb tails
+            stems, files = [], [mix] if mix else []
+            if stems_dir:
+                song = file_name(m["name"])
+                tracks = sorted(((self.p.live("track")[tid], slot) for tid, slot in self.slots.items()),
+                                key=lambda ts: float(ts[0].get("order", 0)))
+                for n, (t, slot) in enumerate(tracks, 1):
+                    path = str(Path(stems_dir) / f"{song} - {n:02d} {file_name(t.get('name') or 'Track')}.wav")
+                    stems.append((slot, path))
+                    files.append(path)
+            missing = sum(1 for c in clips if c.get("file") not in self.loaded)
+            self.e.mixer(True)  # plugin settings changed in their own windows: into the render too
+            try:
+                self.e.daw_export(mix, stems, start, end)
+            except Exception as exc:
+                return {"error": str(exc)}
+            note = (f"{missing} clip{'s are' if missing != 1 else ' is'} still on the way from your partner "
+                    "and left out.") if missing else ""
+            return {"ok": True, "files": files, "note": note}
 
     # --- engine --------------------------------------------------------------------
 
@@ -739,6 +841,7 @@ class Daw:
                 "files": files, "me": self.me, "partner": self.partner,
                 "local": {"click": p.local.get("click"), "countin": p.local.get("countin")},
                 "conflict": self.conflict, "shared": self.connected and self.partner_pid == p.pid,
+                "undo": bool(self.undos), "redo": bool(self.redos),
             }
 
     def status(self, s: dict) -> dict:
@@ -769,6 +872,12 @@ class Daw:
                 self.p.save()
             except OSError:
                 pass
+
+
+def file_name(name: str) -> str:
+    """A song or track name as part of a file name, on any system."""
+    out = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name)).strip(" .")
+    return out[:80] or "Untitled"
 
 
 def clean_slot(x: dict) -> dict:

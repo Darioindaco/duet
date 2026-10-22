@@ -102,11 +102,31 @@ own playback of the song, corrected for your own sound card. So the takes land
 on the beat **however far apart you are**: the 30–50 ms between you only
 matters for what you hear of each other live, not for what ends up in the song.
 
-In the playlist: click a clip to select it (shift-click for more, ctrl+A for
-all), drag it to move it (also to another track; it snaps to the grid, hold *Alt*
-to move freely), *Delete* removes it. Click in the ruler to move the playhead,
-drag in the ruler to mark a loop. *Ctrl + scroll* zooms. *Click* gives you a
-metronome while the song plays (just for you).
+**Editing clips** (right-click a clip for the same things in a menu):
+
+| | |
+|---|---|
+| Select | click; shift-click for more; drag a box on empty space; ctrl+A for all |
+| Move | drag it, also to another track (snaps to the grid; hold *Alt* to move freely) |
+| Copy while moving | hold *Ctrl* (*Cmd* on a Mac) while you drag |
+| Trim | drag its left or right edge |
+| Fade in / out | drag the little square in its top left / top right corner |
+| Volume | right-click → *Volume* |
+| Split | *S* splits at the playhead (right-click: split where you clicked) |
+| Duplicate | *Ctrl+D* puts a copy right after it |
+| Copy / cut / paste | *Ctrl+C* / *Ctrl+X* / *Ctrl+V* (pastes at the playhead) |
+| Delete | *Delete* |
+| Undo / redo | *Ctrl+Z* / *Ctrl+Y*: your own changes only, never your partner's |
+
+Click in the ruler to move the playhead, drag in the ruler to mark a loop.
+*Space* plays and stops, *R* records, *Ctrl + scroll* zooms. *Click* gives you
+a metronome while the song plays (just for you).
+
+**Export** (top right of the playlist) saves the song as a 24-bit WAV: just the
+mix, or the mix plus every track on its own (stems, e.g. to mix it further in
+another program), the whole song or just the loop. It renders faster than real
+time and the sound keeps running meanwhile. What you hear is what you get: the
+faders, pans, effects, mute and solo as you have them.
 
 Each track also has a strip in the **Mixer** (under *Song*) with volume, pan
 and its own FX rack, NAM amps and VST3 plugins included; *FX* on a track header

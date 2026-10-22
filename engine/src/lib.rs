@@ -52,6 +52,13 @@ struct DawCtl {
     cache: AudioCache,
     desc: Vec<Vec<ClipDesc>>,
     rec: Option<RecSession>,
+    export: Option<ExportJob>,
+}
+
+struct ExportJob {
+    done: Arc<std::sync::atomic::AtomicU64>,
+    total: u64,
+    worker: std::thread::JoinHandle<Result<Vec<String>, String>>,
 }
 
 struct RecSession {
@@ -326,7 +333,7 @@ impl Engine {
             cmds: Mutex::new(cmd_tx),
             incoming: Mutex::new(Some(pkt_tx)),
             retired: Mutex::new(ret_rx),
-            daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], rec: None }),
+            daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], rec: None, export: None }),
             files: Mutex::new(transfer::Transfers::new(std::env::temp_dir().join("duet-incoming"))),
             running: AtomicBool::new(false),
             start: Instant::now(),
@@ -993,6 +1000,85 @@ impl Engine {
     /// The click while the timeline plays.
     fn daw_click(&self, on: bool, bpm: f32, beats: u32) {
         self.cmd(Cmd::Click { on, bpm, beats });
+    }
+
+    /// Render the song (seconds start..end) to WAV files in the background:
+    /// the mix to `mix` (if given) and stems = [(track slot, path)]. Uses the
+    /// song tracks' current faders, pans, mute/solo and effects.
+    #[pyo3(signature = (mix, stems, start, end))]
+    fn daw_export(&self, mix: Option<String>, stems: Vec<(usize, String)>, start: f64, end: f64) -> PyResult<()> {
+        let sr = self.samplerate() as u32;
+        let (tracks, master) = {
+            let c = self.inner.ctl.lock().unwrap();
+            let tracks: Vec<daw::TrackMix> = c
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.s.active)
+                .map(|(slot, m)| daw::TrackMix {
+                    slot,
+                    s: m.s,
+                    rack: m.rack.clone(),
+                    stem: stems.iter().find(|(s, _)| *s == slot).map(|(_, p)| p.into()),
+                })
+                .collect();
+            (tracks, c.master)
+        };
+        let mut d = self.inner.daw.lock().unwrap();
+        if d.export.as_ref().is_some_and(|j| !j.worker.is_finished()) {
+            return Err(PyRuntimeError::new_err("an export is already running"));
+        }
+        let tl = {
+            let DawCtl { cache, desc, .. } = &mut *d;
+            cache.build(desc, sr)
+        };
+        let s = |x: f64| (x * sr as f64).round() as i64;
+        let (a, b) = (s(start), s(end).max(s(start)));
+        let done = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let done2 = done.clone();
+        let mix = mix.map(std::path::PathBuf::from);
+        let worker = std::thread::Builder::new()
+            .name("duet-export".into())
+            .spawn(move || daw::render(&tl, tracks, master, sr, a, b, mix, &done2))
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        d.export = Some(ExportJob { done, total: (b - a) as u64, worker });
+        Ok(())
+    }
+
+    /// {"running", "progress" (0..1), "result": None while running / when
+    /// there was none, else {"ok", "warnings" | "error"}}.
+    fn daw_export_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let mut d = self.inner.daw.lock().unwrap();
+        let out = PyDict::new(py);
+        let (running, progress) = match &d.export {
+            Some(j) => (!j.worker.is_finished(), j.done.load(Relaxed) as f64 / j.total.max(1) as f64),
+            None => (false, 0.0),
+        };
+        out.set_item("running", running)?;
+        out.set_item("progress", progress.min(1.0))?;
+        if !running {
+            if let Some(j) = d.export.take() {
+                let r = PyDict::new(py);
+                match j.worker.join() {
+                    Ok(Ok(warnings)) => {
+                        r.set_item("ok", true)?;
+                        r.set_item("warnings", warnings)?;
+                    }
+                    Ok(Err(e)) => {
+                        r.set_item("ok", false)?;
+                        r.set_item("error", e)?;
+                    }
+                    Err(_) => {
+                        r.set_item("ok", false)?;
+                        r.set_item("error", "the export crashed")?;
+                    }
+                }
+                out.set_item("result", r)?;
+                return Ok(out);
+            }
+        }
+        out.set_item("result", py.None())?;
+        Ok(out)
     }
 
     // --- files to and from the partner ---------------------------------------------

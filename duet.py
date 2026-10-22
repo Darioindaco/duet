@@ -23,7 +23,7 @@ from pathlib import Path
 
 import webview
 
-from daw import Daw
+from daw import Daw, file_name
 from duet_engine import Engine
 from t3k import Tone3000
 from vstlib import VstLibrary, scan_main
@@ -245,6 +245,53 @@ class Api:
     def daw_resolve(self, choice):
         self._daw.resolve(choice)
         return self._daw.view()
+
+    def daw_undo(self):
+        return self._daw.undo()
+
+    def daw_redo(self):
+        return self._daw.redo()
+
+    def daw_export(self, opts):
+        """Ask where, then render: {"stems": bool, "loop": bool}."""
+        if not self._window:
+            return {"error": "No window to ask where to save."}
+        name = file_name(self._daw.view()["meta"]["name"])
+        if opts.get("stems"):
+            picked = self._window.create_file_dialog(webview.FileDialog.FOLDER)
+            if not picked:
+                return {"cancelled": True}
+            folder = Path(picked[0] if isinstance(picked, (list, tuple)) else picked) / f"{name} (stems)"
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return {"error": str(exc)}
+            mix, stems = str(folder / f"{name}.wav"), str(folder)
+        else:
+            picked = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename=f"{name}.wav",
+                                                     file_types=("WAV audio (*.wav)",))
+            if not picked:
+                return {"cancelled": True}
+            mix = picked[0] if isinstance(picked, (list, tuple)) else picked
+            if not mix.lower().endswith(".wav"):
+                mix += ".wav"
+            stems = None
+        return self._daw.export(mix, stems, bool(opts.get("loop")))
+
+    def daw_export_status(self):
+        return self._engine.daw_export_status()
+
+    def show_file(self, path):
+        """Show a file in Finder / Explorer."""
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", "-R", path], check=False)
+            elif sys.platform == "win32":
+                subprocess.run(["explorer", "/select,", os.path.normpath(path)], check=False)
+            else:
+                subprocess.run(["xdg-open", os.path.dirname(path)], check=False)
+        except OSError:
+            pass
 
     # --- shared metronome -----------------------------------------------------
 

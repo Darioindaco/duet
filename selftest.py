@@ -167,6 +167,66 @@ def test_daw():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_song_edit():
+    """Undo/redo of your own edits (a whole take in one step), and the export:
+    mix and stems as WAV, the right length, faster than real time."""
+    import shutil
+    import tempfile
+    import wave
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-edit-"))
+    d = Daw(e, root / "songs", "me")
+    try:
+        tid = d.view()["tracks"][0]["id"]
+        d.edit([["track", tid, {"arm": True}]])
+        d.set_local("countin", False)
+        d.record(0.0)
+        x = [0.3 * math.sin(2 * math.pi * 220 * i / SR) for i in range(N)]
+        for _ in range(375):  # 1 s
+            e.process(x)
+        d.stop()
+        clip = d.view()["clips"][0]
+        # split it in two, then undo and redo that
+        half = clip["len"] / 2
+        d.edit([["clip", clip["id"], {"len": half}],
+                ["clip", "c-right", {**{k: clip[k] for k in ("track", "file", "gain")}, "start": clip["start"] + half / 0.5,
+                                     "offset": half, "len": half, "fade_in": 0.0, "fade_out": 0.0}]])
+        assert len(d.view()["clips"]) == 2
+        d.undo()
+        assert [round(c["len"], 3) for c in d.view()["clips"]] == [round(clip["len"], 3)], "split undone"
+        d.redo()
+        assert len(d.view()["clips"]) == 2
+        d.undo()
+        d.undo()
+        assert d.view()["clips"] == [], "the take itself undone"
+        d.redo()
+        assert len(d.view()["clips"]) == 1
+        out = root / "out"
+        out.mkdir()
+        res = d.export(str(out / "mix.wav"), str(out), loop=False)
+        assert res.get("ok"), res
+        t0 = time.monotonic()
+        while (st := e.daw_export_status())["result"] is None:
+            assert time.monotonic() - t0 < 20, "export never finished"
+            time.sleep(0.02)
+        assert st["result"]["ok"], st
+        for f in res["files"]:
+            with wave.open(f) as w:
+                secs = w.getnframes() / w.getframerate()
+                assert w.getnchannels() == 2 and w.getsampwidth() == 3 and abs(secs - (clip["len"] + 2.0)) < 0.05, (f, secs)
+        print(f"song edit: ok  (split, undo/redo incl. the take, export: {len(res['files'])} files of {secs:.2f} s "
+              f"in {time.monotonic() - t0:.2f} s)")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_signals():
     a, b, _ = connect_pair()
     for e in (a, b):
@@ -636,6 +696,7 @@ if __name__ == "__main__":
     test_two_engines()
     test_auto_buffer()
     test_daw()
+    test_song_edit()
     test_signals()
     test_mixer()
     test_partner_fx()

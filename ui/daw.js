@@ -78,9 +78,14 @@ function setSongView(v) {
   song.view = v;
   for (const id of [...song.sel]) if (!v.clips.some((c) => c.id === id)) song.sel.delete(id);
   if (ui.sel[0] === "T" && !v.tracks.some((t) => "T" + t.slot === ui.sel)) { ui.sel = "L0"; renderRack(); }
-  // track strips in the mixer follow the song's tracks (names, owners, slots)
+  // track strips in the mixer follow the song's tracks (names, owners, slots),
+  // and their racks when those changed elsewhere (the partner, an undo); a knob
+  // you're turning yourself already matches, so it isn't redrawn under you
   const sig = JSON.stringify(v.tracks.map((t) => [t.id, t.slot, t.name, t.mine]));
-  if (!before || sig !== song.trackSig) {
+  const rs = (r) => JSON.stringify((r || []).map((x) => [x.kind, !!x.on, x.model || null, x.vst?.cid || null,
+    ...(FXMETA[x.kind]?.knobs || []).map(([k]) => Math.round((x[k] ?? 0) * 1000))]));
+  const racksMoved = ui.mixer?.tracks && v.tracks.some((t) => t.slot != null && rs(t.rack) !== rs(ui.mixer.tracks[t.slot].rack));
+  if (!before || sig !== song.trackSig || racksMoved) {
     song.trackSig = sig;
     api.mixer().then((m) => { ui.mixer = m; renderStrips(); if (ui.sel[0] === "T") renderRack(); });
   }
@@ -142,7 +147,17 @@ function songSetup() {
     zoomBy(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX - lanes.getBoundingClientRect().left);
   }, { passive: false });
   lanes.addEventListener("pointerdown", lanesDown);
+  lanes.addEventListener("pointermove", lanesHover);
+  lanes.addEventListener("pointerleave", () => { if (song.hover) { song.hover = null; song.hoverKey = ""; songDraw(); } });
   lanes.addEventListener("dblclick", lanesDbl);
+  lanes.addEventListener("contextmenu", lanesContext);
+  document.addEventListener("pointerdown", (e) => { if (!e.target.closest("#ctxMenu")) hideCtx(); });
+  $("undoBtn").onclick = undo;
+  $("redoBtn").onclick = redo;
+  $("exportBtn").onclick = openExport;
+  $("exGo").onclick = runExport;
+  $("exX").onclick = () => ($("exportm").hidden = true);
+  $("exportm").onclick = (e) => e.target === $("exportm") && ($("exportm").hidden = true);
   song.ruler.addEventListener("pointerdown", rulerDown);
   new ResizeObserver(() => songDraw()).observe($("lanewrap"));
 
@@ -175,17 +190,14 @@ function songKeys(e) {
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
   else if (e.key === "r" || e.key === "R") { e.preventDefault(); toggleRec(); }
   else if (e.key === "Home") { e.preventDefault(); api.daw_locate(0); }
-  else if ((e.key === "Delete" || e.key === "Backspace") && song.sel.size) {
-    e.preventDefault();
-    const ids = [...song.sel];
-    song.sel.clear();
-    songEdit(ids.map((id) => ["clip", id, { del: true }]));
-  } else if (e.key === "Escape") { song.sel.clear(); songDraw(); }
-  else if ((e.ctrlKey || e.metaKey) && e.key === "a") {
-    e.preventDefault();
-    song.view.clips.forEach((c) => song.sel.add(c.id));
-    songDraw();
-  }
+  else if ((e.key === "Delete" || e.key === "Backspace") && song.sel.size) { e.preventDefault(); deleteSel(); }
+  else if (e.key === "Escape") { hideCtx(); song.sel.clear(); songDraw(); }
+  else if (e.ctrlKey || e.metaKey) {
+    const k = e.key.toLowerCase();
+    const act = { a: () => { song.view.clips.forEach((c) => song.sel.add(c.id)); songDraw(); },
+      z: () => (e.shiftKey ? redo() : undo()), y: redo, d: duplicateSel, c: () => copySel(), x: () => copySel(true), v: () => paste() }[k];
+    if (act) { e.preventDefault(); act(); }
+  } else if (e.key === "s" || e.key === "S") { e.preventDefault(); splitAtPlayhead(); }
 }
 
 // ---------- transport ----------
@@ -256,6 +268,8 @@ function songRender() {
   $("tgClick").classList.toggle("on", !!v.local.click);
   $("tgCount").classList.toggle("on", !!v.local.countin);
   $("tgLoop").classList.toggle("on", !!m.loop);
+  $("undoBtn").disabled = !v.undo;
+  $("redoBtn").disabled = !v.redo;
   if (song.headBusy) song.pendingHeads = true;
   else renderHeads();
   songDraw();
@@ -354,18 +368,20 @@ function hslider(value, onChange, title) {
   return el;
 }
 
-// fader drags send at most ~15 edits a second
-const pendingVol = {};
-function songEditThrottled(tid, fields) {
-  pendingVol[tid] = { ...(pendingVol[tid] || {}), ...fields };
-  if (songEditThrottled.t) return;
-  songEditThrottled.t = setTimeout(() => {
-    songEditThrottled.t = null;
-    const ch = Object.entries(pendingVol).map(([id, f]) => ["track", id, f]);
-    for (const k of Object.keys(pendingVol)) delete pendingVol[k];
+// fader and knob drags send at most ~15 edits a second
+const pendingEdits = {};
+function throttledEdit(kind, id, fields) {
+  const k = kind + "\n" + id;
+  pendingEdits[k] = { ...(pendingEdits[k] || {}), ...fields };
+  if (throttledEdit.t) return;
+  throttledEdit.t = setTimeout(() => {
+    throttledEdit.t = null;
+    const ch = Object.entries(pendingEdits).map(([key, f]) => [...key.split("\n"), f]);
+    for (const key of Object.keys(pendingEdits)) delete pendingEdits[key];
     songEdit(ch);
   }, 66);
 }
+const songEditThrottled = (tid, fields) => throttledEdit("track", tid, fields);
 
 function addTrack() {
   const v = song.view;
@@ -456,19 +472,18 @@ function songDraw() {
     ctx.fillStyle = "rgba(79,214,198,0.05)";
     ctx.fillRect(x0, 0, x1 - x0, Math.max(0, rowsH));
   }
-  // clips
-  const d = song.drag;
-  for (const c of v.clips) {
-    let row = trackRow(c.track), start = c.start;
-    if (row < 0) continue;
-    if (d && d.moved && song.sel.has(c.id)) {
-      start = Math.max(0, d.orig[c.id].start + d.db);
-      row = Math.max(0, Math.min(v.tracks.length - 1, d.orig[c.id].row + d.dr));
-    }
-    const x = start * ppb - sx, cw = clipBeats(c) * ppb, y = row * ROW - sy;
-    if (x > w || x + cw < 0 || y > h || y + ROW < 0) continue;
-    drawClip(ctx, c, x, y + 2, cw, ROW - 5, v.tracks[row]);
-  }
+  // clips (while dragging: where they'd end up; a copy-drag leaves the originals)
+  const d = song.drag, res = d && d.moved ? d.result || {} : {};
+  const place = (c, ghost) => {
+    const row = ghost && ghost.row != null ? ghost.row : trackRow(c.track);
+    if (row < 0) return;
+    const cc = ghost ? { ...c, ...ghost } : c;
+    const x = cc.start * ppb - sx, cw = clipBeats(cc) * ppb, y = row * ROW - sy;
+    if (x > w || x + cw < 0 || y > h || y + ROW < 0) return;
+    drawClip(ctx, cc, x, y + 2, cw, ROW - 5, v.tracks[row]);
+  };
+  for (const c of v.clips) place(c, d && !d.copy ? res[c.id] : null);
+  if (d && d.copy) for (const c of v.clips) if (res[c.id]) place(c, res[c.id]);
   drawRuler();
   drawOverlay();
 }
@@ -520,10 +535,30 @@ function drawClip(ctx, c, x, y, w, h, track) {
     ctx.font = "600 11px system-ui, sans-serif";
     ctx.fillText(label, Math.max(x, 0) + 8, mid + 4);
   }
+  // fades: shade what's faded out, a line where the level goes
+  const fin = (c.fade_in || 0) / spb() * song.ppb, fout = (c.fade_out || 0) / spb() * song.ppb;
+  ctx.fillStyle = "rgba(8,7,11,0.55)";
+  ctx.strokeStyle = "#ffffffb0";
+  ctx.lineWidth = 1;
+  if (fin > 0.5) {
+    ctx.beginPath(); ctx.moveTo(x, y + 15); ctx.lineTo(x + fin, y + 15); ctx.lineTo(x, y + h); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x, y + h); ctx.lineTo(x + fin, y + 15); ctx.stroke();
+  }
+  if (fout > 0.5) {
+    ctx.beginPath(); ctx.moveTo(x + w, y + 15); ctx.lineTo(x + w - fout, y + 15); ctx.lineTo(x + w, y + h); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x + w, y + h); ctx.lineTo(x + w - fout, y + 15); ctx.stroke();
+  }
   ctx.fillStyle = "#121016";
   ctx.font = "700 10.5px system-ui, sans-serif";
-  const label = track ? track.name : "Clip";
+  const g = c.gain ?? 1;
+  const label = (track ? track.name : "Clip") + (Math.abs(g - 1) > 0.001 ? `  ${fmtDb(g)}` : "");
   ctx.fillText(label, Math.max(x, 0) + 6, y + 11);
+  // fade handles on the clip you're pointing at (or that's selected)
+  if ((song.hover === c.id || sel) && w > 30) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(x + Math.max(fin, 5) - 3.5, y + 1, 7, 7);
+    ctx.fillRect(x + Math.min(w - fout, w - 5) - 3.5, y + 1, 7, 7);
+  }
   ctx.restore();
   ctx.beginPath();
   ctx.roundRect(x + 0.5, y + 0.5, Math.max(2, w - 1), h - 1, r);
@@ -586,6 +621,15 @@ function drawOverlay() {
   const px = Math.round(pos * ppb - sx) + 0.5;
   ctx.fillStyle = st && st.recording ? "#ff6070" : "#efeaf4";
   ctx.fillRect(px - 0.5, 0, 1, Math.min(h, v.tracks.length * ROW - sy));
+  const b = song.band;
+  if (b && b.moved) {
+    const x0 = Math.min(b.b0, b.b1) * ppb - sx, x1 = Math.max(b.b0, b.b1) * ppb - sx;
+    const y0 = Math.min(b.y0, b.y1) - sy, y1 = Math.max(b.y0, b.y1) - sy;
+    ctx.fillStyle = "rgba(239,234,244,0.07)";
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.strokeStyle = "rgba(239,234,244,0.6)";
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
+  }
 }
 
 let lastFrameDraw = 0;
@@ -609,6 +653,19 @@ function songFrame() {
 }
 
 // ---------- mouse: lanes ----------
+// Over a clip: the body moves it (ctrl/cmd: a copy), the left/right edge trims
+// it, the small handles in its top corners set the fades. Alt: no snapping.
+// On empty space: click moves the playhead, drag selects a box of clips.
+const EDGE = 6;
+const CURSORS = { body: "grab", left: "w-resize", right: "e-resize", fin: "col-resize", fout: "col-resize" };
+
+function lanePoint(e) {
+  const lanes = $("lanes"), r = lanes.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const px = x + lanes.scrollLeft, py = y + lanes.scrollTop;
+  return { inside: x >= 0 && y >= 0 && x <= lanes.clientWidth && y <= lanes.clientHeight, px, py, beat: px / song.ppb, row: Math.floor(py / ROW) };
+}
+
 function hitClip(beat, row) {
   const v = song.view, t = v.tracks[row];
   if (!t) return null;
@@ -619,68 +676,335 @@ function hitClip(beat, row) {
   return null;
 }
 
+function hitZone(p) {
+  const c = hitClip(p.beat, p.row);
+  if (!c) return null;
+  const ppb = song.ppb, w = clipBeats(c) * ppb, lx = p.px - c.start * ppb, ly = p.py - (p.row * ROW + 2);
+  const fin = (c.fade_in || 0) / spb() * ppb, fout = (c.fade_out || 0) / spb() * ppb;
+  if (ly < 14 && w > 30) {
+    if (Math.abs(lx - Math.max(fin, 5)) <= 6 && lx < w / 2) return { c, zone: "fin" };
+    if (Math.abs(lx - Math.min(w - fout, w - 5)) <= 6 && lx >= w / 2) return { c, zone: "fout" };
+  }
+  if (w > 3 * EDGE && lx <= EDGE) return { c, zone: "left" };
+  if (w > 3 * EDGE && lx >= w - EDGE) return { c, zone: "right" };
+  return { c, zone: "body" };
+}
+
+const clipFields = (c) => ({ track: c.track, file: c.file, start: c.start, offset: c.offset || 0, len: c.len,
+  gain: c.gain ?? 1, fade_in: c.fade_in || 0, fade_out: c.fade_out || 0 });
+const fileDur = (c) => { const f = song.view.files[c.file]; return f && f.frames ? f.frames / f.sr : Infinity; };
+const gridOf = (mode) => (mode < 0 ? 0 : mode === 0 ? bpb() : mode);
+const selClips = () => song.view.clips.filter((c) => song.sel.has(c.id));
+const MIN_LEN = 0.05; // seconds
+
+function lanesHover(e) {
+  if (song.drag || song.band || e.buttons || !song.view) return;
+  const p = lanePoint(e), h = p.inside ? hitZone(p) : null;
+  $("lanes").style.cursor = h ? CURSORS[h.zone] : "";
+  const key = h ? h.c.id + h.zone : "";
+  if (key !== song.hoverKey) { song.hoverKey = key; song.hover = h ? h.c.id : null; songDraw(); }
+}
+
 function lanesDown(e) {
   if (e.button !== 0 || !song.view) return;
-  const lanes = $("lanes"), r = lanes.getBoundingClientRect();
-  const x = e.clientX - r.left, y = e.clientY - r.top;
-  if (x > lanes.clientWidth || y > lanes.clientHeight) return; // the scrollbars
-  const beat = (x + lanes.scrollLeft) / song.ppb, row = Math.floor((y + lanes.scrollTop) / ROW);
-  const c = hitClip(beat, row);
-  if (!c) {
-    if (!e.shiftKey) song.sel.clear();
-    const at = Math.max(0, snapBeat(beat));
-    api.daw_locate(at);
-    if (song.st && !song.st.playing) { song.st.pos = at; }
-    songDraw();
-    return;
-  }
-  if (e.shiftKey) { song.sel.has(c.id) ? song.sel.delete(c.id) : song.sel.add(c.id); songDraw(); return; }
-  if (!song.sel.has(c.id)) { song.sel.clear(); song.sel.add(c.id); }
-  const orig = {};
-  for (const id of song.sel) {
-    const cc = song.view.clips.find((k) => k.id === id);
-    if (cc) orig[id] = { start: cc.start, row: trackRow(cc.track) };
-  }
-  song.drag = { x0: e.clientX, y0: e.clientY, grab: beat - c.start, anchor: c, orig, db: 0, dr: 0, moved: false };
+  const p = lanePoint(e);
+  if (!p.inside) return; // the scrollbars
+  hideCtx();
+  const lanes = $("lanes");
   lanes.setPointerCapture(e.pointerId);
-  lanes.classList.add("grab");
+  const h = hitZone(p);
+  if (!h) { bandSelect(e, p); return; }
+  const c = h.c;
+  if (e.shiftKey && h.zone === "body") { song.sel.has(c.id) ? song.sel.delete(c.id) : song.sel.add(c.id); songDraw(); return; }
+  if (!song.sel.has(c.id)) { song.sel.clear(); song.sel.add(c.id); }
+  const d = { zone: h.zone, x0: e.clientX, y0: e.clientY, moved: false, anchor: c, row0: p.row, grab: p.beat - c.start,
+    copy: (e.ctrlKey || e.metaKey) && h.zone === "body", sel: h.zone === "body" ? selClips() : [c], result: null };
+  song.drag = d;
+  if (h.zone === "body") lanes.style.cursor = "grabbing";
   const move = (ev) => {
-    const d = song.drag;
     if (!d.moved && Math.hypot(ev.clientX - d.x0, ev.clientY - d.y0) < 4) return;
     d.moved = true;
-    const b = (ev.clientX - r.left + lanes.scrollLeft) / song.ppb;
-    const newStart = snapBeat(b - d.grab, ev.altKey ? -1 : song.snap);
-    d.db = newStart - d.orig[d.anchor.id].start;
-    d.dr = Math.floor((ev.clientY - r.top + lanes.scrollTop) / ROW) - d.orig[d.anchor.id].row;
+    d.result = dragResult(d, lanePoint(ev), ev.altKey ? -1 : song.snap);
     songDraw();
   };
   const up = () => {
     lanes.removeEventListener("pointermove", move);
     lanes.removeEventListener("pointerup", up);
-    lanes.classList.remove("grab");
-    const d = song.drag;
     song.drag = null;
-    if (!d.moved) { songDraw(); return; }
-    const v = song.view, ch = [];
-    for (const [id, o] of Object.entries(d.orig)) {
-      const row = Math.max(0, Math.min(v.tracks.length - 1, o.row + d.dr));
-      ch.push(["clip", id, { start: Math.max(0, o.start + d.db), track: v.tracks[row].id }]);
-    }
-    songEdit(ch);
+    lanes.style.cursor = "";
+    if (d.moved && d.result) commitDrag(d);
+    songDraw();
   };
   lanes.addEventListener("pointermove", move);
   lanes.addEventListener("pointerup", up);
   songDraw();
 }
 
+// what a drag would do: {id: {fields, row}} for the clips it changes
+function dragResult(d, q, snap) {
+  const v = song.view, s = spb(), c = d.anchor, out = {};
+  const clampRow = (r) => Math.max(0, Math.min(v.tracks.length - 1, r));
+  if (d.zone === "body") {
+    const db = Math.max(0, snapBeat(q.beat - d.grab, snap)) - c.start;
+    const minStart = Math.min(...d.sel.map((k) => k.start));
+    const shift = Math.max(db, -minStart);
+    const dr = q.row - d.row0;
+    for (const k of d.sel) out[k.id] = { start: k.start + shift, row: clampRow(trackRow(k.track) + dr) };
+  } else if (d.zone === "left") {
+    const lo = Math.max(0, c.start - (c.offset || 0) / s), hi = c.start + clipBeats(c) - MIN_LEN / s;
+    const start = Math.min(hi, Math.max(lo, snapBeat(q.beat, snap)));
+    const dt = (start - c.start) * s, len = c.len - dt;
+    out[c.id] = { start, offset: (c.offset || 0) + dt, len, fade_in: Math.min(c.fade_in || 0, len - (c.fade_out || 0)) };
+  } else if (d.zone === "right") {
+    const lo = c.start + MIN_LEN / s, hi = c.start + (fileDur(c) - (c.offset || 0)) / s;
+    const end = Math.min(hi, Math.max(lo, snapBeat(q.beat, snap)));
+    const len = (end - c.start) * s;
+    out[c.id] = { len, fade_out: Math.min(c.fade_out || 0, len - (c.fade_in || 0)) };
+  } else if (d.zone === "fin") {
+    out[c.id] = { fade_in: Math.max(0, Math.min(c.len - (c.fade_out || 0), (q.beat - c.start) * s)) };
+  } else if (d.zone === "fout") {
+    out[c.id] = { fade_out: Math.max(0, Math.min(c.len - (c.fade_in || 0), (c.start + clipBeats(c) - q.beat) * s)) };
+  }
+  return out;
+}
+
+function commitDrag(d) {
+  const v = song.view, ch = [];
+  if (d.copy) {
+    song.sel.clear();
+    for (const k of d.sel) {
+      const r = d.result[k.id], id = newId("c");
+      ch.push(["clip", id, { ...clipFields(k), start: r.start, track: v.tracks[r.row].id }]);
+      song.sel.add(id);
+    }
+  } else {
+    for (const [id, r] of Object.entries(d.result)) {
+      const { row, ...f } = r;
+      if (row != null) f.track = v.tracks[row].id;
+      ch.push(["clip", id, f]);
+    }
+  }
+  songEdit(ch);
+}
+
+// drag on empty space: select every clip the box touches; a plain click moves the playhead
+function bandSelect(e, p) {
+  const lanes = $("lanes");
+  const keep = e.shiftKey ? new Set(song.sel) : new Set();
+  song.band = { b0: p.beat, y0: p.py, b1: p.beat, y1: p.py, moved: false };
+  const move = (ev) => {
+    const q = lanePoint(ev), b = song.band;
+    b.b1 = q.beat; b.y1 = q.py;
+    if (!b.moved && Math.abs((b.b1 - b.b0) * song.ppb) + Math.abs(b.y1 - b.y0) < 5) return;
+    b.moved = true;
+    const [lb, hb] = [Math.min(b.b0, b.b1), Math.max(b.b0, b.b1)], [ly, hy] = [Math.min(b.y0, b.y1), Math.max(b.y0, b.y1)];
+    song.sel = new Set(keep);
+    for (const c of song.view.clips) {
+      const row = trackRow(c.track);
+      if (row * ROW + ROW > ly && row * ROW < hy && c.start + clipBeats(c) > lb && c.start < hb) song.sel.add(c.id);
+    }
+    songDraw();
+  };
+  const up = () => {
+    lanes.removeEventListener("pointermove", move);
+    lanes.removeEventListener("pointerup", up);
+    const b = song.band;
+    song.band = null;
+    if (!b.moved) {
+      if (!e.shiftKey) song.sel.clear();
+      const at = Math.max(0, snapBeat(p.beat));
+      api.daw_locate(at);
+      if (song.st && !song.st.playing) song.st.pos = at;
+    }
+    songDraw();
+  };
+  lanes.addEventListener("pointermove", move);
+  lanes.addEventListener("pointerup", up);
+}
+
 function lanesDbl(e) {
   // double-click a clip: select everything on its track from there on
-  const lanes = $("lanes"), r = lanes.getBoundingClientRect();
-  const beat = (e.clientX - r.left + lanes.scrollLeft) / song.ppb, row = Math.floor((e.clientY - r.top + lanes.scrollTop) / ROW);
-  const c = hitClip(beat, row);
+  const p = lanePoint(e), c = hitClip(p.beat, p.row);
   if (!c) return;
   for (const k of song.view.clips) if (k.track === c.track && k.start >= c.start) song.sel.add(k.id);
   songDraw();
+}
+
+// ---------- editing: split, duplicate, copy/paste, delete ----------
+function splitClips(beat, clips) {
+  const s = spb(), ch = [];
+  for (const c of clips) {
+    if (beat <= c.start + 1e-6 || beat >= c.start + clipBeats(c) - 1e-6) continue;
+    const left = (beat - c.start) * s, right = c.len - left;
+    ch.push(["clip", c.id, { len: left, fade_out: 0, fade_in: Math.min(c.fade_in || 0, left) }]);
+    ch.push(["clip", newId("c"), { ...clipFields(c), start: beat, offset: (c.offset || 0) + left, len: right,
+      fade_in: 0, fade_out: Math.min(c.fade_out || 0, right) }]);
+  }
+  if (ch.length) songEdit(ch);
+  return ch.length > 0;
+}
+
+function splitAtPlayhead() {
+  const b = curPos(), crosses = (c) => b > c.start && b < c.start + clipBeats(c);
+  const sel = selClips().filter(crosses);
+  if (!splitClips(b, sel.length ? sel : song.view.clips.filter(crosses))) toast("Put the playhead on a clip to split it there (S).");
+}
+
+function duplicateSel() {
+  const sel = selClips();
+  if (!sel.length) return;
+  const s0 = Math.min(...sel.map((c) => c.start)), e0 = Math.max(...sel.map((c) => c.start + clipBeats(c)));
+  const g = gridOf(song.snap);
+  const span = g ? Math.max(g, Math.ceil((e0 - s0) / g - 1e-6) * g) : e0 - s0;
+  const ch = [];
+  song.sel.clear();
+  for (const c of sel) {
+    const id = newId("c");
+    ch.push(["clip", id, { ...clipFields(c), start: c.start + span }]);
+    song.sel.add(id);
+  }
+  songEdit(ch);
+}
+
+function deleteSel() {
+  const ids = [...song.sel];
+  song.sel.clear();
+  if (ids.length) songEdit(ids.map((id) => ["clip", id, { del: true }]));
+}
+
+function copySel(cut = false) {
+  const sel = selClips();
+  if (!sel.length) return;
+  const s0 = Math.min(...sel.map((c) => c.start));
+  const rows = sel.map((c) => trackRow(c.track));
+  song.clipboard = { minRow: Math.min(...rows), items: sel.map((c, i) => ({ ...clipFields(c), rel: c.start - s0, row: rows[i] })) };
+  if (cut) deleteSel();
+  else toast(`Copied ${sel.length} clip${sel.length === 1 ? "" : "s"}. Ctrl+V pastes them at the playhead.`);
+}
+
+// at: beats (default the playhead); row: the track the top clip goes on (default: their own tracks)
+function paste(at, row) {
+  const cb = song.clipboard, v = song.view;
+  if (!cb) return;
+  const base = at ?? Math.max(0, snapBeat(curPos()));
+  const ch = [];
+  song.sel.clear();
+  for (const it of cb.items) {
+    const r = row == null ? null : row + (it.row - cb.minRow);
+    const track = r == null ? it.track : v.tracks[Math.min(v.tracks.length - 1, Math.max(0, r))]?.id;
+    if (!track || !v.tracks.some((t) => t.id === track)) continue;
+    const { rel, row: _r, ...f } = it;
+    const id = newId("c");
+    ch.push(["clip", id, { ...f, track, start: base + rel }]);
+    song.sel.add(id);
+  }
+  songEdit(ch);
+}
+
+async function undo() { setSongView(await api.daw_undo()); }
+async function redo() { setSongView(await api.daw_redo()); }
+
+// ---------- right-click menu ----------
+function lanesContext(e) {
+  e.preventDefault();
+  if (!song.view) return;
+  const p = lanePoint(e);
+  if (!p.inside) return;
+  const h = hitZone(p), items = [];
+  if (h) {
+    const c = h.c;
+    if (!song.sel.has(c.id)) { song.sel.clear(); song.sel.add(c.id); songDraw(); }
+    const at = snapBeat(p.beat);
+    const n = song.sel.size;
+    items.push(["Split here", "S", () => splitClips(at > c.start && at < c.start + clipBeats(c) ? at : p.beat, selClips())]);
+    items.push([n > 1 ? `Duplicate ${n} clips` : "Duplicate", "Ctrl+D", duplicateSel]);
+    items.push(["Copy", "Ctrl+C", () => copySel()]);
+    items.push([n > 1 ? `Delete ${n} clips` : "Delete", "Del", deleteSel]);
+    items.push(["Remove fades", "", () => songEdit(selClips().map((k) => ["clip", k.id, { fade_in: 0, fade_out: 0 }]))]);
+    items.push({ gain: c });
+  } else {
+    items.push(["Paste here", "Ctrl+V", () => paste(Math.max(0, snapBeat(p.beat)), p.row), !song.clipboard]);
+    items.push(["Add a track", "", addTrack]);
+  }
+  showCtx(items, e.clientX, e.clientY);
+}
+
+function showCtx(items, x, y) {
+  const m = $("ctxMenu");
+  m.innerHTML = "";
+  for (const it of items) {
+    if (it.gain) {
+      const c = it.gain, row = document.createElement("div");
+      row.className = "cgain";
+      const lbl = document.createElement("span");
+      lbl.textContent = `Volume ${fmtDb(c.gain ?? 1)}`;
+      row.append(lbl, hslider(c.gain ?? 1, (g) => {
+        lbl.textContent = `Volume ${fmtDb(g)}`;
+        for (const k of selClips()) { k.gain = g; throttledEdit("clip", k.id, { gain: g }); }
+        songDraw();
+      }, "Clip volume (double-click: 0 dB)"));
+      m.append(row);
+      continue;
+    }
+    const [label, key, fn, disabled] = it;
+    const b = document.createElement("button");
+    b.innerHTML = `<span>${esc(label)}</span><kbd>${esc(key)}</kbd>`;
+    b.disabled = !!disabled;
+    b.onclick = () => { hideCtx(); fn(); };
+    m.append(b);
+  }
+  m.hidden = false;
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(x, innerWidth - r.width - 8) + "px";
+  m.style.top = Math.min(y, innerHeight - r.height - 8) + "px";
+}
+
+function hideCtx() { const m = $("ctxMenu"); if (m) m.hidden = true; }
+
+// ---------- export ----------
+const exp = { what: "mix", range: "song" };
+function openExport() {
+  const m = song.view.meta;
+  exp.range = m.loop ? exp.range : "song";
+  const seg2 = (id, key, values) => {
+    for (const b of $(id).querySelectorAll("button")) {
+      b.classList.toggle("on", b.dataset.v === exp[key]);
+      b.disabled = b.dataset.v === "loop" && !m.loop;
+      b.onclick = () => { exp[key] = b.dataset.v; seg2(id, key, values); };
+    }
+  };
+  seg2("exWhat", "what"); seg2("exRange", "range");
+  $("exNote").textContent = m.loop ? "" : "Turn on the loop to export just that part.";
+  $("exProg").hidden = true; $("exShow").hidden = true; $("exGo").disabled = false;
+  $("exportm").hidden = false;
+}
+
+async function runExport() {
+  $("exGo").disabled = true;
+  const res = await api.daw_export({ stems: exp.what === "stems", loop: exp.range === "loop" });
+  if (!res || res.cancelled) { $("exGo").disabled = false; return; }
+  if (res.error) { toast(res.error, true); $("exGo").disabled = false; return; }
+  $("exProg").hidden = false;
+  const bar = $("exProg").firstElementChild;
+  for (;;) {
+    const st = await api.daw_export_status();
+    bar.style.width = Math.round((st.running ? st.progress : 1) * 100) + "%";
+    if (st.result) {
+      if (st.result.ok) {
+        const n = res.files.length, name = res.files[0].split(/[\\/]/).pop();
+        $("exNote").textContent = (n > 1 ? `Saved ${n} files, with ${name}.` : `Saved ${name}.`)
+          + [res.note, ...(st.result.warnings || [])].filter(Boolean).map((x) => " " + x).join("");
+        $("exShow").hidden = false;
+        $("exShow").onclick = () => api.show_file(res.files[0]);
+      } else {
+        $("exNote").textContent = "The export didn't work: " + st.result.error;
+      }
+      $("exGo").disabled = false;
+      return;
+    }
+    if (!st.running && !st.result) { $("exGo").disabled = false; return; }
+    await new Promise((r) => setTimeout(r, 150));
+  }
 }
 
 // ---------- mouse: ruler (click = play from here, drag = mark the loop) ----------
@@ -799,12 +1123,12 @@ function demoSong() {
     ],
     clips: [
       { id: "c1", track: "t1", file: "take-g1.wav", start: 0, offset: 0, len: 15, gain: 1 },
-      { id: "c2", track: "t2", file: "take-v1.wav", start: 8, offset: 0.5, len: 11, gain: 1 },
+      { id: "c2", track: "t2", file: "take-v1.wav", start: 8, offset: 0.5, len: 11, gain: 0.7, fade_in: 1.2, fade_out: 2.5 },
       { id: "c3", track: "t3", file: "take-k1.wav", start: 16, offset: 0, len: 8, gain: 1 },
     ],
-    files, me, partner, local: { click: true, countin: true }, conflict: null, shared: true,
+    files, me, partner, local: { click: true, countin: true }, conflict: null, shared: true, undo: true, redo: false,
   };
-  let v = 1, playing = false, recording = false, recFrom = null, pos = 0, t0 = 0;
+  let v = 1, playing = false, recording = false, recFrom = null, pos = 0, t0 = 0, exportAt = 0;
   const copy = () => JSON.parse(JSON.stringify(view));
   const now = () => (playing ? pos + (performance.now() - t0) / 1000 / (60 / view.meta.bpm) : pos);
   return {
@@ -832,6 +1156,13 @@ function demoSong() {
     daw_projects: async () => [{ pid: "pdemo", name: view.meta.name, modified: Date.now() / 1000, clips: view.clips.length, current: true },
       { pid: "p2", name: "Blues in A", modified: Date.now() / 1000 - 86400, clips: 5, current: false }],
     daw_new: async () => copy(), daw_open: async () => copy(), daw_resolve: async () => copy(),
+    daw_undo: async () => copy(), daw_redo: async () => copy(),
+    daw_export: async (o) => { exportAt = performance.now(); return { ok: true, note: "", files: o.stems ? ["/Users/you/Music/Summer jam (stems)/Summer jam.wav", "a", "b", "c"] : ["/Users/you/Music/Summer jam.wav"] }; },
+    daw_export_status: async () => {
+      const p = Math.min(1, (performance.now() - exportAt) / 1500);
+      return p < 1 ? { running: true, progress: p, result: null } : { running: false, progress: 1, result: { ok: true, warnings: [] } };
+    },
+    show_file: async () => {},
     status: () => ({ v, pos: playing ? pos + (performance.now() - t0) / 1000 / (60 / view.meta.bpm) : pos, playing, recording, recFrom,
       levels: playing ? { t1: 0.4, t2: 0.25 } : {}, xfer: { "take-k1.wav": [3_100_000, 4_600_000, "in"] }, notices: [] }),
   };

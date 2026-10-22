@@ -454,6 +454,14 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
             <select id="snapSel" aria-label="Snap to grid"></select>
             <div class="spacer"></div>
             <div class="xfer" id="xfer"></div>
+            <div class="zoom">
+              <button id="undoBtn" title="Undo (ctrl+Z): your own last change" aria-label="Undo">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+              <button id="redoBtn" title="Redo (ctrl+Y)" aria-label="Redo">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+            </div>
+            <button class="ttog" id="exportBtn" title="Save the song as a WAV file">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span class="tgl-label">Export</span></button>
             <div class="zoom"><button id="zoomOut" title="Zoom out (ctrl + scroll)" aria-label="Zoom out">−</button><button id="zoomIn" title="Zoom in (ctrl + scroll)" aria-label="Zoom in">+</button></div>
           </div>
           <div class="arr">
@@ -546,6 +554,21 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
   </div>
 </div>
 <div class="menu" id="songMenu" hidden></div>
+<div class="menu ctx" id="ctxMenu" hidden></div>
+<div class="modal" id="exportm" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="exTitle">
+    <div class="mhead"><b id="exTitle">Export</b><span>WAV, 24-bit stereo</span><button class="x" id="exX" aria-label="Close">✕</button></div>
+    <div class="mbody">
+      <div class="field"><label>What</label>
+        <div class="seg" id="exWhat"><button data-v="mix">The mix</button><button data-v="stems">The mix + every track on its own</button></div></div>
+      <div class="field"><label>Which part</label>
+        <div class="seg" id="exRange"><button data-v="song">The whole song</button><button data-v="loop">Just the loop</button></div></div>
+      <p class="fine" id="exNote"></p>
+      <div class="exprog" id="exProg" hidden><i></i></div>
+      <div class="row"><button class="btn primary" id="exGo">Export…</button><button class="btn" id="exShow" hidden>Show the file</button></div>
+    </div>
+  </div>
+</div>
 <div class="modal" id="conflict" hidden>
   <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="cfTitle">
     <div class="mhead"><b id="cfTitle">Two different songs</b></div>

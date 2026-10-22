@@ -349,7 +349,7 @@ pub struct Dsp {
 }
 
 #[inline]
-fn pan_gains(pan: f32) -> (f32, f32) {
+pub fn pan_gains(pan: f32) -> (f32, f32) {
     // constant power: -3 dB each side in the middle
     let a = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
     (a.cos(), a.sin())
@@ -830,7 +830,9 @@ impl Dsp {
         }
         self.master_level = pk.max(self.master_level * 0.9);
 
-        crate::fx::TEMPO_BITS.store((self.metro.bpm as f64).to_bits(), Relaxed);
+        // tempo-synced plugins follow the song while it plays, the metronome otherwise
+        let tempo = if self.tp.playing { self.click.bpm } else { self.metro.bpm };
+        crate::fx::TEMPO_BITS.store((tempo as f64).to_bits(), Relaxed);
         // click track: local only, after the mix and after the master fader
         let timeline = if self.metro.leader {
             self.seq as i64

@@ -12,8 +12,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Duration;
+
+use crate::dsp::{pan_gains, StripSettings};
+use crate::fx::{Rack, Slot, SlotCfg};
 
 pub const MAX_TRACKS: usize = 32;
 /// Samples per waveform overview bucket (one min/max pair each).
@@ -284,6 +288,106 @@ pub fn write_takes(sources: Vec<(usize, String, PathBuf, rtrb::Consumer<f32>)>, 
         .collect()
 }
 
+/// One song track as an export renders it.
+pub struct TrackMix {
+    pub slot: usize,
+    pub s: StripSettings,
+    pub rack: Vec<SlotCfg>,
+    /// also write this track on its own (after its fader and pan)
+    pub stem: Option<PathBuf>,
+}
+
+/// Render timeline samples start..end to stereo 24-bit WAV files: the mix
+/// (if `mix`) and any stems. Same clips, gains, pans and effects as playback,
+/// but with effect instances of its own, so the live audio keeps running.
+/// `done` counts rendered frames. Returns warnings (effects that couldn't load).
+#[allow(clippy::too_many_arguments)]
+pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, master: f32, sr: u32, start: i64, end: i64,
+              mix: Option<PathBuf>, done: &AtomicU64) -> Result<Vec<String>, String> {
+    const BLOCK: usize = 512;
+    type Wav = hound::WavWriter<std::io::BufWriter<std::fs::File>>;
+    let spec = hound::WavSpec { channels: 2, sample_rate: sr, bits_per_sample: 24, sample_format: hound::SampleFormat::Int };
+    let create = |p: &Path| hound::WavWriter::create(p, spec).map_err(|e| format!("can't write {}: {e}", p.display()));
+    let put = |w: &mut Wav, v: f32| w.write_sample((v.clamp(-1.0, 1.0) * 8_388_607.0) as i32).map_err(|e| e.to_string());
+    struct T {
+        slot: usize,
+        s: StripSettings,
+        rack: Rack,
+        stem: Option<Wav>,
+        buf: Vec<f32>,
+    }
+    let mut warnings = Vec::new();
+    let mut ts = Vec::new();
+    for t in tracks {
+        let mut rack = Rack::new();
+        for cfg in t.rack {
+            match Slot::new(cfg, sr as f32) {
+                Ok(slot) => {
+                    let _ = rack.insert(MAX_TRACKS, slot);
+                }
+                Err(e) => warnings.push(format!("an effect on track {} was left out: {e}", t.slot + 1)),
+            }
+        }
+        let stem = match &t.stem {
+            Some(p) => Some(create(p)?),
+            None => None,
+        };
+        ts.push(T { slot: t.slot, s: t.s, rack, stem, buf: vec![0.0; BLOCK] });
+    }
+    let mut mixw = match &mix {
+        Some(p) => Some(create(p)?),
+        None => None,
+    };
+    let any_solo = ts.iter().any(|t| t.s.solo);
+    let (mut l, mut r) = (vec![0f32; BLOCK], vec![0f32; BLOCK]);
+    let mut pos = start;
+    while pos < end {
+        let n = (end - pos).min(BLOCK as i64) as usize;
+        l[..n].fill(0.0);
+        r[..n].fill(0.0);
+        for t in ts.iter_mut() {
+            let buf = &mut t.buf[..n];
+            buf.fill(0.0);
+            tl.render(t.slot, pos, buf);
+            for v in buf.iter_mut() {
+                *v *= t.s.gain;
+            }
+            t.rack.process(buf);
+            let (pl, pr) = pan_gains(t.s.pan);
+            let f = t.s.fader;
+            if let Some(w) = t.stem.as_mut() {
+                for &v in buf.iter() {
+                    put(w, v * f * pl)?;
+                    put(w, v * f * pr)?;
+                }
+            }
+            if !t.s.mute && (!any_solo || t.s.solo) {
+                for k in 0..n {
+                    l[k] += buf[k] * f * pl;
+                    r[k] += buf[k] * f * pr;
+                }
+            }
+        }
+        if let Some(w) = mixw.as_mut() {
+            for k in 0..n {
+                put(w, l[k] * master)?;
+                put(w, r[k] * master)?;
+            }
+        }
+        pos += n as i64;
+        done.store((pos - start) as u64, Relaxed);
+    }
+    for t in ts {
+        if let Some(w) = t.stem {
+            w.finalize().map_err(|e| e.to_string())?;
+        }
+    }
+    if let Some(w) = mixw {
+        w.finalize().map_err(|e| e.to_string())?;
+    }
+    Ok(warnings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +427,38 @@ mod tests {
         // a missing file just isn't there yet
         let desc = vec![vec![ClipDesc { key: "b".into(), ..desc[0][0].clone() }]];
         assert!(cache.build(&desc, 48000).tracks[0].is_empty());
+    }
+
+    #[test]
+    fn export_renders_the_mix_and_stems() {
+        let dir = std::env::temp_dir().join(format!("duet-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data = Arc::new(AudioData { sr: 48000, samples: vec![0.5; 4800] });
+        let mut tl = Timeline::empty();
+        tl.tracks[0].push(clip(1000, 0, 4800, &data));
+        tl.tracks[3].push(clip(0, 0, 4800, &data));
+        let s = |pan: f32, mute: bool| StripSettings { active: true, pan, mute, ..StripSettings::track() };
+        let tracks = vec![
+            TrackMix { slot: 0, s: s(-1.0, false), rack: vec![], stem: Some(dir.join("a.wav")) },
+            TrackMix { slot: 3, s: s(0.0, true), rack: vec![SlotCfg::new(5)], stem: Some(dir.join("b.wav")) },
+        ];
+        let done = AtomicU64::new(0);
+        let warn = render(&tl, tracks, 1.0, 48000, 0, 8000, Some(dir.join("mix.wav")), &done).unwrap();
+        assert!(warn.is_empty());
+        assert_eq!(done.load(Relaxed), 8000);
+        let read = |n: &str| {
+            let mut r = hound::WavReader::open(dir.join(n)).unwrap();
+            assert_eq!((r.spec().channels, r.spec().sample_rate), (2, 48000));
+            r.samples::<i32>().map(|v| v.unwrap() as f32 / 8_388_607.0).collect::<Vec<_>>()
+        };
+        let mix = read("mix.wav");
+        assert_eq!(mix.len(), 16000);
+        assert_eq!(mix[2 * 500], 0.0); // before the clip
+        assert!((mix[2 * 3000] - 0.5).abs() < 1e-3, "hard left: all of it on the left");
+        assert!(mix[2 * 3000 + 1].abs() < 1e-3, "nothing on the right; the muted track isn't in the mix");
+        let b = read("b.wav");
+        assert!(b[2 * 2000].abs() > 0.1, "a muted track still gets its own stem");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

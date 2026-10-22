@@ -115,3 +115,21 @@ input[type=number]:focus { border-color: var(--me); }
   .transport .tgl-label { display: none; }
   .arr { grid-template-columns: 220px 1fr; }
 }
+
+/* undo/redo/export in the transport */
+.zoom button:disabled { opacity: 0.35; cursor: default; }
+.zoom button { display: grid; place-items: center; }
+
+/* right-click menu */
+.menu.ctx { width: 230px; padding: 6px; z-index: 45; }
+.menu.ctx button { display: flex; align-items: center; width: 100%; gap: 10px; border: 0; background: none; padding: 7px 10px; border-radius: 8px; cursor: pointer; text-align: left; font-size: 13px; }
+.menu.ctx button:hover:not(:disabled) { background: var(--line); }
+.menu.ctx button:disabled { color: var(--faint); cursor: default; }
+.menu.ctx kbd { margin-left: auto; font: 11px var(--mono); color: var(--faint); }
+.menu.ctx .cgain { display: grid; gap: 4px; padding: 8px 10px 4px; border-top: 1px solid var(--line); margin-top: 4px; font-size: 12px; color: var(--muted); --c: var(--me); }
+
+/* export */
+.exprog { height: 6px; border-radius: 3px; background: #0a090d; overflow: hidden; margin: 4px 0 12px; }
+.exprog i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--me), var(--partner)); transition: width 0.15s; }
+#exportm .seg { flex-wrap: wrap; }
+#exportm .seg button:disabled { opacity: 0.4; cursor: default; }
