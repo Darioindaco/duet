@@ -7,6 +7,7 @@ The engine's own unit tests (jitter buffer, effects, codes) run with
 """
 from __future__ import annotations
 
+import math
 import sys
 import time
 
@@ -97,6 +98,73 @@ def test_auto_buffer(blocks: int = 375 * 23):
     a.close()
     b.close()
     print("auto buffer: ok")
+
+
+def wait_for(cond, timeout=8.0, what="condition", detail=None):
+    t0 = time.monotonic()
+    while not cond():
+        if time.monotonic() - t0 > timeout:
+            raise AssertionError(f"timed out waiting for {what}{(': ' + str(detail())) if detail else ''}")
+        time.sleep(0.02)
+
+
+def test_daw():
+    """Two people, one song: they end up in the same project, both record a take
+    at the same time (each on their own machine), and afterwards both sides
+    have both clips, both audio files and an identical project."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    a, b, _ = connect_pair()
+    root = Path(tempfile.mkdtemp(prefix="duet-daw-"))
+    da, db = Daw(a, root / "A", "alice"), Daw(b, root / "B", "bob")
+    try:
+        # two fresh, empty songs: one side adopts the other's
+        wait_for(lambda: da.p.pid == db.p.pid and da.view()["shared"] and db.view()["shared"], what="one shared song",
+                 detail=lambda: (da.p.pid, db.p.pid, da.partner_pid, db.partner_pid, da.connected, db.connected, da.conflict, db.conflict))
+        # a track for bob's first input, armed, next to alice's own (armed too)
+        mine = da.view()["tracks"][0]["id"]
+        da.edit([["track", mine, {"arm": True, "owner": "alice"}], ["track", "tbob", {"name": "Bob", "order": 2.0, "owner": "bob", "src": 0,
+                                                                   "arm": True, "vol": 0.8, "pan": 0.0, "rack": []}]])
+        wait_for(lambda: len(db.view()["tracks"]) == 2 and all(t["arm"] for t in db.view()["tracks"]), what="tracks on bob's side")
+        for d in (da, db):
+            d.set_local("countin", False)
+        assert da.record(0.0) == {"ok": True}
+        wait_for(lambda: b.state()["daw_recording"], what="bob recording too")
+        sa = [0.25 * math.sin(2 * math.pi * 330 * i / SR) for i in range(N)]
+        sb = [0.25 * math.sin(2 * math.pi * 550 * i / SR) for i in range(N)]
+        for _ in range(300):
+            a.process(sa)
+            b.process(sb)
+        da.stop()
+        wait_for(lambda: not b.state()["daw_playing"], what="bob stopping")
+        both = lambda d: len(d.view()["clips"]) == 2 and all(f["here"] for f in d.view()["files"].values()) and len(d.view()["files"]) == 2
+        info = lambda d: ([(c["track"], c["file"], round(c["start"], 3)) for c in d.view()["clips"]], {n: f["here"] for n, f in d.view()["files"].items()}, dict(d.wanted))
+        wait_for(lambda: both(da) and both(db), timeout=15, what="both clips and files on both sides",
+                 detail=lambda: (info(da), info(db), a.file_status(), b.file_status()))
+        wait_for(lambda: da.p.digest() == db.p.digest(), what="identical projects")
+        va = da.view()
+        owners = sorted(va["files"][c["file"]]["owner"] for c in va["clips"])
+        assert owners == ["alice", "bob"], owners
+        for c in va["clips"]:
+            assert abs(c["start"]) < 0.2 and c["len"] > 0.5, c  # started at the top, ~0.8 s long
+        for name in va["files"]:
+            fa, fb = (root / x / da.p.pid / "audio" / name for x in ("A", "B"))
+            assert fa.read_bytes() == fb.read_bytes(), f"{name} differs between the two sides"
+        # an edit on one side shows up on the other
+        cid = va["clips"][0]["id"]
+        db.edit([["clip", cid, {"start": 4.0}]])
+        wait_for(lambda: next(c for c in da.view()["clips"] if c["id"] == cid)["start"] == 4.0, what="moved clip on alice's side")
+        print(f"daw: ok  (shared song, 2 takes recorded at once, audio swapped: {', '.join(sorted(va['files']))})")
+    finally:
+        da.close()
+        db.close()
+        a.close()
+        b.close()
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_signals():
@@ -567,6 +635,7 @@ if __name__ == "__main__":
     test_effects_cpu()
     test_two_engines()
     test_auto_buffer()
+    test_daw()
     test_signals()
     test_mixer()
     test_partner_fx()

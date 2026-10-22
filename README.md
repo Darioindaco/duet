@@ -79,6 +79,46 @@ has two tabs:
    the other one's click is lined up with the leader's playing *as it arrives*,
    so you play along to what you hear. Tempo-synced plugins follow it too.
 
+## Recording a song together
+
+The **Playlist** (top left, next to *Mixer*) is a timeline you both work in at
+the same time, like a shared document: the song is open on both computers and
+every change (a new track, a moved clip, the tempo) shows up on the other side
+right away. The green dot on the song name means you're in the same song.
+
+1. **Tracks:** *+ Track* adds one. Under its name you pick **who plays on it and
+   from which input**: *You · Guitar* or *Partner · Vocals*. Orange tracks are
+   yours, teal ones your partner's.
+2. **Arm** the tracks you want to record (the red dot). Arm yours and theirs at
+   once to record both of you in one go.
+3. **Record** (the red button, or *R*). With *1 bar count-in* on you get a bar
+   of clicks first. Either of you can press it; it starts on both sides.
+4. **Stop** (or *space*). The takes **pop up as clips** on their tracks, for both
+   of you. Your partner's take shows as "Receiving…" for a few seconds while the
+   audio comes over, then turns into a waveform.
+
+Each of you records **on your own computer**, in full quality and against your
+own playback of the song, corrected for your own sound card. So the takes land
+on the beat **however far apart you are**: the 30–50 ms between you only
+matters for what you hear of each other live, not for what ends up in the song.
+
+In the playlist: click a clip to select it (shift-click for more, ctrl+A for
+all), drag it to move it (also to another track; it snaps to the grid, hold *Alt*
+to move freely), *Delete* removes it. Click in the ruler to move the playhead,
+drag in the ruler to mark a loop. *Ctrl + scroll* zooms. *Click* gives you a
+metronome while the song plays (just for you).
+
+Each track also has a strip in the **Mixer** (under *Song*) with volume, pan
+and its own FX rack, NAM amps and VST3 plugins included; *FX* on a track header
+takes you there. Volume, pan and effects are part of the song (you both hear
+them); mute and solo are just for you. A VST on a song track needs that plugin
+on both computers.
+
+Songs are saved by themselves. The song name opens the song menu: rename it,
+start a new one, or open an older one (your partner switches along). If you
+both had a different song open when you connected, Duet asks which one to use;
+the other one stays saved.
+
 Effects on your partner's own strips are part of what they send: you hear them
 without doing anything, and their strip shows which ones ("theirs: …").
 Effects you add on their strip only change your own mix.
@@ -138,12 +178,18 @@ to it through lock-free queues and atomics.
 | `engine/src/fx.rs` | FX racks: compressor, overdrive, chorus, tremolo, delay, Freeverb, NAM amp (nam-rs) |
 | `engine/src/net.rs` | Packet format, connect codes, STUN |
 | `engine/src/signal.rs` | Reliable side channel for the video call setup |
-| `engine/src/lib.rs` | Network threads (receive, punching, ping) and the Python API |
+| `engine/src/daw.rs` | Song timeline: clips, audio files (WAV in/out, rate conversion, waveform peaks), take writer |
+| `engine/src/transfer.rs` | Reliable, paced file transfer to the partner (recorded takes) over the audio socket |
+| `engine/src/lib.rs` | Network threads (receive, punching, ping, files) and the Python API |
 | `duet.py` | Window (pywebview) and the API the page calls |
+| `daw.py` | The shared song: a last-writer-wins document synced with the partner, recording, the engine's timeline |
 | `t3k.py` | TONE3000: OAuth/PKCE tone picker over a loopback redirect, model download, local library |
 | `ui/index.html` | The interface, incl. the WebRTC video call |
+| `ui/daw.js`, `ui/daw.css` | The playlist: transport, track headers, timeline with waveforms, song menu |
 | `.github/workflows/build.yml` | Builds, tests and smoke-tests the Mac app on every push |
 
-Audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way. The wire
+Live audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.
+Recorded takes are 24-bit WAV; they go to the partner after recording at up to
+about 12 Mbit/s, slowing down by themselves when the line gets busy. The wire
 format hasn't changed since the first (Python) version, so old and new builds
 can still talk to each other.

@@ -2,15 +2,17 @@
 //!
 //! Python (duet.py + the web UI) does setup and display. Everything time-critical
 //! runs here on native threads that never touch the GIL: the audio callback
-//! (dsp.rs), the network receive thread, and the control thread (punching,
-//! pings, signaling resends).
+//! (dsp.rs), the network receive thread, the control thread (punching,
+//! pings, signaling resends) and the file thread (sending takes).
 
 mod audio;
+mod daw;
 mod dsp;
 mod fx;
 mod jitter;
 mod net;
 mod signal;
+mod transfer;
 mod vst;
 
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
@@ -20,9 +22,10 @@ use std::time::{Duration, Instant};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBytes, PyDict};
 
-use dsp::{decode_peer, encode_peer, Cmd, Dsp, InPacket, Shared, StripParam, StripSettings, Target, MAX_LOCAL, MAX_REMOTE};
+use daw::{AudioCache, ClipDesc, MAX_TRACKS};
+use dsp::{decode_peer, encode_peer, Cmd, Dsp, Garbage, InPacket, RecRings, Shared, StripParam, StripSettings, Target, MAX_LOCAL, MAX_REMOTE};
 use fx::{kind_index, param_index, preset_slots, Slot, SlotCfg, FX, MAX_SLOTS};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
@@ -39,7 +42,23 @@ struct Ctl {
     // mirror of the mixer the audio thread has (the UI reads this, never the audio side)
     local: Vec<StripMirror>,
     remote: Vec<StripMirror>,
+    tracks: Vec<StripMirror>,
     master: f32,
+}
+
+/// The control side of the timeline: loaded audio, the clip layout (kept to
+/// rebuild after a sample-rate change) and the take being recorded.
+struct DawCtl {
+    cache: AudioCache,
+    desc: Vec<Vec<ClipDesc>>,
+    rec: Option<RecSession>,
+}
+
+struct RecSession {
+    writer: std::thread::JoinHandle<Vec<daw::RecOut>>,
+    sr: u32,
+    /// what the sound cards add (input + output): a take lands this much earlier
+    comp: f64,
 }
 
 #[derive(Clone)]
@@ -54,8 +73,10 @@ struct Inner {
     ctl: Mutex<Ctl>,
     cmds: Mutex<rtrb::Producer<Cmd>>,
     incoming: Mutex<Option<rtrb::Producer<InPacket>>>,
-    /// effect objects the audio thread is done with, freed here instead of there
-    retired: Mutex<rtrb::Consumer<Box<Slot>>>,
+    /// things the audio thread is done with, freed here instead of there
+    retired: Mutex<rtrb::Consumer<Garbage>>,
+    daw: Mutex<DawCtl>,
+    files: Mutex<transfer::Transfers>,
     running: AtomicBool,
     start: Instant,
 }
@@ -67,6 +88,7 @@ impl Inner {
     fn set_peer(&self, a: Option<SocketAddrV4>) {
         self.shared.peer.store(a.map(encode_peer).unwrap_or(0), Relaxed);
         self.shared.peer_epoch.fetch_add(1, Relaxed);
+        self.files.lock().unwrap().abort_all();
     }
     fn send(&self, data: &[u8], to: Option<SocketAddrV4>) {
         let loss = self.shared.test_signal_loss.get();
@@ -186,6 +208,13 @@ impl Inner {
                     }
                 }
                 net::T_SIGACK => self.ctl.lock().unwrap().signals.ack(seq),
+                net::T_FILE => {
+                    let r = self.files.lock().unwrap().on_file(seq, body);
+                    if let Some(r) = r {
+                        self.send(&r, None);
+                    }
+                }
+                net::T_FILEACK => self.files.lock().unwrap().on_ack(seq, body),
                 net::T_BYE => {
                     self.set_peer(None);
                     self.ctl.lock().unwrap().rtt_ms = None;
@@ -232,6 +261,23 @@ impl Inner {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+
+    /// Paces file transfers: every few ms while one runs, idle otherwise.
+    fn file_loop(self: Arc<Self>) {
+        while self.running.load(Relaxed) {
+            let rtt = self.ctl.lock().unwrap().rtt_ms;
+            let (packets, active) = {
+                let mut f = self.files.lock().unwrap();
+                (f.tick(rtt), f.active())
+            };
+            if self.peer().is_some() {
+                for p in packets {
+                    self.send(&p, None);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(if active { 3 } else { 40 }));
+        }
+    }
 }
 
 #[pyclass]
@@ -256,7 +302,7 @@ impl Engine {
         let shared = Arc::new(Shared::default());
         let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(1024);
         let (pkt_tx, pkt_rx) = rtrb::RingBuffer::new(512);
-        let (ret_tx, ret_rx) = rtrb::RingBuffer::new(256);
+        let (ret_tx, ret_rx) = rtrb::RingBuffer::<Garbage>::new(256);
         let dsp = Dsp::new(48000, 128, cmd_rx, pkt_rx, ret_tx, socket.clone(), shared.clone());
         let mut local: Vec<StripMirror> =
             (0..MAX_LOCAL).map(|i| StripMirror { s: StripSettings::local(i), rack: vec![] }).collect();
@@ -274,11 +320,14 @@ impl Engine {
                 stun_reply: None,
                 local,
                 remote: vec![StripMirror { s: StripSettings::remote(), rack: vec![] }; MAX_REMOTE],
+                tracks: vec![StripMirror { s: StripSettings::track(), rack: vec![] }; MAX_TRACKS],
                 master: 1.0,
             }),
             cmds: Mutex::new(cmd_tx),
             incoming: Mutex::new(Some(pkt_tx)),
             retired: Mutex::new(ret_rx),
+            daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], rec: None }),
+            files: Mutex::new(transfer::Transfers::new(std::env::temp_dir().join("duet-incoming"))),
             running: AtomicBool::new(false),
             start: Instant::now(),
         });
@@ -294,6 +343,8 @@ impl Engine {
         std::thread::Builder::new().name("duet-recv".into()).spawn(move || a.recv_loop()).unwrap();
         let b = self.inner.clone();
         std::thread::Builder::new().name("duet-control".into()).spawn(move || b.control_loop()).unwrap();
+        let c = self.inner.clone();
+        std::thread::Builder::new().name("duet-files".into()).spawn(move || c.file_loop()).unwrap();
     }
 
     /// Look up our public address (STUN, same socket as the audio) and return our code.
@@ -381,6 +432,7 @@ impl Engine {
         let res = py.allow_threads(|| self.audio.start(args));
         self.inner.shared.streaming.store(res.is_ok(), Relaxed);
         let ok = res.map_err(PyRuntimeError::new_err)?;
+        self.rebuild_timeline(); // clip positions are samples at the (maybe new) rate
         Ok((ok.lat_in_ms, ok.lat_out_ms, ok.in_channels))
     }
 
@@ -404,6 +456,7 @@ impl Engine {
 
     fn set_format(&self, samplerate: u32, frame: usize) {
         self.dsp.lock().unwrap().set_format(samplerate, frame);
+        self.rebuild_timeline();
     }
 
     // --- mixer ---------------------------------------------------------------------
@@ -690,9 +743,9 @@ impl Engine {
             let ids: Vec<(Target, usize, u64)> = {
                 let mut c = self.inner.ctl.lock().unwrap();
                 let mut out = Vec::new();
-                for (side, n) in [(0, MAX_LOCAL), (1, MAX_REMOTE)] {
+                for (side, n) in [(0, MAX_LOCAL), (1, MAX_REMOTE), (2, MAX_TRACKS)] {
                     for i in 0..n {
-                        let t = if side == 0 { Target::Local(i) } else { Target::Remote(i) };
+                        let t = match side { 0 => Target::Local(i), 1 => Target::Remote(i), _ => Target::Track(i) };
                         for (pos, s) in mirror(&mut c, t).rack.iter().enumerate() {
                             if let Some(v) = &s.vst {
                                 out.push((t, pos, v.id));
@@ -760,6 +813,7 @@ impl Engine {
         let d = PyDict::new(py);
         d.set_item("local", c.local.iter().map(strip).collect::<PyResult<Vec<_>>>()?)?;
         d.set_item("remote", c.remote.iter().map(strip).collect::<PyResult<Vec<_>>>()?)?;
+        d.set_item("tracks", c.tracks.iter().map(strip).collect::<PyResult<Vec<_>>>()?)?;
         d.set_item("master", c.master)?;
         Ok(d)
     }
@@ -803,6 +857,178 @@ impl Engine {
     #[getter]
     fn signals_pending(&self) -> usize {
         self.inner.ctl.lock().unwrap().signals.pending()
+    }
+
+    // --- DAW: audio files, timeline, transport, recording ---------------------------
+    // Positions are seconds; the engine turns them into samples at the device rate.
+
+    /// Load a WAV for the timeline under `key`. Returns (frames, sample rate,
+    /// waveform peaks: a signed min/max byte pair per 512 frames).
+    fn daw_load<'py>(&self, py: Python<'py>, key: String, path: String) -> PyResult<(usize, u32, Bound<'py, PyBytes>)> {
+        let data = py.allow_threads(|| daw::read_wav(std::path::Path::new(&path))).map_err(PyRuntimeError::new_err)?;
+        let (frames, sr, peaks) = (data.samples.len(), data.sr, daw::peaks(&data.samples));
+        self.inner.daw.lock().unwrap().cache.insert(&key, data);
+        Ok((frames, sr, PyBytes::new(py, &peaks)))
+    }
+
+    fn daw_loaded(&self, key: &str) -> bool {
+        self.inner.daw.lock().unwrap().cache.get(key).is_some()
+    }
+
+    fn daw_unload(&self, key: &str) {
+        self.inner.daw.lock().unwrap().cache.remove(key);
+    }
+
+    /// The whole clip layout: tracks[i] = [(key, start, offset, length, gain,
+    /// fade in, fade out)] for track strip Ti, all times in seconds. Clips whose
+    /// audio isn't loaded yet are skipped (send the layout again once it is).
+    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, f64, f64)>>) {
+        let desc = tracks
+            .into_iter()
+            .take(MAX_TRACKS)
+            .map(|clips| {
+                clips
+                    .into_iter()
+                    .map(|(key, start, offset, len, gain, fade_in, fade_out)| ClipDesc { key, start, offset, len, gain, fade_in, fade_out })
+                    .collect()
+            })
+            .collect();
+        self.inner.daw.lock().unwrap().desc = desc;
+        py.allow_threads(|| self.rebuild_timeline());
+    }
+
+    /// Play from `pos`. The click plays at least until `click_until` (count-in).
+    #[pyo3(signature = (pos, click_until=None))]
+    fn daw_play(&self, pos: f64, click_until: Option<f64>) {
+        let s = |x: f64| (x * self.samplerate() as f64).round() as i64;
+        self.cmd(Cmd::Play { pos: s(pos), click_until: click_until.map_or(i64::MIN, s), rec: None });
+    }
+
+    /// Play from `pos` and record: sources = [(local strip, key, wav path)].
+    /// Each strip is recorded after its effects (what the partner hears).
+    #[pyo3(signature = (sources, pos, click_until=None))]
+    fn daw_record(&self, sources: Vec<(usize, String, String)>, pos: f64, click_until: Option<f64>) -> PyResult<()> {
+        if self.inner.daw.lock().unwrap().rec.is_some() {
+            return Err(PyRuntimeError::new_err("already recording"));
+        }
+        let sr = self.samplerate() as u32;
+        let mut rings = Box::new(RecRings(Default::default()));
+        let mut takes = Vec::new();
+        for (src, key, path) in sources {
+            if src >= MAX_LOCAL || rings.0[src].is_some() {
+                continue;
+            }
+            let (tx, rx) = rtrb::RingBuffer::<f32>::new(sr as usize * 4);
+            rings.0[src] = Some(tx);
+            takes.push((src, key, std::path::PathBuf::from(path), rx));
+        }
+        let sh = &self.inner.shared;
+        let comp = (sh.lat_in_us.load(Relaxed) + sh.lat_out_us.load(Relaxed)) as f64 / 1e6
+            + sh.cushion_frames.load(Relaxed) as f64 / sr as f64;
+        let writer = std::thread::Builder::new()
+            .name("duet-takes".into())
+            .spawn(move || daw::write_takes(takes, sr))
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        self.inner.daw.lock().unwrap().rec = Some(RecSession { writer, sr, comp });
+        let s = |x: f64| (x * sr as f64).round() as i64;
+        self.cmd(Cmd::Play { pos: s(pos), click_until: click_until.map_or(i64::MIN, s), rec: Some(rings) });
+        Ok(())
+    }
+
+    /// Stop the transport. If it was recording, returns the takes: [{"src",
+    /// "key", "path", "frames", "sr", "first" (timeline seconds of the first
+    /// sample as recorded), "comp" (seconds the sound cards add: the take
+    /// belongs that much earlier), "peaks", "dropped", "error"}].
+    fn daw_stop<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.cmd(Cmd::Stop);
+        let Some(sess) = self.inner.daw.lock().unwrap().rec.take() else { return Ok(vec![]) };
+        // the writer finishes once the audio thread has let go of the rings
+        let until = Instant::now() + Duration::from_secs(3);
+        while !sess.writer.is_finished() && Instant::now() < until {
+            if !self.inner.shared.streaming.load(Relaxed) {
+                if let Ok(mut d) = self.dsp.try_lock() {
+                    d.apply_pending();
+                }
+            }
+            py.allow_threads(|| std::thread::sleep(Duration::from_millis(5)));
+        }
+        if !sess.writer.is_finished() {
+            return Err(PyRuntimeError::new_err("the recording didn't stop (is the sound card still running?)"));
+        }
+        let outs = py.allow_threads(|| sess.writer.join()).map_err(|_| PyRuntimeError::new_err("take writer crashed"))?;
+        self.inner.free_retired();
+        let sh = &self.inner.shared;
+        let first = if sh.rec_started.load(Relaxed) { sh.rec_first.load(Relaxed) as f64 / sess.sr as f64 } else { 0.0 };
+        let dropped = sh.rec_dropped.load(Relaxed);
+        let mut res = Vec::new();
+        for o in outs {
+            let d = PyDict::new(py);
+            d.set_item("src", o.src)?;
+            d.set_item("key", &o.key)?;
+            d.set_item("path", o.path.to_string_lossy().into_owned())?;
+            d.set_item("frames", o.samples.len())?;
+            d.set_item("sr", sess.sr)?;
+            d.set_item("first", first)?;
+            d.set_item("comp", sess.comp)?;
+            d.set_item("peaks", PyBytes::new(py, &daw::peaks(&o.samples)))?;
+            d.set_item("dropped", dropped)?;
+            d.set_item("error", o.error.clone())?;
+            if o.error.is_none() {
+                self.inner.daw.lock().unwrap().cache.insert(&o.key, daw::AudioData { sr: sess.sr, samples: o.samples });
+            }
+            res.push(d);
+        }
+        Ok(res)
+    }
+
+    fn daw_locate(&self, pos: f64) {
+        self.cmd(Cmd::Locate((pos * self.samplerate() as f64).round() as i64));
+    }
+
+    fn daw_loop(&self, on: bool, start: f64, end: f64) {
+        let sr = self.samplerate() as f64;
+        self.cmd(Cmd::Loop { on, start: (start * sr).round() as i64, end: (end * sr).round() as i64 });
+    }
+
+    /// The click while the timeline plays.
+    fn daw_click(&self, on: bool, bpm: f32, beats: u32) {
+        self.cmd(Cmd::Click { on, bpm, beats });
+    }
+
+    // --- files to and from the partner ---------------------------------------------
+
+    /// Where received files are saved.
+    fn file_dir(&self, path: String) {
+        self.inner.files.lock().unwrap().set_dir(path.into());
+    }
+
+    /// Send a file to the partner under `name` (a plain file name).
+    fn file_send(&self, py: Python<'_>, name: String, path: String) -> PyResult<()> {
+        let data = py.allow_threads(|| transfer::read_file(std::path::Path::new(&path))).map_err(PyRuntimeError::new_err)?;
+        self.inner.files.lock().unwrap().send(&name, data);
+        Ok(())
+    }
+
+    /// {"out": [(name, bytes done, total)], "in": [...], "rate": bytes/s}
+    fn file_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let f = self.inner.files.lock().unwrap();
+        let (out, inc) = f.progress();
+        let d = PyDict::new(py);
+        d.set_item("out", out.into_iter().map(|p| (p.name, p.done, p.total)).collect::<Vec<_>>())?;
+        d.set_item("in", inc.into_iter().map(|p| (p.name, p.done, p.total)).collect::<Vec<_>>())?;
+        d.set_item("rate", f.rate())?;
+        Ok(d)
+    }
+
+    /// What finished since last time: (received [(name, path)], sent [name], failed [name]).
+    #[allow(clippy::type_complexity)]
+    fn file_drain(&self) -> (Vec<(String, String)>, Vec<String>, Vec<String>) {
+        let mut f = self.inner.files.lock().unwrap();
+        (
+            std::mem::take(&mut f.received).into_iter().map(|(n, p)| (n, p.to_string_lossy().into_owned())).collect(),
+            std::mem::take(&mut f.sent),
+            std::mem::take(&mut f.failed),
+        )
     }
 
     // --- status --------------------------------------------------------------------
@@ -858,6 +1084,12 @@ impl Engine {
         d.set_item("metro_synced", s.metro_synced.load(Relaxed))?;
         d.set_item("in_callbacks", s.in_callbacks.load(Relaxed))?;
         d.set_item("ring_empty", s.ring_empty.load(Relaxed))?;
+        let sr = s.samplerate.load(Relaxed).max(1) as f64;
+        d.set_item("daw_pos", s.daw_pos.load(Relaxed) as f64 / sr)?;
+        d.set_item("daw_playing", s.daw_playing.load(Relaxed))?;
+        d.set_item("daw_recording", s.rec_on.load(Relaxed))?;
+        d.set_item("rec_dropped", s.rec_dropped.load(Relaxed))?;
+        d.set_item("track_levels", s.track_levels.iter().map(|l| l.get()).collect::<Vec<_>>())?;
         for (k, v) in [
             ("depth", &s.depth), ("underruns", &s.underruns), ("lost", &s.lost), ("late", &s.late),
             ("trimmed", &s.dropped), ("xruns", &s.xruns), ("packets_in", &s.packets_in), ("blocks", &s.blocks),
@@ -871,6 +1103,17 @@ impl Engine {
 impl Engine {
     fn samplerate(&self) -> f32 {
         self.inner.shared.samplerate.load(Relaxed) as f32
+    }
+
+    /// Build the timeline for the current rate from the last layout and hand it over.
+    fn rebuild_timeline(&self) {
+        let sr = self.samplerate() as u32;
+        let tl = {
+            let mut d = self.inner.daw.lock().unwrap();
+            let DawCtl { cache, desc, .. } = &mut *d;
+            cache.build(desc, sr)
+        };
+        self.cmd(Cmd::Timeline(Box::new(tl)));
     }
 
     /// Queue a command for the audio thread. With no stream running nothing
@@ -913,12 +1156,13 @@ impl Engine {
 }
 
 fn parse_target(s: &str) -> PyResult<Target> {
-    let bad = || PyValueError::new_err(format!("strip {s:?}: use L0-L{} or R0-R{}", MAX_LOCAL - 1, MAX_REMOTE - 1));
+    let bad = || PyValueError::new_err(format!("strip {s:?}: use L0-L{}, R0-R{} or T0-T{}", MAX_LOCAL - 1, MAX_REMOTE - 1, MAX_TRACKS - 1));
     let (side, n) = s.split_at(1.min(s.len()));
     let i: usize = n.parse().map_err(|_| bad())?;
     match side {
         "L" if i < MAX_LOCAL => Ok(Target::Local(i)),
         "R" if i < MAX_REMOTE => Ok(Target::Remote(i)),
+        "T" if i < MAX_TRACKS => Ok(Target::Track(i)),
         _ => Err(bad()),
     }
 }
@@ -933,6 +1177,7 @@ fn mirror(c: &mut Ctl, t: Target) -> &mut StripMirror {
     match t {
         Target::Local(i) => &mut c.local[i],
         Target::Remote(i) => &mut c.remote[i],
+        Target::Track(i) => &mut c.tracks[i],
     }
 }
 

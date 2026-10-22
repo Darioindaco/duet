@@ -7,12 +7,16 @@
 //!   interface inputs -> local strip: gain -> FX rack -> [send to partner]
 //!                                                     -> [Mon] pan/fader -> master
 //!   partner channels -> jitter buffer -> remote strip: gain -> FX rack -> pan/fader -> master
+//!   timeline clips -> track strip: gain -> FX rack -> pan/fader -> master
 //!   master fader -> stereo out
+//! While recording, each recorded local strip's signal (after its rack, so the
+//! same as what the partner hears) also goes into a ring for the take writer.
 
 use std::net::{SocketAddrV4, UdpSocket};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 
+use crate::daw::{Timeline, MAX_TRACKS};
 use crate::fx::{Rack, Slot};
 use crate::jitter::{JitterBuffer, MAX_CH, MAX_FRAME};
 use crate::net;
@@ -24,6 +28,7 @@ pub const MAX_REMOTE: usize = MAX_CH;
 pub enum Target {
     Local(usize),
     Remote(usize),
+    Track(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +59,27 @@ pub enum Cmd {
     /// Shared metronome. `epoch` is the leader's block number where beat 0 falls.
     Metro { on: bool, bpm: f32, beats: u32, leader: bool, epoch: i64 },
     MetroVolume(f32),
+    /// The timeline to play from now on (the old one comes back as garbage).
+    Timeline(Box<Timeline>),
+    /// Start the transport at `pos`; the click plays at least until `click_until`
+    /// (count-in). With rings, record the local strips that have one.
+    Play { pos: i64, click_until: i64, rec: Option<Box<RecRings>> },
+    Stop,
+    Locate(i64),
+    Loop { on: bool, start: i64, end: i64 },
+    /// The click while the transport plays (tempo and bar from the project).
+    Click { on: bool, bpm: f32, beats: u32 },
+}
+
+/// One ring per local strip to record (None = not recorded).
+pub struct RecRings(pub [Option<rtrb::Producer<f32>>; MAX_LOCAL]);
+
+/// Things the audio thread is done with, handed back to be freed elsewhere.
+#[allow(dead_code)] // never read: only held so they're dropped on the other side
+pub enum Garbage {
+    Slot(Box<Slot>),
+    Timeline(Box<Timeline>),
+    Rings(Box<RecRings>),
 }
 
 /// One received audio packet, from the network thread to the audio thread.
@@ -127,6 +153,16 @@ pub struct Shared {
     pub metro_beat: AtomicU64,
     /// metronome: is our click locked to the partner's timeline yet (follower)
     pub metro_synced: std::sync::atomic::AtomicBool,
+    /// transport position (samples) and state
+    pub daw_pos: AtomicI64,
+    pub daw_playing: AtomicBool,
+    pub rec_on: AtomicBool,
+    /// timeline position of a take's first sample (once rec_started)
+    pub rec_first: AtomicI64,
+    pub rec_started: AtomicBool,
+    /// samples the take writer couldn't keep up with
+    pub rec_dropped: AtomicU64,
+    pub track_levels: [AtomicF32; MAX_TRACKS],
 }
 
 pub fn encode_peer(a: SocketAddrV4) -> u64 {
@@ -158,6 +194,9 @@ impl StripSettings {
     }
     pub fn remote() -> Self {
         StripSettings { active: true, input: 0, gain: 1.0, pan: 0.0, fader: 1.0, mute: false, solo: false, send: false, mon: true }
+    }
+    pub fn track() -> Self {
+        StripSettings { active: false, ..StripSettings::remote() }
     }
     pub fn set(&mut self, p: StripParam, v: f32) {
         match p {
@@ -209,12 +248,14 @@ struct Metro {
     phase: f32,
     inc: f32,
     accent: bool,
+    /// clicks before 0 too (the timeline's count-in)
+    negative: bool,
 }
 
 impl Metro {
     fn new() -> Self {
         Metro { on: false, bpm: 100.0, beats: 4, leader: true, epoch: 0, volume: 0.6, last_beat: i64::MIN,
-                left: 0, len: 1, phase: 0.0, inc: 0.0, accent: false }
+                left: 0, len: 1, phase: 0.0, inc: 0.0, accent: false, negative: false }
     }
 
     /// Add this block's clicks to `l`/`r`. `timeline` is the block number on the
@@ -224,12 +265,20 @@ impl Metro {
             self.left = 0;
             return;
         }
-        let spb = sr as f64 * 60.0 / self.bpm.max(20.0) as f64; // samples per beat
         let start = (timeline - self.epoch) as f64 * frame as f64;
+        self.render_at(start, sr, l, r, shared);
+    }
+
+    /// Clicks for samples start..start+l.len() of a grid whose beat 0 is at 0.
+    fn render_at(&mut self, start: f64, sr: f32, l: &mut [f32], r: &mut [f32], shared: &Shared) {
+        let spb = sr as f64 * 60.0 / self.bpm.max(20.0) as f64; // samples per beat
         for k in 0..l.len() {
             let pos = start + k as f64;
-            if pos >= 0.0 {
+            if pos >= 0.0 || self.negative {
                 let beat = (pos / spb).floor() as i64;
+                if self.last_beat == i64::MIN && pos - beat as f64 * spb >= 1.0 {
+                    self.last_beat = beat; // started mid-beat: wait for the next one
+                }
                 if beat != self.last_beat {
                     self.last_beat = beat;
                     self.accent = beat.rem_euclid(self.beats.max(1) as i64) == 0;
@@ -254,16 +303,34 @@ impl Metro {
     }
 }
 
+/// Where the timeline is and what it does.
+struct Transport {
+    playing: bool,
+    pos: i64,
+    loop_on: bool,
+    loop_start: i64,
+    loop_end: i64,
+    click_on: bool,
+    click_until: i64,
+    recording: bool,
+    rec_started: bool,
+}
+
 pub struct Dsp {
     pub frame: usize,
     pub samplerate: u32,
     local: Vec<Strip>,
     remote: Vec<Strip>,
+    tracks: Vec<Strip>,
+    timeline: Option<Box<Timeline>>,
+    tp: Transport,
+    click: Metro,
+    rec: [Option<rtrb::Producer<f32>>; MAX_LOCAL],
     master: f32,
     jitter: JitterBuffer,
     cmds: rtrb::Consumer<Cmd>,
     incoming: rtrb::Consumer<InPacket>,
-    retired: rtrb::Producer<Box<Slot>>,
+    retired: rtrb::Producer<Garbage>,
     socket: Arc<UdpSocket>,
     shared: Arc<Shared>,
     seq: u32,
@@ -294,7 +361,7 @@ impl Dsp {
         frame: usize,
         cmds: rtrb::Consumer<Cmd>,
         incoming: rtrb::Consumer<InPacket>,
-        retired: rtrb::Producer<Box<Slot>>,
+        retired: rtrb::Producer<Garbage>,
         socket: Arc<UdpSocket>,
         shared: Arc<Shared>,
     ) -> Self {
@@ -308,6 +375,12 @@ impl Dsp {
             samplerate,
             local,
             remote: (0..MAX_REMOTE).map(|_| Strip::new(StripSettings::remote())).collect(),
+            tracks: (0..MAX_TRACKS).map(|_| Strip::new(StripSettings::track())).collect(),
+            timeline: Some(Box::new(Timeline::empty())),
+            tp: Transport { playing: false, pos: 0, loop_on: false, loop_start: 0, loop_end: 0, click_on: false,
+                            click_until: i64::MIN, recording: false, rec_started: false },
+            click: Metro { negative: true, ..Metro::new() },
+            rec: Default::default(),
             master: 1.0,
             jitter: JitterBuffer::new(3),
             cmds,
@@ -335,7 +408,7 @@ impl Dsp {
     pub fn set_format(&mut self, samplerate: u32, frame: usize) {
         let frame = frame.min(MAX_FRAME);
         if samplerate != self.samplerate {
-            for strip in self.local.iter_mut().chain(self.remote.iter_mut()) {
+            for strip in self.local.iter_mut().chain(self.remote.iter_mut()).chain(self.tracks.iter_mut()) {
                 for slot in strip.rack.slots.iter_mut() {
                     // plugins re-setup in place (keeping their state); the rest
                     // are rebuilt; a model that can't be reloaded keeps its old instance
@@ -354,6 +427,12 @@ impl Dsp {
             self.jitter.target = ((self.jitter.target as f64 * old / new).ceil() as i64).clamp(1, 32);
             self.jitter.set_auto(true, 1.0 / new);
         }
+        if samplerate != self.samplerate {
+            // positions are in samples: a new rate means the caller sends a new
+            // timeline and starts again from a position in seconds
+            self.tp.playing = false;
+            self.stop_recording();
+        }
         self.samplerate = samplerate;
         self.frame = frame;
         self.jitter.reset();
@@ -366,13 +445,29 @@ impl Dsp {
         match t {
             Target::Local(i) => self.local.get_mut(i),
             Target::Remote(i) => self.remote.get_mut(i),
+            Target::Track(i) => self.tracks.get_mut(i),
         }
     }
 
     fn retire(&mut self, slot: Box<Slot>) {
+        self.discard(Garbage::Slot(slot));
+    }
+
+    fn discard(&mut self, g: Garbage) {
         // hand it back so it's freed off the audio thread; if that queue is
         // somehow full, freeing here is the lesser evil
-        let _ = self.retired.push(slot);
+        let _ = self.retired.push(g);
+    }
+
+    /// Let go of the take rings: the writer sees them abandoned and finishes.
+    /// (Dropping a producer frees nothing while the writer still holds its end.)
+    fn stop_recording(&mut self) {
+        for r in self.rec.iter_mut() {
+            *r = None;
+        }
+        self.tp.recording = false;
+        self.tp.rec_started = false;
+        self.shared.rec_on.store(false, Relaxed);
     }
 
     /// Apply queued commands outside the audio callback (no stream running).
@@ -381,6 +476,16 @@ impl Dsp {
     }
 
     fn apply_commands(&mut self) {
+        let had = self.cmds.slots() > 0;
+        self.apply_queue();
+        if had {
+            // seen right away, also when no stream runs to process a block
+            self.shared.daw_pos.store(self.tp.pos, Relaxed);
+            self.shared.daw_playing.store(self.tp.playing, Relaxed);
+        }
+    }
+
+    fn apply_queue(&mut self) {
         while let Ok(cmd) = self.cmds.pop() {
             match cmd {
                 Cmd::Strip(t, p, v) => {
@@ -450,7 +555,50 @@ impl Dsp {
                     m.epoch = epoch;
                     m.last_beat = i64::MIN; // the first beat on the new grid clicks
                 }
-                Cmd::MetroVolume(v) => self.metro.volume = v,
+                Cmd::MetroVolume(v) => {
+                    self.metro.volume = v;
+                    self.click.volume = v;
+                }
+                Cmd::Timeline(tl) => {
+                    if let Some(old) = self.timeline.replace(tl) {
+                        self.discard(Garbage::Timeline(old));
+                    }
+                }
+                Cmd::Play { pos, click_until, rec } => {
+                    self.stop_recording();
+                    self.tp.playing = true;
+                    self.tp.pos = pos;
+                    self.tp.click_until = click_until;
+                    self.click.last_beat = i64::MIN;
+                    if let Some(mut rings) = rec {
+                        for (mine, theirs) in self.rec.iter_mut().zip(rings.0.iter_mut()) {
+                            *mine = theirs.take();
+                        }
+                        self.discard(Garbage::Rings(rings));
+                        self.tp.recording = true;
+                        self.shared.rec_started.store(false, Relaxed);
+                        self.shared.rec_dropped.store(0, Relaxed);
+                        self.shared.rec_on.store(true, Relaxed);
+                    }
+                }
+                Cmd::Stop => {
+                    self.tp.playing = false;
+                    self.stop_recording();
+                }
+                Cmd::Locate(pos) => {
+                    self.tp.pos = pos;
+                    self.click.last_beat = i64::MIN;
+                }
+                Cmd::Loop { on, start, end } => {
+                    self.tp.loop_on = on && end > start;
+                    self.tp.loop_start = start;
+                    self.tp.loop_end = end;
+                }
+                Cmd::Click { on, bpm, beats } => {
+                    self.tp.click_on = on;
+                    self.click.bpm = bpm;
+                    self.click.beats = beats.max(1);
+                }
             }
         }
     }
@@ -559,6 +707,29 @@ impl Dsp {
                 }
             }
         }
+        // --- recording: each recorded strip's signal, as sent ---
+        if self.tp.recording {
+            if !self.tp.rec_started {
+                self.tp.rec_started = true;
+                self.shared.rec_first.store(self.tp.pos, Relaxed);
+                self.shared.rec_started.store(true, Relaxed);
+            }
+            for (i, ring) in self.rec.iter_mut().enumerate() {
+                let Some(ring) = ring else { continue };
+                let strip = &self.local[i];
+                match ring.write_chunk_uninit(n) {
+                    Ok(chunk) if strip.s.active => {
+                        chunk.fill_from_iter(strip.buf[..n].iter().copied());
+                    }
+                    Ok(chunk) => {
+                        chunk.fill_from_iter(std::iter::repeat(0.0));
+                    }
+                    Err(_) => {
+                        self.shared.rec_dropped.fetch_add(n as u64, Relaxed);
+                    }
+                }
+            }
+        }
         self.send(n);
 
         // --- partner's strips ---
@@ -602,6 +773,52 @@ impl Dsp {
             }
         }
 
+        // --- the timeline: one or (wrapping around a loop) two stretches ---
+        let tp_pos = self.tp.pos;
+        let mut segs = [(0usize, tp_pos, n); 2];
+        let mut nseg = 1;
+        let looping = self.tp.playing && self.tp.loop_on && !self.tp.recording;
+        if looping && tp_pos < self.tp.loop_end && tp_pos + n as i64 > self.tp.loop_end {
+            let k = (self.tp.loop_end - tp_pos) as usize;
+            segs[0] = (0, tp_pos, k);
+            segs[1] = (k, self.tp.loop_start, n - k);
+            nseg = 2;
+        }
+        // solo on a track only silences other tracks, never the live channels
+        let track_solo = self.tracks.iter().any(|s| s.s.active && s.s.solo);
+        if let Some(tl) = self.timeline.as_deref() {
+            for (i, strip) in self.tracks.iter_mut().enumerate() {
+                if !strip.s.active {
+                    strip.level = 0.0;
+                    continue;
+                }
+                strip.buf[..n].fill(0.0);
+                if self.tp.playing {
+                    for &(off, p, len) in &segs[..nseg] {
+                        tl.render(i, p, &mut strip.buf[off..off + len]);
+                    }
+                }
+                let g = strip.s.gain;
+                for v in strip.buf[..n].iter_mut() {
+                    *v *= g;
+                }
+                strip.rack.process(&mut strip.buf[..n]);
+                let pk = strip.buf[..n].iter().fold(0f32, |a, v| a.max(v.abs()));
+                strip.level = pk.max(strip.level * 0.9);
+                if !strip.s.mute && (!track_solo || strip.s.solo) {
+                    let (l, r) = pan_gains(strip.s.pan);
+                    let f = strip.s.fader;
+                    for k in 0..n {
+                        self.mix_l[k] += strip.buf[k] * f * l;
+                        self.mix_r[k] += strip.buf[k] * f * r;
+                    }
+                }
+            }
+        }
+        if self.tp.playing {
+            self.tp.pos = if nseg == 2 { segs[1].1 + segs[1].2 as i64 } else { tp_pos + n as i64 };
+        }
+
         // --- master ---
         let m = self.master;
         let mut pk = 0f32;
@@ -624,8 +841,17 @@ impl Dsp {
         let (ml, mr) = (&mut self.mix_l[..n], &mut self.mix_r[..n]);
         ml.fill(0.0);
         mr.fill(0.0);
-        self.metro.render(timeline, n, self.samplerate as f32, ml, mr, &self.shared);
-        if self.metro.on {
+        let daw_click = self.tp.playing && (self.tp.click_on || tp_pos < self.tp.click_until);
+        if daw_click {
+            // the timeline's own click (and count-in) while it plays
+            for &(off, p, len) in &segs[..nseg] {
+                self.click.render_at(p as f64, self.samplerate as f32, &mut ml[off..off + len], &mut mr[off..off + len], &self.shared);
+            }
+        } else {
+            self.click.left = 0;
+            self.metro.render(timeline, n, self.samplerate as f32, ml, mr, &self.shared);
+        }
+        if self.metro.on || daw_click {
             for k in 0..n {
                 out[2 * k] += ml[k];
                 out[2 * k + 1] += mr[k];
@@ -644,6 +870,11 @@ impl Dsp {
             }
             sh.remote_levels[i].set(s.level);
         }
+        for (i, s) in self.tracks.iter().enumerate() {
+            sh.track_levels[i].set(s.level);
+        }
+        sh.daw_pos.store(self.tp.pos, Relaxed);
+        sh.daw_playing.store(self.tp.playing, Relaxed);
         sh.master_level.set(self.master_level);
         sh.remote_channels.store(self.remote_count as u64, Relaxed);
         let st = self.jitter.stats;

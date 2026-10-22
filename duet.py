@@ -23,6 +23,7 @@ from pathlib import Path
 
 import webview
 
+from daw import Daw
 from duet_engine import Engine
 from t3k import Tone3000
 from vstlib import VstLibrary, scan_main
@@ -46,6 +47,11 @@ class Api:
         self._t3k = Tone3000(data_dir() / "models", lambda: load_settings().get("t3k_key"))
         self._vst = VstLibrary(data_dir() / "vst_cache.json")
         self._names = {}
+        settings = load_settings()
+        if not settings.get("peer_id"):
+            settings["peer_id"] = "u" + os.urandom(6).hex()
+            save_settings(settings)
+        self._daw = Daw(engine, data_dir() / "Projects", settings["peer_id"], float(settings.get("rec_offset_ms", 0)))
         threading.Thread(target=self._discover, daemon=True).start()
 
     def _discover(self):
@@ -121,27 +127,38 @@ class Api:
     def set_buffer_auto(self, on):
         self._engine.set_buffer_auto(bool(on))
 
+    def _rack_changed(self, target):
+        # a track's effects are part of the song: the project (and the partner) gets them
+        if str(target).startswith("T"):
+            self._daw.track_rack_changed(int(target[1:]))
+
     def rack_add(self, target, kind):
         self._engine.rack_add(target, kind)
+        self._rack_changed(target)
         return self._engine.mixer()
 
     def rack_remove(self, target, pos):
         self._engine.rack_remove(target, int(pos))
+        self._rack_changed(target)
         return self._engine.mixer()
 
     def rack_move(self, target, frm, to):
         self._engine.rack_move(target, int(frm), int(to))
+        self._rack_changed(target)
         return self._engine.mixer()
 
     def rack_set(self, target, pos, key, value):
         self._engine.rack_set(target, int(pos), key, float(value))
+        self._rack_changed(target)
 
     def rack_preset(self, target, name):
         self._engine.rack_preset(target, name)
+        self._rack_changed(target)
         return self._engine.mixer()
 
     def rack_load(self, target, slots):
         self._engine.rack_load(target, list(slots))
+        self._rack_changed(target)
 
     def load_mixer(self, cfg):
         """Restore a mixer() snapshot from an earlier session."""
@@ -153,7 +170,7 @@ class Api:
                 for k in keys:
                     if k in strip:
                         e.strip_set(t, k, float(strip[k]))
-                e.rack_load(t, list(strip.get("rack", [])))
+                e.rack_load(t, list(strip.get("rack", [])))  # tracks (T*) come from the song, not from here
         if "master" in cfg:
             e.set_master(float(cfg["master"]))
         return True
@@ -183,8 +200,51 @@ class Api:
             "dspLoad": s["cpu_us"] / (frame / sr * 1e6) if frame else 0.0,
             "warning": s["warning"],
             "streamError": s["stream_error"],
-            "signals": self._engine.drain_signals(),
+            "signals": self._daw.take_ui_signals(),
+            "daw": self._daw.status(s),
         }
+
+    # --- the song: playlist, transport, recording (daw.py) --------------------
+
+    def daw_project(self):
+        return self._daw.view()
+
+    def daw_edit(self, changes):
+        return self._daw.edit(list(changes))
+
+    def daw_local(self, key, value, track=None):
+        self._daw.set_local(key, value, track)
+        return self._daw.view()
+
+    def daw_play(self, pos=None):
+        self._daw.play(pos)
+
+    def daw_stop(self):
+        self._daw.stop()
+
+    def daw_record(self, pos=None):
+        return self._daw.record(pos)
+
+    def daw_locate(self, pos):
+        self._daw.locate(float(pos))
+
+    def daw_peaks(self, name):
+        return self._daw.peaks(name)
+
+    def daw_projects(self):
+        return self._daw.projects()
+
+    def daw_new(self, name=None):
+        self._daw.new_project(name or "New song")
+        return self._daw.view()
+
+    def daw_open(self, pid):
+        self._daw.open_project(pid)
+        return self._daw.view()
+
+    def daw_resolve(self, choice):
+        self._daw.resolve(choice)
+        return self._daw.view()
 
     # --- shared metronome -----------------------------------------------------
 
@@ -207,6 +267,7 @@ class Api:
             return {"error": str(exc)}
         if path:
             self._t3k.remember_file(path)
+        self._rack_changed(target)
         return self._engine.mixer()
 
     def nam_library(self):
@@ -264,6 +325,7 @@ class Api:
             self._engine.rack_add_vst(target, path, cid, name)
         except Exception as exc:
             return {"error": str(exc)}
+        self._rack_changed(target)
         return self._engine.mixer()
 
     def vst_open(self, target, pos):
@@ -280,6 +342,7 @@ class Api:
         if names is not None:
             self._names = names
         snap = {"mixer": self._engine.mixer(True), "names": self._names}
+        self._daw.sync_rack_states(snap["mixer"]["tracks"])
         try:
             (data_dir() / "mixer.json").write_text(json.dumps(snap), encoding="utf-8")
         except OSError:
@@ -303,6 +366,7 @@ class Api:
 
     def shutdown(self):
         self.save_mixer()  # plugin windows may have changed settings since the last save
+        self._daw.close()
         self._engine.close()
 
 

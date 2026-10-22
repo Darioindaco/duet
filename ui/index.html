@@ -367,6 +367,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 .toast.show { opacity: 1; transform: translateX(-50%); }
 .toast.bad { border-color: var(--bad); }
 </style>
+<link rel="stylesheet" href="daw.css">
 </head>
 <body>
 <div class="app">
@@ -382,6 +383,9 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
       </svg>
       <h1><span>Duet</span></h1>
     </div>
+    <div class="seg views" id="viewSeg" role="tablist"><button data-v="song">Playlist</button><button data-v="mixer">Mixer</button></div>
+    <button class="songbtn" id="songBtn"><span class="sh" id="songShared"></span><span class="nm" id="songName">Song</span>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
     <div class="spacer"></div>
     <div class="latency-big" id="bigLat">
       <div class="num" id="bigLatNum">--<small>ms</small></div>
@@ -433,6 +437,37 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
     </aside>
 
     <div class="right">
+      <div class="view" id="viewSong" hidden>
+        <section class="card song">
+          <div class="transport">
+            <button class="tbtn play" id="tpPlay" title="Play / stop (space)" aria-label="Play or stop"></button>
+            <button class="tbtn rec" id="tpRec" title="Record (R): every armed track, yours and your partner's" aria-label="Record">
+              <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="currentColor"/></svg></button>
+            <div class="lcd" id="lcd"><b id="tpPos">1.1.00</b><span id="tpTime">0:00.0</span></div>
+            <div class="bpm"><input id="songBpm" type="number" min="40" max="240" step="1" value="120" aria-label="Song tempo in BPM"><span>BPM</span></div>
+            <select id="songBeats" aria-label="Beats per bar"><option value="2">2/4</option><option value="3">3/4</option><option value="4">4/4</option><option value="6">6/8</option></select>
+            <button class="ttog" id="tgClick" title="Click while the song plays (just for you)">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3h7l4 18h-15z"/><path d="M12 15 17 6"/><path d="M7 17h10"/></svg><span class="tgl-label">Click</span></button>
+            <button class="ttog" id="tgCount" title="Count in one bar before recording">1 bar<span class="tgl-label">&nbsp;count-in</span></button>
+            <button class="ttog loop" id="tgLoop" title="Loop the marked part (drag in the ruler to mark it)">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M3 11V9a4 4 0 0 1 4-4h13"/><path d="M7 22l-3-3 3-3"/><path d="M21 13v2a4 4 0 0 1-4 4H4"/></svg><span class="tgl-label">Loop</span></button>
+            <select id="snapSel" aria-label="Snap to grid"></select>
+            <div class="spacer"></div>
+            <div class="xfer" id="xfer"></div>
+            <div class="zoom"><button id="zoomOut" title="Zoom out (ctrl + scroll)" aria-label="Zoom out">−</button><button id="zoomIn" title="Zoom in (ctrl + scroll)" aria-label="Zoom in">+</button></div>
+          </div>
+          <div class="arr">
+            <div class="corner"><button class="addtrack" id="addTrack">+ Track</button></div>
+            <div class="rulerwrap"><canvas id="ruler" title="Click: jump here. Drag: mark the loop."></canvas></div>
+            <div class="theads"><div class="theads-in" id="theadsIn"></div></div>
+            <div class="lanewrap" id="lanewrap">
+              <canvas id="lanesCv"></canvas><canvas id="lanesOv"></canvas>
+              <div class="lanes" id="lanes"><div id="lanesSize"></div></div>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div class="view" id="viewMixer">
       <section class="card">
         <div class="sect-head">
           <h2>Mixer</h2>
@@ -468,6 +503,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
         </div>
         <div class="rack" id="rack"></div>
       </section>
+      </div>
     </div>
   </main>
 
@@ -509,8 +545,17 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
     <div class="mbody" id="t3kBody"></div>
   </div>
 </div>
+<div class="menu" id="songMenu" hidden></div>
+<div class="modal" id="conflict" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="cfTitle">
+    <div class="mhead"><b id="cfTitle">Two different songs</b></div>
+    <div class="mbody"><p id="cfText"></p>
+      <div class="row"><button class="btn teal" id="cfTheirs">Open theirs</button><button class="btn" id="cfMine">Send mine</button></div></div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
+<script src="daw.js"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -622,7 +667,7 @@ let init = null;
 const ui = {
   block: store.get("block", 128), rate: store.get("rate", 48000), buffer: store.get("buffer", 3), bufAuto: store.get("bufAuto", true),
   audio: false, audioWanted: true, connected: false, sbOpen: true, tab: "connect",
-  mixer: null, sel: "L0", names: store.get("names", {}), partnerNames: [], partnerFx: [], remoteCount: 0,
+  mixer: null, sel: "L0", names: store.get("names", {}), partnerNames: [], partnerFx: [], partnerStrips: [], remoteCount: 0, view: "song",
   meters: {}, inChannels: 0,
 };
 
@@ -867,12 +912,14 @@ const fmtDb = (g) => (g < 0.0005 ? "-∞" : (20 * Math.log10(g) >= 0 ? "+" : "")
 const fmtPan = (v) => (Math.abs(v) < 0.02 ? "C" : (v < 0 ? "L" : "R") + Math.round(Math.abs(v) * 100));
 
 function stripCfg(t) {
-  return t === "M" ? null : ui.mixer[t[0] === "L" ? "local" : "remote"][+t.slice(1)];
+  if (t === "M") return null;
+  return ui.mixer[t[0] === "L" ? "local" : t[0] === "T" ? "tracks" : "remote"][+t.slice(1)];
 }
 
 function stripName(t) {
   if (t === "M") return "Master";
   const i = +t.slice(1);
+  if (t[0] === "T") return trackBySlot(i)?.name || "Track";
   if (t[0] === "L") return ui.names[t] || `Input ${stripCfg(t).input + 1}`;
   return ui.partnerNames[i] || `Partner ${i + 1}`;
 }
@@ -898,13 +945,25 @@ function sendNames() {
   const names = sent.map(([, i]) => stripName("L" + i));
   // the effects each sent channel already carries, so the partner can see them
   const fx = sent.map(([s]) => s.rack.filter((x) => x.on).map((x) => (x.kind === "nam" && x.model_name) || (x.kind === "vst" && x.vst?.name) || FXMETA[x.kind].name));
-  const msg = JSON.stringify({ app: "names", names, fx });
+  // every input, sent or not: what a song track can record from on our side
+  const strips = ui.mixer.local.map((s, i) => [s, i]).filter(([s]) => s.active).map(([, i]) => ({ i, name: stripName("L" + i) }));
+  const msg = JSON.stringify({ app: "names", names, fx, strips });
   if (msg === sendNames.last && Date.now() - sendNames.at < 5000) return;
   sendNames.last = msg; sendNames.at = Date.now();
   api.send_signal(msg);
 }
 
 async function setStrip(t, key, value) {
+  if (t[0] === "T") {
+    // song tracks: volume and pan are part of the song, mute and solo just yours
+    const tr = trackBySlot(+t.slice(1));
+    if (!tr) return;
+    stripCfg(t)[key] = value;
+    if (key === "fader") songEditThrottled(tr.id, { vol: value });
+    else if (key === "pan") songEditThrottled(tr.id, { pan: value });
+    else if (key === "mute" || key === "solo") setSongView(await api.daw_local(key, !!value, tr.id));
+    return;
+  }
   if (t === "M") { ui.mixer.master = value; await api.set_master(value); }
   else { stripCfg(t)[key] = value; await api.strip_set(t, key, Number(value)); }
   saveMixer();
@@ -951,12 +1010,20 @@ function toggleBtn(label, cls, on, title, onClick) {
 function stripEl(t) {
   const cfg = stripCfg(t);
   const el = document.createElement("div");
-  el.className = "strip" + (t[0] === "R" ? " remote" : t === "M" ? " master" : "") + (ui.sel === t ? " sel" : "");
+  const track = t[0] === "T" ? trackBySlot(+t.slice(1)) : null;
+  el.className = "strip" + (t[0] === "R" || (track && !track.mine) ? " remote" : t === "M" ? " master" : "") + (track ? " trk" : "") + (ui.sel === t ? " sel" : "");
   el.dataset.t = t;
   if (t !== "M") el.onclick = () => selectStrip(t);
 
   // name
-  if (t[0] === "L") {
+  if (track) {
+    const nm = document.createElement("input");
+    nm.className = "nm"; nm.value = stripName(t); nm.spellcheck = false; nm.title = "Rename this track";
+    nm.onclick = (e) => e.stopPropagation();
+    nm.onchange = () => nm.value.trim() && songEdit([["track", track.id, { name: nm.value.trim() }]]);
+    nm.onkeydown = (e) => e.key === "Enter" && nm.blur();
+    el.append(nm);
+  } else if (t[0] === "L") {
     const nm = document.createElement("input");
     nm.className = "nm"; nm.value = stripName(t); nm.spellcheck = false; nm.title = "Rename";
     nm.onclick = (e) => e.stopPropagation();
@@ -987,7 +1054,7 @@ function stripEl(t) {
     const l = document.createElement("div");
     const theirs = t[0] === "R" ? ui.partnerFx[+t.slice(1)] || [] : [];
     l.className = "srclbl" + (theirs.length ? " theirs" : "");
-    l.textContent = t === "M" ? "out" : theirs.length ? "theirs: " + theirs.join(", ") : "from partner";
+    l.textContent = t === "M" ? "out" : track ? (track.mine ? "song · you" : "song · partner") : theirs.length ? "theirs: " + theirs.join(", ") : "from partner";
     if (theirs.length) l.title = `Effects on their side, already in what you hear: ${theirs.join(" → ")}`;
     el.append(l);
   }
@@ -1055,6 +1122,13 @@ function renderStrips() {
   if (ui.remoteCount > 0) for (let i = 0; i < ui.remoteCount; i++) box.append(stripEl("R" + i));
   else box.insertAdjacentHTML("beforeend", `<div class="waiting">Your partner's channels show up here once you're connected</div>`);
   box.insertAdjacentHTML("beforeend", `<div class="sep"></div>`);
+  // the song's tracks, after the live channels
+  const tracks = (song.view ? song.view.tracks : []).filter((tr) => tr.slot != null && ui.mixer.tracks);
+  if (tracks.length) {
+    box.insertAdjacentHTML("beforeend", `<div class="seplbl">Song</div>`);
+    for (const tr of tracks) box.append(stripEl("T" + tr.slot));
+    box.insertAdjacentHTML("beforeend", `<div class="sep"></div>`);
+  }
   box.append(stripEl("M"));
 }
 
@@ -1268,12 +1342,14 @@ function renderRack() {
   const rack = $("rack");
   rack.innerHTML = "";
   if (!cfg) return;
-  const color = t[0] === "L" ? "var(--me)" : "var(--partner)";
-  $("rackTitle").innerHTML = `FX rack <span class="who" style="--c:${color}">· ${stripName(t)}</span>`;
+  const track = t[0] === "T" ? trackBySlot(+t.slice(1)) : null;
+  const color = t[0] === "L" || (track && track.mine) ? "var(--me)" : "var(--partner)";
+  $("rackTitle").innerHTML = `FX rack <span class="who" style="--c:${color}">· ${esc(stripName(t))}${track ? " (song track)" : ""}</span>`;
   for (const c of $("presets").children) c.classList.remove("on");
   if (!cfg.rack.length) {
     rack.innerHTML = `<div class="empty-rack"><b>No effects on this channel yet.</b><br>Add one with the menu on the right, or start from a preset.
-      ${t[0] === "L" ? "Your partner hears these effects; turn on MON to hear them yourself."
+      ${track ? "Effects on a song track are part of the song: you both hear them."
+        : t[0] === "L" ? "Your partner hears these effects; turn on MON to hear them yourself."
         : (ui.partnerFx[+t.slice(1)] || []).length
           ? `Their own effects (${esc(ui.partnerFx[+t.slice(1)].join(", "))}) are already in what you hear. Effects you add here only change your own mix.`
           : "Effects you add here only change what you hear."}</div>`;
@@ -1432,6 +1508,7 @@ function paint(s) {
   s.levels.local.forEach((v, i) => m["L" + i] && (m["L" + i].style.height = dbPct(v) + "%"));
   s.levels.remote.forEach((v, i) => m["R" + i] && (m["R" + i].style.height = dbPct(v) + "%"));
   if (m.M) m.M.style.height = dbPct(s.levels.master) + "%";
+  songPaint(s.daw);
 
   // latency
   const L = s.latency;
@@ -1526,6 +1603,7 @@ async function boot(a) {
   await refreshLibrary();
   renderStrips();
   renderRack();
+  songSetup();
   $("vstX").onclick = () => ($("vstm").hidden = true);
   $("vstm").onclick = (e) => e.target === $("vstm") && ($("vstm").hidden = true);
   $("vstQ").oninput = () => ui.vstRes && vstRender(ui.vstRes);
@@ -1662,7 +1740,11 @@ window.vReceive = vReceive;
 function vReceive(raw) {
   let msg;
   try { msg = JSON.parse(raw); } catch { return; }
-  if (msg.app === "names") { ui.partnerNames = msg.names || []; ui.partnerFx = msg.fx || []; renderStrips(); renderRack(); return; }
+  if (msg.app === "names") {
+    ui.partnerNames = msg.names || []; ui.partnerFx = msg.fx || []; ui.partnerStrips = msg.strips || [];
+    renderStrips(); renderRack(); if (song.view && !song.headBusy) renderHeads();
+    return;
+  }
   if (msg.app === "metro") { metroFromPartner(msg); return; }
   const r = (vc.remote[msg.sid] ||= { next: 0, buf: {} });
   r.buf[msg.n] = msg;
@@ -1722,17 +1804,20 @@ function demoApi() {
             strip(1, true, { pan: -0.3, fader: 0.8, rack: [slot("comp", { threshold: 0.35 }), slot("reverb", { mix: 0.25 })] }),
             strip(2, false), strip(3, false)],
     remote: Array.from({ length: 8 }, (_, i) => strip(0, true, { send: false, mon: true, pan: i === 1 ? 0.35 : 0, rack: i === 0 ? [slot("reverb", { mix: 0.2 })] : [] })),
+    tracks: Array.from({ length: 32 }, (_, i) => strip(0, i < 3, { send: false, mon: true, fader: 0.8, rack: i === 0 ? [slot("reverb", { mix: 0.25 })] : [] })),
     master: 1,
   };
-  const target = (t) => mixer[t[0] === "L" ? "local" : "remote"][+t.slice(1)];
+  const songDemo = demoSong();
+  const target = (t) => mixer[t[0] === "L" ? "local" : t[0] === "T" ? "tracks" : "remote"][+t.slice(1)];
   const copy = () => JSON.parse(JSON.stringify(mixer));
   let t = 0, connected = false, calling = false, code = "";
   setTimeout(() => (code = "KJFXZ-4HCOP-AKRMW-I4JZQ"), 700);
   if (location.search.includes("connected")) setTimeout(() => {
-    vReceive(JSON.stringify({ app: "names", names: ["Vocals", "Keys"], fx: [["Compressor", "Reverb"], []] }));
+    vReceive(JSON.stringify({ app: "names", names: ["Vocals", "Keys"], fx: [["Compressor", "Reverb"], []], strips: [{ i: 0, name: "Vocals" }, { i: 1, name: "Keys" }] }));
     vReceive(JSON.stringify({ app: "metro", on: true, bpm: 92, beats: 4, epoch: 5 }));
   }, 900);
   return {
+    ...songDemo,
     init: async () => ({
       inputs: [{ id: "ASIO|Focusrite USB ASIO", name: "Focusrite USB ASIO", api: "ASIO", inputs: 2 }, { id: "WASAPI|Analogue 1 + 2", name: "Analogue 1 + 2 (Focusrite USB Audio)", api: "WASAPI", inputs: 2 }],
       outputs: [{ id: "ASIO|Focusrite USB ASIO", name: "Focusrite USB ASIO", api: "ASIO", outputs: 2 }, { id: "WASAPI|Speakers", name: "Speakers (Focusrite USB Audio)", api: "WASAPI", outputs: 2 }],
@@ -1745,6 +1830,7 @@ function demoApi() {
     copy: async () => true,
     mixer: async () => copy(),
     load_mixer: async () => true,
+    saved_mixer: async () => null, save_mixer: async () => true,
     strip_set: async (tg, k, v) => { target(tg)[k] = typeof target(tg)[k] === "boolean" ? !!v : v; },
     set_master: async (v) => { mixer.master = v; },
     set_buffer: async () => {},
@@ -1776,7 +1862,8 @@ function demoApi() {
         latency: { network: on ? 7.1 : null, buffer: 8.0, card: 5.3, block: 2.7 },
         levels: { local: [lv(1.3, 0), lv(0.7, 1), 0, 0], remote: on ? [lv(0.9, 2), lv(1.1, 3), 0, 0, 0, 0, 0, 0] : [0, 0, 0, 0, 0, 0, 0, 0], master: lv(1, 1.5) },
         remoteChannels: on ? 2 : 0,
-        stats: { depth: 3, underruns: 2, lost: 0, late: 1, trimmed: 0, xruns: 0 }, dspLoad: 0.24, warning: "", signals: [] };
+        stats: { depth: 3, underruns: 2, lost: 0, late: 1, trimmed: 0, xruns: 0 }, dspLoad: 0.24, warning: "", signals: [],
+        daw: songDemo.status() };
     },
   };
 }

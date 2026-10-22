@@ -17,6 +17,9 @@ pub const T_SIGACK: u8 = 7;
 /// u8, channels in this packet u8, then i16 LE samples, channel after channel.
 /// A block with more channels than fit under the MTU is split over packets.
 pub const T_AUDIO_MC: u8 = 8;
+/// File transfer (transfer.rs): seq = transfer id. Older builds ignore both.
+pub const T_FILE: u8 = 9;
+pub const T_FILEACK: u8 = 10;
 
 /// Sent as an extra byte after HELLO's samplerate/frame. Builds that predate it
 /// send 6 bytes, so a missing byte means version 1: mono T_AUDIO only.
