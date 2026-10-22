@@ -232,8 +232,8 @@ class Api:
     def daw_stop(self):
         self._daw.stop()
 
-    def daw_record(self, pos=None):
-        return self._daw.record(pos)
+    def daw_record(self, pos=None, jam=False):
+        return self._daw.record(pos, bool(jam))
 
     def daw_locate(self, pos):
         self._daw.locate(float(pos))

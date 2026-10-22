@@ -501,7 +501,10 @@ class Daw:
         with self.lock:
             self._start(self.cursor if pos is None else float(pos), rec=False, countin=False, broadcast=True)
 
-    def record(self, pos: float | None = None) -> dict:
+    def record(self, pos: float | None = None, jam: bool = False) -> dict:
+        """Record the armed tracks from pos (beats). jam: a take from Rehearse,
+        played to the jam metronome: no count-in, and the song's own click stays
+        quiet (the jam metronome goes on), on both sides."""
         with self.lock:
             armed = [t for t in self.p.live("track").values() if t.get("arm")]
             if not armed:
@@ -509,10 +512,10 @@ class Daw:
             if self.rec:
                 return {"error": "Already recording."}
             self._start(self.cursor if pos is None else float(pos), rec=True,
-                        countin=bool(self.p.local.get("countin")), broadcast=True)
+                        countin=not jam and bool(self.p.local.get("countin")), broadcast=True, jam=jam)
             return {"ok": True}
 
-    def _start(self, pos: float, rec: bool, countin: bool, broadcast: bool, delay: float = 0.0):
+    def _start(self, pos: float, rec: bool, countin: bool, broadcast: bool, delay: float = 0.0, jam: bool = False):
         if self.rec or self._playing():
             self._stop(broadcast=False)
         m = self.p.meta()
@@ -535,13 +538,15 @@ class Daw:
                     sources[src] = new_id("take-") + ".wav"
             self.p.audio_dir.mkdir(parents=True, exist_ok=True)
             self.rec = {"punch": at, "sources": sources, "tracks": {tid: int(t.get("src", 0)) for tid, t in mine.items()},
-                        "channels": channels}
+                        "channels": channels, "jam": jam}
+            if jam:
+                self._push()  # the song's click off for this take
         if sources or (self.rec and self.rec["channels"]):
             self.e.daw_record([(src, key, str(self.p.audio_dir / key)) for src, key in sources.items()], start, until)
         else:
             self.e.daw_play(start, until)
         if broadcast:
-            self._send({"t": "tp", "play": True, "rec": rec, "pos": pos, "countin": countin})
+            self._send({"t": "tp", "play": True, "rec": rec, "pos": pos, "countin": countin, "jam": jam})
         self.version += 1
 
     def stop(self):
@@ -553,9 +558,9 @@ class Daw:
         takes = self.e.daw_stop()
         played = self.e.daw_rec_notes()
         rec, self.rec = self.rec, None
-        if self.pattern_mode:
+        if self.pattern_mode or (rec and rec.get("jam")):
             self.pattern_mode = None
-            self._push()
+            self._push()  # (after a jam take: the song's click as you had it)
         if rec and takes:
             spb = self._spb()
             changes = []
@@ -786,7 +791,7 @@ class Daw:
         if loop != self.sent_loop:
             e.daw_loop(*loop)
             self.sent_loop = loop
-        click = (bool(p.local.get("click")), float(m["bpm"]), int(m["beats"]))
+        click = (bool(p.local.get("click")) and not (self.rec or {}).get("jam"), float(m["bpm"]), int(m["beats"]))
         if click != self.sent_click:
             e.daw_click(*click)
             self.sent_click = click
@@ -968,7 +973,7 @@ class Daw:
             if m.get("play"):
                 rtt = self.e.state().get("rtt") or 0.0
                 self._start(float(m.get("pos", 0)), rec=bool(m.get("rec")), countin=bool(m.get("countin")),
-                            broadcast=False, delay=rtt / 2000.0)
+                            broadcast=False, delay=rtt / 2000.0, jam=bool(m.get("jam")))
             else:
                 self._stop(broadcast=False)
         elif t == "here" and pid == self.p.pid:
