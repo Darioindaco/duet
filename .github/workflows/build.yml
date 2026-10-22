@@ -1,11 +1,41 @@
 name: build
 
+# Mac minutes count ten times against the account's Actions minutes, Linux
+# minutes once. So every push gets a quick test on Linux (the engine's unit
+# tests and the whole self-test, no sound card needed), and the Mac apps are
+# only built for main, or when you ask: Actions → build → Run workflow.
 on:
   push:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - name: Install
+        run: |
+          sudo apt-get update && sudo apt-get install -y libasound2-dev
+          pip install numpy maturin
+      - name: Build the Rust engine
+        run: pip install ./engine
+      - name: Engine unit tests
+        working-directory: engine
+        run: cargo test --release
+      - name: Build the test VST3 plugins (for the host tests in the self-test)
+        working-directory: engine
+        run: cargo build --release --example test_gain --example test_synth
+      - name: Self-test
+        run: python selftest.py
+
   mac:
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:

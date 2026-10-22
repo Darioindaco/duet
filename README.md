@@ -270,7 +270,7 @@ to it through lock-free queues and atomics.
 | `ui/daw.js`, `ui/daw.css` | The playlist: transport, track headers, timeline with waveforms, song menu |
 | `ui/seq.js`, `ui/seq.css` | The sequencer: patterns, channel rack with steps, piano roll with velocities |
 | `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |
-| `.github/workflows/build.yml` | Builds, tests and smoke-tests the Mac app on every push |
+| `.github/workflows/build.yml` | Every push: engine tests + self-test on Linux. The Mac apps (built, tested, smoke-tested) for main, or on request: Actions → build → Run workflow |
 
 Live audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.
 Recorded takes are 24-bit WAV; they go to the partner after recording at up to
