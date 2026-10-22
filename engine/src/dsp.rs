@@ -338,7 +338,7 @@ pub struct Dsp {
     jitter: JitterBuffer,
     cmds: rtrb::Consumer<Cmd>,
     incoming: rtrb::Consumer<InPacket>,
-    notes: rtrb::Consumer<(Target, NoteEv)>,
+    notes: rtrb::Consumer<(Target, NoteEv, bool)>,
     /// while recording: notes played on song tracks, with where they fell
     noterec: rtrb::Producer<(u8, NoteEv, i64)>,
     retired: rtrb::Producer<Garbage>,
@@ -372,7 +372,7 @@ impl Dsp {
         frame: usize,
         cmds: rtrb::Consumer<Cmd>,
         incoming: rtrb::Consumer<InPacket>,
-        notes: rtrb::Consumer<(Target, NoteEv)>,
+        notes: rtrb::Consumer<(Target, NoteEv, bool)>,
         noterec: rtrb::Producer<(u8, NoteEv, i64)>,
         retired: rtrb::Producer<Garbage>,
         socket: Arc<UdpSocket>,
@@ -657,11 +657,13 @@ impl Dsp {
         }
     }
 
-    /// Notes from the MIDI keyboard / computer keyboard to the strips' instruments.
+    /// Notes from the MIDI keyboard / computer keyboard (ours, or the partner's
+    /// played live on a song track) to the strips' instruments.
     fn take_notes(&mut self) {
-        while let Ok((t, ev)) = self.notes.pop() {
+        while let Ok((t, ev, remote)) = self.notes.pop() {
             if let Target::Track(i) = t {
-                if self.tp.recording && self.tp.playing {
+                // the partner's live notes are theirs to record, on their side
+                if self.tp.recording && self.tp.playing && !remote {
                     let _ = self.noterec.push((i as u8, ev, self.tp.pos));
                 }
             }

@@ -386,6 +386,101 @@ def test_patterns():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_live():
+    """Working side by side. Notes played live on a song track reach the same
+    track on the partner's side, whatever slot it sits in there, and play through
+    their copy of its instrument. They aren't the partner's to record, a lossy
+    line doesn't leave notes hanging, nor does the line dropping mid-note. And
+    each side sees where the other is working (presence)."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    x = [0.0] * N
+    a, b, _ = connect_pair()
+    for e, slot in ((a, 2), (b, 7)):
+        e.strip_set(f"T{slot}", "active", 1)
+        e.inst_set(f"T{slot}", "synth")
+    a.track_keys([0, 0, 4242])
+    b.track_keys([0] * 7 + [4242])
+    a.note("T2", True, 60, 100)
+    wait_for(lambda: b.partner_notes == [(7, 60)], what="alice's note on bob's side", detail=lambda: b.partner_notes)
+    out = []
+    for _ in range(30):
+        out += b.process(x)
+    spec = np.abs(np.fft.rfft(np.array(out[-2048:]) * np.hanning(2048)))
+    f0 = np.argmax(spec[:200]) * SR / 2048
+    assert abs(f0 - 261.6) < 25, f"bob hears middle C on his track, not {f0:.0f} Hz"
+    a.note("T2", False, 60)
+    wait_for(lambda: b.partner_notes == [], what="the note let go")
+
+    # bob records: alice's live notes are hers to record, his own are his
+    b.daw_record([], 0.0)
+    a.note("T2", True, 64, 100)
+    wait_for(lambda: b.partner_notes == [(7, 64)], what="a note while bob records")
+    b.note("T7", True, 50, 90)
+    for _ in range(5):
+        b.process(x)
+    a.note("T2", False, 64)
+    b.note("T7", False, 50)
+    wait_for(lambda: b.partner_notes == [], what="the note let go")
+    b.process(x)
+    b.daw_stop()
+    rec = b.daw_rec_notes()
+    assert [(t, kind, key) for t, kind, key, _v, _p in rec] == [(7, "on", 50), (7, "off", 50)], rec
+
+    # a third of the note packets lost: every note still ends
+    a.set_test_signal_loss(0.33)
+    for k in range(60):
+        a.note("T2", True, 40 + k % 24, 90)
+        time.sleep(0.002)
+        a.note("T2", False, 40 + k % 24)
+    a.set_test_signal_loss(0.0)
+    wait_for(lambda: b.partner_notes == [], what="no hanging notes after loss", detail=lambda: b.partner_notes)
+
+    # the line drops mid-note
+    a.note("T2", True, 67, 100)
+    wait_for(lambda: b.partner_notes == [(7, 67)], what="a held note")
+    a.close()
+    wait_for(lambda: b.partner_notes == [], what="the partner's notes let go when the line drops")
+    b.close()
+
+    # through the song: both sides know a track by its id
+    c, d, _ = connect_pair()
+    root = Path(tempfile.mkdtemp(prefix="duet-live-"))
+    dc, dd = Daw(c, root / "A", "alice"), Daw(d, root / "B", "bob")
+    try:
+        wait_for(lambda: dc.p.pid == dd.p.pid and dc.view()["shared"] and dd.view()["shared"], what="one shared song")
+        dc.edit([["track", "keys", {"name": "Keys", "order": 1.0, "owner": "alice",
+                                    "inst": {"kind": "synth", "cutoff": 0.6}}]])
+        wait_for(lambda: "keys" in dd.slots, what="the channel on bob's side")
+        c.note(f"T{dc.slots['keys']}", True, 62, 100)
+        wait_for(lambda: dd.status(d.state())["partnerNotes"] == {"keys": [62]}, what="bob sees alice play Keys",
+                 detail=lambda: dd.status(d.state())["partnerNotes"])
+        c.note(f"T{dc.slots['keys']}", False, 62)
+
+        here = {"view": "seq", "pattern": "p9", "track": "keys", "sel": ["c1", "../x"], "notes": ["n1"],
+                "ptr": {"in": "roll", "beat": 1.5, "key": 62}, "roll": {"beat": 0.0, "key": 72}}
+        dc.set_presence(here)
+        wait_for(lambda: dd.status(d.state())["partnerHere"], what="alice's presence on bob's side")
+        h = dd.status(d.state())["partnerHere"]
+        assert h["view"] == "seq" and h["track"] == "keys" and h["ptr"] == {"in": "roll", "beat": 1.5, "key": 62}, h
+        assert h["sel"] == ["c1"], "only plain ids get through"
+        dd._on_msg({"app": "daw", "pid": dd.p.pid, "t": "here", "n": 1.0, "view": "mixer"})
+        assert dd.status(d.state())["partnerHere"]["view"] == "seq", "an older message doesn't win"
+        assert dc.status(c.state())["partnerHere"] is None, "bob hasn't said where he is"
+        print("live: ok  (notes played live reach the partner's track and instrument, not their recording; "
+              "nothing hangs after loss or a dropped line; presence both ways)")
+    finally:
+        dc.close()
+        dd.close()
+        c.close()
+        d.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def hits_in(out, gap=12000):
     """Sample positions where something starts sounding (after `gap` samples of nothing new)."""
     env = np.abs(np.array(out))
@@ -881,6 +976,7 @@ if __name__ == "__main__":
     test_song_edit()
     test_instruments()
     test_patterns()
+    test_live()
     test_signals()
     test_mixer()
     test_partner_fx()

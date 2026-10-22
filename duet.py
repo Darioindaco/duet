@@ -253,6 +253,9 @@ class Api:
         self._daw.resolve(choice)
         return self._daw.view()
 
+    def daw_presence(self, here):
+        self._daw.set_presence(here)
+
     def daw_play_pattern(self, pid):
         self._daw.play_pattern(pid)
 

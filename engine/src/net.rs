@@ -20,6 +20,8 @@ pub const T_AUDIO_MC: u8 = 8;
 /// File transfer (transfer.rs): seq = transfer id. Older builds ignore both.
 pub const T_FILE: u8 = 9;
 pub const T_FILEACK: u8 = 10;
+/// Notes played live on a song track (livenotes.rs): seq = event number.
+pub const T_NOTE: u8 = 11;
 
 /// Sent as an extra byte after HELLO's samplerate/frame. Builds that predate it
 /// send 6 bytes, so a missing byte means version 1: mono T_AUDIO only.

@@ -135,3 +135,29 @@ input[type=number]:focus { border-color: var(--me); }
 #exportm .seg button:disabled { opacity: 0.4; cursor: default; }
 .th .chanlbl { text-align: left; background: var(--bg); border: 1px solid var(--line-2); padding: 3px 8px; cursor: pointer; font-size: 11px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .th .chanlbl:hover { border-color: var(--c); }
+
+/* presence: where your partner is (presence.js) */
+.phere { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 400px; padding: 3px 3px 3px 11px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--partner) 45%, var(--line)); background: color-mix(in srgb, var(--partner) 8%, var(--panel-2)); }
+.phere[hidden] { display: none; }
+.phere .pdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--partner); box-shadow: 0 0 8px var(--partner); }
+.phere .ptxt { min-width: 0; padding: 0; border: 0; background: none; color: var(--text); font: 650 12.5px/1.2 inherit; font-family: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.phere .ptxt:hover { color: var(--partner); }
+.phere .pfollow { flex: none; padding: 5px 11px; border: 0; border-radius: 999px; background: var(--panel); color: var(--partner); font: 750 11.5px/1 inherit; font-family: inherit; cursor: pointer; }
+.phere .pfollow:hover { background: color-mix(in srgb, var(--partner) 18%, var(--panel)); }
+.phere .pfollow.on { background: var(--partner); color: #04201d; }
+/* not much room: the dot and Follow (the rest is in the tooltip) */
+@media (max-width: 1400px) { .phere .ptxt { display: none; } .phere { padding-left: 9px; } }
+@media (max-width: 1180px) { header:has(#pHere:not([hidden])) :is(.brand h1, #keysTxt, #camTxt) { display: none; } }
+
+/* the partner is playing this channel live / is on it in the sequencer */
+.th.plive, .chan.plive { animation: plive 0.7s ease-in-out infinite alternate; }
+@keyframes plive {
+  from { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--partner) 35%, transparent); }
+  to { box-shadow: inset 0 0 0 1px var(--partner), inset 0 0 18px color-mix(in srgb, var(--partner) 22%, transparent); }
+}
+.chan.phere .chead { position: relative; }
+.chan.phere .cname b::after { content: "Partner"; margin-left: 7px; padding: 1px 7px; border-radius: 999px; background: var(--partner); color: #04201d; font-size: 10px; font-weight: 800; vertical-align: 1px; }
+.pkey.plive { background: var(--partner) !important; color: #04201d !important; }
+.pwho { padding: 5px 11px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--partner) 50%, var(--line)); background: color-mix(in srgb, var(--partner) 10%, var(--panel-2)); color: var(--partner); font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.pwho[hidden] { display: none; }
+.pwho.same { cursor: default; background: none; }

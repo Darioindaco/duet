@@ -11,6 +11,7 @@ mod dsp;
 mod fx;
 mod instr;
 mod jitter;
+mod livenotes;
 mod midi;
 mod net;
 mod signal;
@@ -87,8 +88,14 @@ struct Inner {
     incoming: Mutex<Option<rtrb::Producer<InPacket>>>,
     /// things the audio thread is done with, freed here instead of there
     retired: Mutex<rtrb::Consumer<Garbage>>,
-    /// notes for the strips' instruments (MIDI thread and Python both write)
-    notes: Mutex<rtrb::Producer<(Target, NoteEv)>>,
+    /// notes for the strips' instruments (MIDI thread and Python both write;
+    /// true: the partner's, played live)
+    notes: Mutex<rtrb::Producer<(Target, NoteEv, bool)>>,
+    /// notes played on song tracks, going to the partner / coming from them
+    live_out: Mutex<livenotes::Out>,
+    live_in: Mutex<livenotes::In>,
+    /// per track slot, the key both sides know that track by (0: none)
+    track_keys: Mutex<[u32; MAX_TRACKS]>,
     /// notes played on song tracks while recording, with their timeline position
     noterec: Mutex<rtrb::Consumer<(u8, NoteEv, i64)>>,
     /// the strip a MIDI keyboard plays (encoded Target; u64::MAX = none)
@@ -107,10 +114,12 @@ impl Inner {
         self.shared.peer.store(a.map(encode_peer).unwrap_or(0), Relaxed);
         self.shared.peer_epoch.fetch_add(1, Relaxed);
         self.files.lock().unwrap().abort_all();
+        self.live_out.lock().unwrap().reset();
+        self.drop_live_notes();
     }
     fn send(&self, data: &[u8], to: Option<SocketAddrV4>) {
         let loss = self.shared.test_signal_loss.get();
-        if loss > 0.0 && data.len() > 2 && (data[2] == net::T_SIGNAL || data[2] == net::T_SIGACK) && rand::random::<f32>() < loss {
+        if loss > 0.0 && data.len() > 2 && matches!(data[2], net::T_SIGNAL | net::T_SIGACK | net::T_NOTE) && rand::random::<f32>() < loss {
             return;
         }
         if let Some(addr) = to.or_else(|| self.peer()) {
@@ -125,8 +134,40 @@ impl Inner {
         let _ = self.cmds.lock().unwrap().push(c);
     }
     fn note(&self, t: Target, ev: NoteEv) {
-        let _ = self.notes.lock().unwrap().push((t, ev));
+        let _ = self.notes.lock().unwrap().push((t, ev, false));
         self.shared.midi_events.fetch_add(1, Relaxed);
+        // played on a song track: the partner hears it on theirs
+        if let Target::Track(i) = t {
+            let track = self.track_keys.lock().unwrap()[i];
+            if track != 0 && self.peer().is_some() {
+                if let Some(p) = self.live_out.lock().unwrap().push(livenotes::Ev { track, ev }) {
+                    self.send(p, None);
+                }
+            }
+        }
+    }
+    /// The partner's live notes onto the tracks they belong to here.
+    fn play_live(&self, evs: &[livenotes::Ev]) {
+        if evs.is_empty() {
+            return;
+        }
+        let keys = *self.track_keys.lock().unwrap();
+        let mut q = self.notes.lock().unwrap();
+        for e in evs {
+            if let Some(slot) = keys.iter().position(|k| *k == e.track && e.track != 0) {
+                let _ = q.push((Target::Track(slot), e.ev, true));
+            }
+        }
+    }
+    /// The line dropped or the partner changed: nothing of theirs may hang.
+    fn drop_live_notes(&self) {
+        let mut evs = Vec::new();
+        {
+            let mut l = self.live_in.lock().unwrap();
+            l.release_all(&mut evs);
+            l.reset();
+        }
+        self.play_live(&evs);
     }
     /// Drop effect objects the audio thread handed back (freeing happens here,
     /// not in the callback).
@@ -237,6 +278,11 @@ impl Inner {
                     }
                 }
                 net::T_FILEACK => self.files.lock().unwrap().on_ack(seq, body),
+                net::T_NOTE => {
+                    let mut evs = Vec::new();
+                    self.live_in.lock().unwrap().receive(seq, body, &mut evs);
+                    self.play_live(&evs);
+                }
                 net::T_BYE => {
                     self.set_peer(None);
                     self.ctl.lock().unwrap().rtt_ms = None;
@@ -258,6 +304,9 @@ impl Inner {
             body[6] = net::PROTOCOL;
             net::pack(net::T_HELLO, 0, &body, &mut hello);
             if !self.connected() {
+                if !self.live_in.lock().unwrap().held().is_empty() {
+                    self.drop_live_notes(); // the line went quiet mid-note
+                }
                 // punch: keep firing at every candidate until one gets through
                 let cands = self.ctl.lock().unwrap().candidates.clone();
                 for a in cands {
@@ -279,6 +328,9 @@ impl Inner {
             let due = self.ctl.lock().unwrap().signals.due();
             for p in due {
                 self.send(&p, None);
+            }
+            if let Some(p) = self.live_out.lock().unwrap().repeat() {
+                self.send(p, None);
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -326,7 +378,7 @@ impl Engine {
         let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(1024);
         let (pkt_tx, pkt_rx) = rtrb::RingBuffer::new(512);
         let (ret_tx, ret_rx) = rtrb::RingBuffer::<Garbage>::new(256);
-        let (note_tx, note_rx) = rtrb::RingBuffer::<(Target, NoteEv)>::new(1024);
+        let (note_tx, note_rx) = rtrb::RingBuffer::<(Target, NoteEv, bool)>::new(1024);
         let (noterec_tx, noterec_rx) = rtrb::RingBuffer::<(u8, NoteEv, i64)>::new(8192);
         let dsp = Dsp::new(48000, 128, cmd_rx, pkt_rx, note_rx, noterec_tx, ret_tx, socket.clone(), shared.clone());
         let mut local: Vec<StripMirror> =
@@ -352,6 +404,9 @@ impl Engine {
             incoming: Mutex::new(Some(pkt_tx)),
             retired: Mutex::new(ret_rx),
             notes: Mutex::new(note_tx),
+            live_out: Mutex::new(livenotes::Out::new()),
+            live_in: Mutex::new(livenotes::In::default()),
+            track_keys: Mutex::new([0; MAX_TRACKS]),
             midi_target: std::sync::atomic::AtomicU64::new(u64::MAX),
             daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], notes: vec![], rec: None, export: None }),
             noterec: Mutex::new(noterec_rx),
@@ -764,6 +819,25 @@ impl Engine {
         let t = parse_target(target)?;
         self.inner.note(t, if on { NoteEv::On(key & 127, vel.clamp(1, 127)) } else { NoteEv::Off(key & 127) });
         Ok(())
+    }
+
+    /// Per track slot, the key the partner knows that track by (0: none), so
+    /// notes played live on a track reach the same track on their side.
+    fn track_keys(&self, keys: Vec<u32>) {
+        let mut k = self.inner.track_keys.lock().unwrap();
+        *k = [0; MAX_TRACKS];
+        for (slot, key) in keys.into_iter().take(MAX_TRACKS).enumerate() {
+            k[slot] = key;
+        }
+    }
+
+    /// The notes the partner is holding right now, played live: [(slot, key)].
+    #[getter]
+    fn partner_notes(&self) -> Vec<(usize, u8)> {
+        let keys = *self.inner.track_keys.lock().unwrap();
+        self.inner.live_in.lock().unwrap().held().iter()
+            .filter_map(|&(t, k)| keys.iter().position(|x| *x == t && t != 0).map(|slot| (slot, k)))
+            .collect()
     }
 
     /// The MIDI keyboards there are.

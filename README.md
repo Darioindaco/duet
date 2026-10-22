@@ -170,6 +170,32 @@ the shared song (your partner sees every note you place, and you theirs).
 Patterns play on both computers from the same notes, so they sound the same and
 in full quality on both sides (a VST instrument needs to be installed on both).
 
+## Working side by side
+
+You see where your partner is working, in their colour, as if you were looking
+over their shoulder:
+
+- **Their pointer** (an arrow with *Partner*) in the playlist and in the piano
+  roll, when they're on the same notes as you. When it's out of view, a
+  *Partner ↓* tag on the edge points to where it is.
+- **What they've selected:** a dashed outline around their clips and notes.
+- **Where they are:** the teal pill at the top says it (*Partner · Sequencer ·
+  Beat · Drums*, *Partner · playing Bass synth*…); click it to go there. In the
+  sequencer, the channel they're on says *Partner*, and the bar at the top shows
+  which pattern they have open (click it to go there too). While stopped, a teal
+  mark on the ruler shows where their playhead stands.
+- **Follow** (in the pill) keeps your view on theirs: the same tab, pattern,
+  channel and spot in the song, as they move. It stops as soon as you click or
+  scroll yourself.
+
+**Playing a channel live:** whatever you play on a channel (MIDI keyboard,
+computer keyboard, a piano roll key or a step you click) your partner hears
+right away, on their side. Only the notes go over the line, not the sound: their
+copy of the instrument plays them, in full quality and with almost no data. On
+their side the channel glows and the keys light up in the piano roll. When you
+record, your notes end up in the song through you, so nothing is recorded twice.
+(A VST instrument needs to be installed on both computers.)
+
 ## Instruments
 
 A strip of yours can play an **instrument** instead of an input: in the strip's
@@ -262,6 +288,7 @@ to it through lock-free queues and atomics.
 | `engine/src/midi.rs` | MIDI keyboards (midir), on a thread of their own |
 | `engine/src/daw.rs` | Song timeline: clips, audio files (WAV in/out, rate conversion, waveform peaks), take writer |
 | `engine/src/transfer.rs` | Reliable, paced file transfer to the partner (recorded takes) over the audio socket |
+| `engine/src/livenotes.rs` | Notes played live on a song track, to the partner: tiny packets with the last few events repeated, so loss can't leave a note hanging |
 | `engine/src/lib.rs` | Network threads (receive, punching, ping, files) and the Python API |
 | `duet.py` | Window (pywebview) and the API the page calls |
 | `daw.py` | The shared song: a last-writer-wins document synced with the partner, recording, the engine's timeline |
@@ -270,6 +297,7 @@ to it through lock-free queues and atomics.
 | `ui/daw.js`, `ui/daw.css` | The playlist: transport, track headers, timeline with waveforms, song menu |
 | `ui/seq.js`, `ui/seq.css` | The sequencer: patterns, channel rack with steps, piano roll with velocities |
 | `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |
+| `ui/presence.js` | Seeing each other work: the partner's pointer, selection, view and live notes; Follow |
 | `.github/workflows/build.yml` | Every push: engine tests + self-test on Linux. The Mac apps (built, tested, smoke-tested) for main, or on request: Actions → build → Run workflow |
 
 Live audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.

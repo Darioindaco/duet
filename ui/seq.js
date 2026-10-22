@@ -170,6 +170,7 @@ function seqRender() {
   $("patLen").value = String(Math.max(1, Math.round(patLen(p) / bpb())));
   $("patLen").disabled = $("patPlace").disabled = $("patMore").disabled = !p;
   $("patPlay").classList.toggle("on", !!(song.st && song.st.playing && song.view.patternMode));
+  seqWho();
   if (ui.view === "seq") { renderRackRows(); prRender(); }
 }
 
@@ -270,6 +271,7 @@ function renderRackRows() {
     ch.onclick = (e) => { if (!e.target.closest("button, .hs")) selectChannel(t.id); };
     box.append(ch);
   }
+  hereMarks();
 }
 
 function audition(t, key, vel = 100) {
@@ -299,10 +301,12 @@ function prRender() {
     const d = document.createElement("div");
     d.className = "pkey" + (black && !isDrums(t) ? " black" : "") + (k % 12 === 0 ? " c" : "");
     d.style.height = seq.rowH + "px";
+    d.dataset.k = k;
     d.textContent = t && isDrums(t) ? PAD_NAMES[k] || "" : k % 12 === 0 ? noteName(k) : "";
     d.onpointerdown = (e) => { e.preventDefault(); if (t) audition(t, k); };
     keys.append(d);
   }
+  hereMarks();
   $("prSize").style.height = (hi - lo + 1) * seq.rowH + "px";
   $("prSize").style.width = Math.max(patLen(p) + bpb(), 8) * seq.ppb + "px";
   const lanes = $("prLanes");
@@ -354,6 +358,7 @@ function prDraw() {
     ctx.fillStyle = bar ? "rgba(255,255,255,0.13)" : beat ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.025)";
     ctx.fillRect(x - 0.5, 0, 1, h);
   }
+  hereDrawHeld(ctx, sx, sy, w, hi);
   // past the pattern's end: dimmed
   const xe = plen * ppb - sx;
   if (xe < w) { ctx.fillStyle = "rgba(0,0,0,0.45)"; ctx.fillRect(Math.max(0, xe), 0, w, h); }
@@ -392,6 +397,7 @@ function prDraw() {
     ctx.fillStyle = "#efeaf4";
     ctx.fillRect(Math.round(px), 0, 1, h);
   }
+  hereDrawRoll(ctx, sx, sy, hi, w, h);
   velDraw(notes, t, sx);
 }
 

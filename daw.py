@@ -75,6 +75,12 @@ def safe(name) -> bool:
     return isinstance(name, str) and bool(SAFE.match(name)) and ".." not in name
 
 
+def track_key(tid: str) -> int:
+    """The number both sides know a track by in the engine (for notes played
+    live): its slot can differ per side, its id can't."""
+    return int.from_bytes(hashlib.blake2s(tid.encode(), digest_size=4).digest(), "big") or 1
+
+
 def new_id(prefix: str = "") -> str:
     return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
 
@@ -209,6 +215,7 @@ class Daw:
         self.sent_inst: dict[int, dict | None] = {}
         self.sent_desc = None
         self.sent_notes = None
+        self.sent_keys = None
         self.pattern_mode: str | None = None  # playing just this pattern, looped (local)
         self.sent_loop = None
         self.sent_click = None
@@ -222,6 +229,8 @@ class Daw:
         self.last_snap = 0.0
         self.last_files = 0.0
         self.last_hello = 0.0
+        self.partner_here: dict | None = None  # where the partner is (presence)
+        self.partner_here_n = 0.0
         self._running = True
         self._push()
         self.thread = threading.Thread(target=self._loop, name="duet-daw", daemon=True)
@@ -288,6 +297,7 @@ class Daw:
         self.cursor = 0.0
         self.undos.clear()
         self.redos.clear()
+        self.partner_here = None
         self.p = p
         self._remember(p.pid)
         self._changed()
@@ -658,6 +668,12 @@ class Daw:
                     break
                 self.slots[tid] = free
                 used.add(free)
+        keys = [0] * MAX_TRACKS
+        for tid, slot in self.slots.items():
+            keys[slot] = track_key(tid)
+        if keys != self.sent_keys:
+            e.track_keys(keys)
+            self.sent_keys = keys
         byid = dict(tracks)
         for tid, slot in self.slots.items():
             t = byid[tid]
@@ -827,6 +843,7 @@ class Daw:
     def _on_connect(self):
         self.last_hello = time.monotonic()
         self.partner_pid = None
+        self.partner_here, self.partner_here_n = None, 0.0
         self.mismatches = 0
         self.wanted.clear()
         self._send({"t": "hello", "peer": self.me, "name": self.p.meta()["name"], "empty": self.p.is_empty()})
@@ -877,6 +894,11 @@ class Daw:
                             broadcast=False, delay=rtt / 2000.0)
             else:
                 self._stop(broadcast=False)
+        elif t == "here" and pid == self.p.pid:
+            n = m.get("n")
+            if isinstance(n, (int, float)) and n > self.partner_here_n:  # a resend can overtake a newer one
+                self.partner_here_n = n
+                self.partner_here = {**clean_here(m), "pos": finite(m.get("pos"), 0.0), "at": time.monotonic()}
         elif t == "sum" and pid == self.p.pid:
             if m.get("d") != self.p.digest():
                 self.mismatches += 1
@@ -886,6 +908,22 @@ class Daw:
                     self._send({"t": "snap", "adopt": False, "ops": self.p.all_ops()})
             else:
                 self.mismatches = 0
+
+    # --- presence: seeing each other work ------------------------------------------
+
+    def set_presence(self, here: dict):
+        """Where you are (view, pattern, channel, selection, pointer, scroll), for
+        the partner to see in your colour. The UI sends it when it changes, and
+        every couple of seconds so it doesn't go stale."""
+        with self.lock:
+            if self.connected and self.partner_pid == self.p.pid:
+                self._send({"t": "here", "n": time.time(), **clean_here(here), "pos": self.cursor})
+
+    def _partner_here(self) -> dict | None:
+        h = self.partner_here
+        if not h or not self.connected or self.partner_pid != self.p.pid or time.monotonic() - h["at"] > 6:
+            return None
+        return {k: v for k, v in h.items() if k != "at"}
 
     def resolve(self, choice: str):
         """Different songs open on both sides: 'theirs' opens theirs, 'mine' sends mine."""
@@ -1045,10 +1083,17 @@ class Daw:
             for n in self.wanted:
                 xfer.setdefault(n, [0, 0, "in"])
             notices, self.notices = self.notices, []
+            # notes the partner is playing live, by track
+            live: dict[str, list[int]] = {}
+            byslot = {slot: tid for tid, slot in self.slots.items()}
+            for slot, key in self.e.partner_notes:
+                if slot in byslot:
+                    live.setdefault(byslot[slot], []).append(key)
             return {"v": self.version, "pos": s["daw_pos"] / spb if playing else self.cursor, "playing": playing,
                     "recording": bool(s["daw_recording"]) or bool(self.rec and playing),
                     "recFrom": self.rec["punch"] / spb if self.rec else None,
-                    "levels": levels, "xfer": xfer, "notices": notices}
+                    "levels": levels, "xfer": xfer, "notices": notices,
+                    "partnerHere": self._partner_here(), "partnerNotes": live}
 
     def close(self):
         self._running = False
@@ -1059,6 +1104,41 @@ class Daw:
                 self.p.save()
             except OSError:
                 pass
+
+
+VIEWS = ("song", "seq", "mixer")
+
+
+def finite(x, default=None, lo=-1e6, hi=1e9):
+    """A plain number within reason, or the default."""
+    if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and lo <= x <= hi:
+        return float(x)
+    return default
+
+
+def clean_here(x) -> dict:
+    """What a presence message may hold: a known view, plain ids, sane numbers
+    (it comes from the partner, and goes on to the page)."""
+    x = x if isinstance(x, dict) else {}
+    pick = lambda v: v if safe(v) else None
+    ids = lambda v: [i for i in v[:64] if safe(i)] if isinstance(v, list) else []
+    out = {"view": x["view"] if x.get("view") in VIEWS else "song",
+           "pattern": pick(x.get("pattern")), "track": pick(x.get("track")),
+           "sel": ids(x.get("sel")), "notes": ids(x.get("notes")), "ptr": None, "scroll": None, "roll": None}
+    ptr = x.get("ptr")
+    if isinstance(ptr, dict):
+        beat = finite(ptr.get("beat"), lo=-1e3, hi=1e6)
+        if beat is not None and ptr.get("in") == "song" and safe(ptr.get("track")):
+            out["ptr"] = {"in": "song", "beat": beat, "track": ptr["track"]}
+        elif beat is not None and ptr.get("in") == "roll" and finite(ptr.get("key"), lo=0, hi=127) is not None:
+            out["ptr"] = {"in": "roll", "beat": beat, "key": int(ptr["key"])}
+    sc = x.get("scroll")
+    if isinstance(sc, dict) and finite(sc.get("beat"), lo=-1e3, hi=1e6) is not None:
+        out["scroll"] = {"beat": float(sc["beat"]), "row": finite(sc.get("row"), 0.0, 0, 1e4)}
+    roll = x.get("roll")
+    if isinstance(roll, dict) and finite(roll.get("beat"), lo=-1e3, hi=1e6) is not None:
+        out["roll"] = {"beat": float(roll["beat"]), "key": finite(roll.get("key"), 60.0, 0, 127)}
+    return out
 
 
 def file_name(name: str) -> str:

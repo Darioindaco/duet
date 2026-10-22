@@ -244,6 +244,7 @@ function songPaint(d) {
     : `<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>`;
   $("tpRec").classList.toggle("on", d.recording);
   $("lcd").classList.toggle("rec", d.recording);
+  herePaint(d.partnerHere || null, d.partnerNotes || {});
   // file transfers
   const names = Object.keys(d.xfer || {});
   $("xfer").innerHTML = names.slice(0, 3).map((n) => {
@@ -354,6 +355,7 @@ function renderHeads() {
     box.append(el);
   });
   if (!v.tracks.length) box.innerHTML = `<div class="song-empty">No tracks yet. Add one with <b>+ Track</b>.</div>`;
+  hereMarks();
 }
 
 function hslider(value, onChange, title) {
@@ -657,6 +659,7 @@ function drawRuler() {
   const px = curPos() * ppb - sx;
   ctx.fillStyle = song.st && song.st.recording ? "#ff6070" : "#efeaf4";
   ctx.beginPath(); ctx.moveTo(px - 5, 12); ctx.lineTo(px + 5, 12); ctx.lineTo(px, 20); ctx.fill();
+  hereDrawRuler(ctx, sx);
 }
 
 function drawOverlay() {
@@ -692,11 +695,13 @@ function drawOverlay() {
     ctx.strokeStyle = "rgba(239,234,244,0.6)";
     ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
   }
+  hereDrawSong(ctx, sx, sy, w, h);
 }
 
 let lastFrameDraw = 0;
 function songFrame() {
   seqFrame();
+  hereFrame();
   if (!song.view || ui.view !== "song") return;
   const st = song.st;
   const pos = curPos();
@@ -1190,6 +1195,20 @@ function paintConflict() {
 }
 
 // ---------- demo backend (page in a normal browser) ----------
+// the demo's partner: in the playlist pointing at the vocals (?demo&pseq: in the
+// sequencer, on the bassline), playing the bass synth now and then
+function demoPartner() {
+  const tt = performance.now() / 1000, seqv = location.search.includes("pseq");
+  return {
+    partnerHere: seqv
+      ? { view: "seq", pattern: "pb", track: "t5", sel: [], notes: ["b2", "b3"], pos: 12, ptr: { in: "roll", beat: 3 + 1.5 * Math.sin(tt * 0.7), key: 47 },
+          scroll: { beat: 0, row: 0 }, roll: { beat: 0, key: 46 } }
+      : { view: "song", pattern: "pb", track: "t2", sel: ["c2"], notes: [], pos: 12, ptr: { in: "song", beat: 13 + 3 * Math.sin(tt * 0.6), track: "t2" },
+          scroll: { beat: 0, row: 0 }, roll: null },
+    partnerNotes: Math.floor(tt / 2) % 3 === 0 ? { t5: [45, 48] } : {},
+  };
+}
+
 function demoSong() {
   const me = "me", partner = "partner";
   const peaks = (secs, seed, sr = 48000) => {
@@ -1271,7 +1290,9 @@ function demoSong() {
       return p < 1 ? { running: true, progress: p, result: null } : { running: false, progress: 1, result: { ok: true, warnings: [] } };
     },
     show_file: async () => {},
+    daw_presence: async () => {},
     status: () => ({ v, pos: playing ? pos + (performance.now() - t0) / 1000 / (60 / view.meta.bpm) : pos, playing, recording, recFrom,
-      levels: playing ? { t1: 0.4, t2: 0.25 } : {}, xfer: { "take-k1.wav": [3_100_000, 4_600_000, "in"] }, notices: [] }),
+      levels: playing ? { t1: 0.4, t2: 0.25 } : {}, xfer: { "take-k1.wav": [3_100_000, 4_600_000, "in"] }, notices: [],
+      ...demoPartner() }),
   };
 }

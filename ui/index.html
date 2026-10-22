@@ -41,7 +41,7 @@ button, input, select { font: inherit; color: inherit; }
 .app { display: grid; grid-template-rows: auto 1fr auto; height: 100%; gap: 14px; padding: 16px 18px 14px; }
 
 /* ---------- header ---------- */
-header { display: flex; align-items: center; gap: 18px; }
+header { display: flex; align-items: center; gap: 18px; min-width: 0; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand svg { display: block; }
 .brand h1 { margin: 0; font-size: 22px; font-weight: 750; letter-spacing: -0.02em; }
@@ -388,6 +388,8 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
     <div class="seg views" id="viewSeg" role="tablist"><button data-v="song">Playlist</button><button data-v="seq">Sequencer</button><button data-v="mixer">Mixer</button></div>
     <button class="songbtn" id="songBtn"><span class="sh" id="songShared"></span><span class="nm" id="songName">Song</span>
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+    <div class="phere" id="pHere" hidden><span class="pdot"></span><button class="ptxt" id="pHereTxt">Partner</button>
+      <button class="pfollow" id="pFollow" title="Keep your view on your partner's: the same view, pattern and spot in the song, until you do something yourself">Follow</button></div>
     <div class="spacer"></div>
     <div class="latency-big" id="bigLat">
       <div class="num" id="bigLatNum">--<small>ms</small></div>
@@ -491,6 +493,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
             <select id="patLen" aria-label="Pattern length" title="Length"><option value="1">1 bar</option><option value="2">2 bars</option><option value="4">4 bars</option><option value="8">8 bars</option></select>
             <button class="ttog" id="patMore" title="Rename, copy, clear or delete the pattern">⋯</button>
             <button class="ttog" id="patPlace" title="Put the pattern in the playlist at the playhead (or double-click an empty spot in the playlist)">+ Into the song</button>
+            <button class="pwho" id="seqWho" hidden></button>
             <div class="spacer"></div>
             <select id="addChannel" class="addfx" aria-label="Add a channel"><option value="">+ Channel</option><option value="drums">Drum kit</option><option value="synth">Synth</option><option value="vst">VST instrument…</option></select>
           </div>
@@ -613,6 +616,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 <script src="daw.js"></script>
 <script src="instr.js"></script>
 <script src="seq.js"></script>
+<script src="presence.js"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -1689,6 +1693,7 @@ async function boot(a) {
   songSetup();
   instSetup();
   seqSetup();
+  hereSetup();
   $("vstX").onclick = () => ($("vstm").hidden = true);
   $("vstm").onclick = (e) => e.target === $("vstm") && ($("vstm").hidden = true);
   $("vstQ").oninput = () => ui.vstRes && vstRender(ui.vstRes);
