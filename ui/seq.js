@@ -68,33 +68,7 @@ function seqSetup() {
   $("prVel").addEventListener("pointerdown", velDown);
   new ResizeObserver(() => prDraw()).observe($("prWrap"));
   document.addEventListener("keydown", seqKeys);
-  splitSetup();
   quantSetup();
-}
-
-// the bar between the channel rack and the piano roll: drag it to share the room
-function splitSetup() {
-  const rows = $("chanRows"), bar = $("seqSplit");
-  const h = store.get("seqRackH", null);
-  if (h) rows.style.maxHeight = h + "px";
-  bar.onpointerdown = (e) => {
-    e.preventDefault();
-    bar.setPointerCapture(e.pointerId);
-    bar.classList.add("drag");
-    const y0 = e.clientY, h0 = rows.getBoundingClientRect().height;
-    const card = rows.closest(".seqcard").getBoundingClientRect().height;
-    bar.onpointermove = (ev) => {
-      const v = Math.round(Math.max(40, Math.min(card - 220, h0 + ev.clientY - y0)));
-      rows.style.maxHeight = rows.style.height = v + "px";
-    };
-    bar.onpointerup = () => {
-      bar.onpointermove = bar.onpointerup = null;
-      bar.classList.remove("drag");
-      rows.style.height = "";
-      store.set("seqRackH", parseInt(rows.style.maxHeight, 10));
-    };
-  };
-  bar.ondblclick = () => { rows.style.maxHeight = ""; store.set("seqRackH", null); };
 }
 
 function seqKeys(e) {
@@ -360,7 +334,8 @@ function seqRender() {
   $("patLen").disabled = $("patPlace").disabled = $("patMore").disabled = !p;
   $("patPlay").classList.toggle("on", !!(song.st && song.st.playing && song.view.patternMode));
   seqWho();
-  if (ui.view === "seq") { renderRackRows(); prRender(); }
+  if (winShown("rack")) renderRackRows();
+  if (winShown("roll")) prRender();
 }
 
 function renderRackRows() {
@@ -520,7 +495,7 @@ function prKeyAt(y) {
 }
 
 function prDraw() {
-  if (ui.view !== "seq") return;
+  if (!winShown("roll")) return;
   const lanes = $("prLanes"), w = lanes.clientWidth, h = lanes.clientHeight;
   if (!w || !h) return;
   const ctx = sizeCanvas($("prCv"), w, h);
@@ -797,7 +772,7 @@ function velDown(e) {
 
 // ---------- playing position in pattern mode ----------
 function seqFrame() {
-  if (ui.view !== "seq" || !song.st) return;
+  if (!(winShown("rack") || winShown("roll")) || !song.st) return;
   const playing = song.st.playing && song.view?.patternMode;
   $("patPlay").classList.toggle("on", !!(song.st.playing));
   if (playing) {

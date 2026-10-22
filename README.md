@@ -85,9 +85,26 @@ has two tabs:
    the other one's click is lined up with the leader's playing *as it arrives*,
    so you play along to what you hear. Tempo-synced plugins follow it too.
 
+## The workspace
+
+Like FL Studio, everything is a window you arrange yourself: the **Playlist**
+(F5), the **Channel rack** (F6), the **Piano roll** (F7), the **Mixer** (F9) and
+the **FX rack**. The buttons in the top bar open a window, bring it to the front,
+or (already in front) close it.
+
+- **Move** a window by its title bar; **size** it from any edge or corner. Edges
+  stick to the workspace's edges and to the other windows.
+- **Snap:** drag a window against an edge of the workspace and let go: it fills
+  that half (a corner: that quarter; the top: all of it). Double-click the title
+  to fill the workspace, and again to go back.
+- **Layouts:** the button next to the window buttons has ready-made layouts
+  (*Compose*, *Arrange*, *Mix*, *Mixer on the right*, *Piano roll big*) and
+  *Save this layout…* for your own. The layout you have is kept for next time,
+  and it scales along when the app's window changes size.
+
 ## Recording a song together
 
-The **Playlist** (top left, next to *Mixer*) is a timeline you both work in at
+The **Playlist** is a timeline you both work in at
 the same time, like a shared document: the song is open on both computers and
 every change (a new track, a moved clip, the tempo) shows up on the other side
 right away. The green dot on the song name means you're in the same song.
@@ -347,6 +364,7 @@ to it through lock-free queues and atomics.
 | `daw.py` | The shared song: a last-writer-wins document synced with the partner, recording, the engine's timeline |
 | `t3k.py` | TONE3000: OAuth/PKCE tone picker over a loopback redirect, model download, local library |
 | `ui/index.html` | The interface, incl. the WebRTC video call |
+| `ui/wm.js` | The workspace: windows that move, size and snap, layouts |
 | `ui/daw.js`, `ui/daw.css` | The playlist: transport, track headers, timeline with waveforms, song menu |
 | `ui/seq.js`, `ui/seq.css` | The sequencer: patterns, channel rack with steps, piano roll with velocities |
 | `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |

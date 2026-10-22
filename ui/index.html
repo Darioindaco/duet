@@ -388,7 +388,8 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
     <button class="iconbtn sq" id="sbToggle" title="Show / hide the Connect & Sound panel" aria-label="Toggle side panel">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
     </button>
-    <div class="seg views" id="viewSeg" role="tablist"><button data-v="song">Playlist</button><button data-v="seq">Sequencer</button><button data-v="mixer">Mixer</button></div>
+    <div class="seg views" id="viewSeg"><button data-w="song" title="Playlist (F5)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M3 6h9M7 12h11M3 18h7"/></svg><span>Playlist</span></button><button data-w="rack" title="Channel rack (F6)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="3" y="4" width="4" height="4" rx="1"/><rect x="10" y="4" width="4" height="4" rx="1" opacity=".4"/><rect x="17" y="4" width="4" height="4" rx="1"/><rect x="3" y="11" width="4" height="4" rx="1" opacity=".4"/><rect x="10" y="11" width="4" height="4" rx="1"/><rect x="17" y="11" width="4" height="4" rx="1" opacity=".4"/><rect x="3" y="18" width="4" height="3" rx="1"/><rect x="10" y="18" width="4" height="3" rx="1" opacity=".4"/><rect x="17" y="18" width="4" height="3" rx="1"/></svg><span>Channel rack</span></button><button data-w="roll" title="Piano roll (F7)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M3 5h6M8 10h8M12 15h9M5 20h5"/></svg><span>Piano roll</span></button><button data-w="mixer" title="Mixer (F9)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 3v18M12 3v18M18 3v18"/><rect x="4" y="13" width="4" height="3" rx="1" fill="currentColor"/><rect x="10" y="6" width="4" height="3" rx="1" fill="currentColor"/><rect x="16" y="15" width="4" height="3" rx="1" fill="currentColor"/></svg><span>Mixer</span></button><button class="wsbtn" id="wsBtn" title="Workspace: arrange the windows, save a layout" aria-label="Workspace">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 10h18M10 10v11"/></svg></button></div>
     <div class="tgrp" title="The song: play, record and its tempo">
       <button class="tbtn play" id="tpPlay" title="Play / stop the song (space)" aria-label="Play or stop"></button>
       <button class="tbtn rec" id="tpRec" title="Record (R): every armed track, yours and your partner's" aria-label="Record">
@@ -477,8 +478,9 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
       </div>
     </aside>
 
-    <div class="right">
-      <div class="view" id="viewSong" hidden>
+    <!-- the workspace: every panel is a window you move, size and snap (wm.js) -->
+    <div class="desk" id="desk">
+      <div class="win" id="win-song" data-w="song" data-title="Playlist">
         <section class="card song">
           <div class="arr">
             <div class="corner"><button class="addtrack" id="addTrack">+ Track</button><div class="spacer"></div>
@@ -495,7 +497,8 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
           </div>
         </section>
       </div>
-      <div class="view" id="viewSeq" hidden>
+
+      <div class="win" id="win-rack" data-w="rack" data-title="Channel rack">
         <section class="card seqcard">
           <div class="seqbar">
             <button class="tbtn play" id="patPlay" title="Play this pattern on its own, looped (space)" aria-label="Play the pattern">
@@ -509,8 +512,12 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
             <button class="ttog" id="addChannel" title="Add an instrument: drum kit, synth or VST">+ Channel</button>
           </div>
           <div class="chanrows" id="chanRows"></div>
-          <div class="seqsplit" id="seqSplit" title="Drag: more room for the channel rack or the piano roll. Double-click: back to auto"></div>
-          <div class="prhead"><h2 id="prTitle">Piano roll</h2>
+        </section>
+      </div>
+
+      <div class="win" id="win-roll" data-w="roll" data-title="Piano roll" data-title-id="prTitle">
+        <section class="card rollcard">
+          <div class="prhead">
             <div class="qbar" id="qBar" hidden><b>Quantize</b>
               <select id="qGrid" aria-label="Quantize to"></select>
               <select id="qStr" aria-label="Strength" title="How far the notes move toward the grid"></select>
@@ -528,32 +535,34 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
           </div>
         </section>
       </div>
-      <div class="view" id="viewMixer">
-      <section class="card">
-        <div class="sect-head">
-          <h2>Mixer</h2>
-          <div class="spacer"></div>
-          <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Auto finds the smallest one without crackles; − / + set it yourself.">
-            Safety buffer
-            <button class="auto" id="bufAuto" aria-pressed="true">Auto</button>
-            <button id="bufMinus" aria-label="Smaller safety buffer">−</button>
-            <div class="v" id="bufVal">3<small>8.0 ms</small></div>
-            <button id="bufPlus" aria-label="Bigger safety buffer">+</button>
-          </div>
-        </div>
-        <div class="strips" id="strips"></div>
-      </section>
 
-      <section class="card rack-card">
-        <div class="sect-head rack-head">
-          <h2 id="rackTitle">FX rack</h2>
-          <div class="chips" id="presets"></div>
-          <div class="spacer"></div>
-          <select class="addfx" id="addFx" aria-label="Add an effect"></select>
-        </div>
-        <div class="rack" id="rack"></div>
-      </section>
+      <div class="win" id="win-mixer" data-w="mixer" data-title="Mixer">
+        <section class="card mixcard">
+          <div class="sect-head">
+            <div class="spacer"></div>
+            <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Auto finds the smallest one without crackles; − / + set it yourself.">
+              Safety buffer
+              <button class="auto" id="bufAuto" aria-pressed="true">Auto</button>
+              <button id="bufMinus" aria-label="Smaller safety buffer">−</button>
+              <div class="v" id="bufVal">3<small>8.0 ms</small></div>
+              <button id="bufPlus" aria-label="Bigger safety buffer">+</button>
+            </div>
+          </div>
+          <div class="strips" id="strips"></div>
+        </section>
       </div>
+
+      <div class="win" id="win-fx" data-w="fx" data-title="FX rack" data-title-id="rackTitle">
+        <section class="card rack-card">
+          <div class="sect-head rack-head">
+            <div class="chips" id="presets"></div>
+            <div class="spacer"></div>
+            <select class="addfx" id="addFx" aria-label="Add an effect"></select>
+          </div>
+          <div class="rack" id="rack"></div>
+        </section>
+      </div>
+      <div class="snapghost" id="snapGhost" hidden></div>
     </div>
   </main>
 
@@ -644,6 +653,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 </div>
 <div class="toast" id="toast"></div>
 
+<script src="wm.js"></script>
 <script src="daw.js"></script>
 <script src="instr.js"></script>
 <script src="seq.js"></script>
@@ -1724,6 +1734,7 @@ async function poll() {
 async function boot(a) {
   if (api) return;
   api = a;
+  wmSetup();
   init = await api.init();
   fillDevices();
   $("inDev").onchange = () => {

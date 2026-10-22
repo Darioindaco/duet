@@ -108,10 +108,6 @@ function songSetup() {
   song.snap = store.get("songSnap", 1);
   song.cv = $("lanesCv"); song.ov = $("lanesOv"); song.ruler = $("ruler");
 
-  // views
-  for (const b of $("viewSeg").querySelectorAll("button")) b.onclick = () => setMainView(b.dataset.v);
-  setMainView(store.get("view", "song"));
-
   // transport
   $("tpPlay").onclick = togglePlay;
   $("tpRec").onclick = toggleRec;
@@ -188,16 +184,10 @@ function songSetup() {
   tick();
 }
 
+// the views are windows now (wm.js): open the one for v and bring it to the front
 function setMainView(v) {
-  ui.view = ["mixer", "seq"].includes(v) ? v : "song";
-  store.set("view", ui.view);
-  $("viewSong").hidden = ui.view !== "song";
-  $("viewSeq").hidden = ui.view !== "seq";
-  $("viewMixer").hidden = ui.view !== "mixer";
-  for (const b of $("viewSeg").querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === ui.view);
-  if (ui.view === "song") requestAnimationFrame(songDraw);
-  if (ui.view === "seq") requestAnimationFrame(seqRender);
-  if (typeof syncMidiTarget === "function") syncMidiTarget();
+  if (v === "seq") { wmOpen("rack", false); wmOpen("roll"); }
+  else wmOpen(v === "mixer" ? "mixer" : "song");
 }
 
 function songKeys(e) {
@@ -523,6 +513,7 @@ function openTrackFx(t) {
   if (t.slot == null) { toast("This song has more tracks than the mixer can hold (32)."); return; }
   setMainView("mixer");
   selectStrip("T" + t.slot);
+  wmOpen("fx");
 }
 
 // ---------- drawing ----------
@@ -555,7 +546,7 @@ function gridStep() {
 }
 
 function songDraw() {
-  if (!song.view || ui.view !== "song") return;
+  if (!song.view || !winShown("song")) return;
   const lanes = $("lanes");
   const w = lanes.clientWidth, h = lanes.clientHeight;
   if (!w || !h) return;
@@ -808,7 +799,7 @@ function songFrame() {
   // the LCD is in the top bar: it runs in every view
   $("tpPos").textContent = fmtPos(pos);
   $("tpTime").textContent = fmtTime(pos);
-  if (ui.view !== "song") return;
+  if (!winShown("song")) return;
   if (st && st.playing) {
     const lanes = $("lanes"), x = pos * song.ppb - lanes.scrollLeft;
     if (song.follow && (x > lanes.clientWidth - 30 || x < 0)) {

@@ -4,12 +4,50 @@
 input[type=number] { background: var(--bg); border: 1px solid var(--line-2); color: var(--text); outline: none; }
 input[type=number]:focus { border-color: var(--me); }
 
-/* ---------- views ---------- */
-.right { display: flex; flex-direction: column; }
-.view { flex: 1; min-height: 0; display: grid; grid-template-rows: auto 1fr; gap: 14px; }
-.view[hidden] { display: none; }
-#viewSong { grid-template-rows: 1fr; }
-.views button { padding: 6px 14px; font-weight: 650; }
+/* ---------- the workspace: windows (wm.js) ---------- */
+.desk { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.win { position: absolute; display: flex; flex-direction: column; min-width: 0; background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,0.38); overflow: hidden; }
+.win[hidden] { display: none; }
+.win.focus { border-color: color-mix(in srgb, var(--muted) 55%, var(--line-2)); }
+.win.max { border-radius: 10px; }
+.win.moving { opacity: 0.94; box-shadow: 0 16px 40px rgba(0,0,0,0.55); }
+.win.moving .wbody { pointer-events: none; }
+.wbar { flex: none; height: 26px; display: flex; align-items: center; gap: 6px; padding: 0 4px 0 10px; background: var(--panel-2); border-bottom: 1px solid var(--line); cursor: grab; font-size: 11.5px; font-weight: 700; letter-spacing: 0.02em; color: var(--muted); min-width: 0; }
+.win.focus .wbar { color: var(--text); background: color-mix(in srgb, var(--line) 70%, var(--panel-2)); }
+.wbar:active { cursor: grabbing; }
+.wt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.wt .who { color: var(--text); font-weight: 600; }
+.wt .latn { font-weight: 500; color: var(--faint); margin-left: 6px; }
+.wb { flex: none; width: 22px; height: 20px; border: 0; padding: 0; background: none; color: var(--faint); border-radius: 5px; cursor: pointer; display: grid; place-items: center; }
+.wb:hover { background: var(--line-2); color: var(--text); }
+.wb.x:hover { background: var(--bad); color: #fff; }
+.wbody { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.wbody > .card { flex: 1; min-height: 0; border: 0; border-radius: 0; background: none; padding: 8px; }
+/* the edges and corners you size it by */
+.wr { position: absolute; z-index: 3; }
+.wr.n, .wr.s { left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
+.wr.n { top: -2px; } .wr.s { bottom: -2px; }
+.wr.e, .wr.w { top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
+.wr.e { right: -2px; } .wr.w { left: -2px; }
+.wr.ne, .wr.nw, .wr.se, .wr.sw { width: 12px; height: 12px; }
+.wr.ne { top: -2px; right: -2px; cursor: nesw-resize; } .wr.sw { bottom: -2px; left: -2px; cursor: nesw-resize; }
+.wr.nw { top: -2px; left: -2px; cursor: nwse-resize; } .wr.se { bottom: -2px; right: -2px; cursor: nwse-resize; }
+.win.max .wr { display: none; }
+/* where a window lands when you let go against the desk's edge */
+.snapghost { position: absolute; z-index: 100000; border: 2px solid var(--partner); background: color-mix(in srgb, var(--partner) 10%, transparent); border-radius: 10px; pointer-events: none; transition: left 0.08s, top 0.08s, width 0.08s, height 0.08s; }
+.snapghost[hidden] { display: none; }
+/* window inner layouts */
+.card.rollcard { display: flex; flex-direction: column; gap: 8px; }
+.card.mixcard { display: flex; flex-direction: column; }
+.mixcard .strips { flex: 1; min-height: 0; }
+.mixcard .sect-head { margin-bottom: 8px; }
+/* header: window toggles (on = open, front = in front) */
+.views button { padding: 6px 10px; font-weight: 650; display: inline-flex; align-items: center; gap: 6px; }
+.views button svg { flex: none; }
+@media (max-width: 2160px) { .views button span { display: none; } .views button { padding: 6px 9px; } }
+.seg.views button.on { background: var(--line); color: var(--text); }
+.seg.views button.front { background: var(--line-2); box-shadow: inset 0 -2px 0 var(--me); }
+.seg.views .wsbtn { display: grid; place-items: center; padding: 5px 7px; margin-left: 2px; }
 
 /* ---------- song button + menu (header) ---------- */
 .songbtn { display: inline-flex; align-items: center; gap: 8px; max-width: 280px; padding: 7px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; font-weight: 650; }
