@@ -50,6 +50,7 @@ pub enum Cmd {
     RackParam(Target, usize, usize, f32),
     Master(f32),
     JitterTarget(i64),
+    JitterAuto(bool),
     /// Shared metronome. `epoch` is the leader's block number where beat 0 falls.
     Metro { on: bool, bpm: f32, beats: u32, leader: bool, epoch: i64 },
     MetroVolume(f32),
@@ -102,6 +103,7 @@ pub struct Shared {
     pub dropped: AtomicU64,
     pub depth: AtomicU64,
     pub jitter_target: AtomicU64,
+    pub jitter_auto: std::sync::atomic::AtomicBool,
     pub xruns: AtomicU64,
     pub packets_in: AtomicU64,
     pub lat_in_us: AtomicU64,
@@ -345,9 +347,17 @@ impl Dsp {
                 }
             }
         }
+        if self.jitter.is_auto() {
+            // keep the same safety time in ms with the new block length; auto takes it from there
+            let old = self.frame as f64 / self.samplerate as f64;
+            let new = frame as f64 / samplerate as f64;
+            self.jitter.target = ((self.jitter.target as f64 * old / new).ceil() as i64).clamp(1, 32);
+            self.jitter.set_auto(true, 1.0 / new);
+        }
         self.samplerate = samplerate;
         self.frame = frame;
         self.jitter.reset();
+        self.shared.jitter_target.store(self.jitter.target as u64, Relaxed);
         self.shared.samplerate.store(samplerate as u64, Relaxed);
         self.shared.frame.store(frame as u64, Relaxed);
     }
@@ -418,8 +428,18 @@ impl Dsp {
                 }
                 Cmd::Master(v) => self.master = v,
                 Cmd::JitterTarget(t) => {
-                    self.jitter.target = t;
+                    self.jitter.set_target(t);
                     self.shared.jitter_target.store(t as u64, Relaxed);
+                    self.shared.jitter_auto.store(false, Relaxed);
+                }
+                Cmd::JitterAuto(on) => {
+                    if on {
+                        self.jitter.set_auto(true, self.samplerate as f64 / self.frame as f64);
+                    } else {
+                        let t = self.jitter.target;
+                        self.jitter.set_target(t); // stay where auto got to
+                    }
+                    self.shared.jitter_auto.store(on, Relaxed);
                 }
                 Cmd::Metro { on, bpm, beats, leader, epoch } => {
                     let m = &mut self.metro;
@@ -632,6 +652,7 @@ impl Dsp {
         sh.late.store(st.late, Relaxed);
         sh.dropped.store(st.dropped, Relaxed);
         sh.depth.store(self.jitter.depth() as u64, Relaxed);
+        sh.jitter_target.store(self.jitter.target as u64, Relaxed); // moves by itself in auto mode
         sh.blocks.fetch_add(1, Relaxed);
         let ns = t0.elapsed().as_nanos() as u64;
         let prev = sh.cpu_ns.load(Relaxed);

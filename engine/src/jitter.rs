@@ -14,6 +14,27 @@ const TRIM_WINDOW: u32 = 200; // blocks to watch before trimming drift
 const HARD_TRIM: i64 = 32; // frames over target that get trimmed right away
 const RESTART_GAP: i64 = 5000;
 const STARVE_RESET: u32 = 400;
+const AUTO_MAX: i64 = SLOTS as i64 / 2;
+const QUIET: f32 = 0.01; // -40 dB: a block this quiet can be skipped without a click
+
+/// Automatic target: raise on a dropout, lower after a calm stretch in which a
+/// block always stood spare. Times are in blocks (set from the block rate).
+struct Auto {
+    on: bool,
+    hold: u32,       // blocks between two raises, so one late burst counts once
+    calm_base: u32,  // calm stretch needed before a step down
+    calm_max: u32,
+    calm_needed: u32,
+    calm: u32,       // blocks since the last dropout or step
+    since_raise: u32,
+    min_depth: i64,  // lowest depth seen at playout during `calm`
+    lowered: bool,   // the last step was down: a dropout right after means back off
+    drop_wait: u32,  // how long a pending step down has waited for a quiet block
+    drop_force: u32,
+    pending_drop: bool,
+    late: bool,      // a block arrived after its turn: more buffer would have saved it
+    stall: bool,     // hold playout back one block, to make the raised target real
+}
 
 struct Slot {
     seq: i64,
@@ -40,6 +61,7 @@ pub struct JitterBuffer {
     starved: u32,
     win_min: i64,
     win_count: u32,
+    auto: Auto,
     pub stats: Stats,
 }
 
@@ -57,6 +79,11 @@ impl JitterBuffer {
             starved: 0,
             win_min: i64::MAX,
             win_count: 0,
+            auto: Auto {
+                on: false, hold: 20, calm_base: 3750, calm_max: 45000, calm_needed: 3750, calm: 0,
+                since_raise: u32::MAX, min_depth: i64::MAX, lowered: false, drop_wait: 0, drop_force: 750,
+                pending_drop: false, late: false, stall: false,
+            },
             stats: Stats::default(),
         };
         jb.reset();
@@ -73,6 +100,104 @@ impl JitterBuffer {
         self.starved = 0;
         self.win_min = i64::MAX;
         self.win_count = 0;
+        self.auto.calm = 0;
+        self.auto.min_depth = i64::MAX;
+        self.auto.pending_drop = false;
+    }
+
+    /// Manual target: switches automatic mode off.
+    pub fn set_target(&mut self, target: i64) {
+        self.target = target;
+        self.auto.on = false;
+        self.auto.pending_drop = false;
+    }
+
+    /// Automatic mode, timed for `blocks_per_sec` blocks a second: a raise at
+    /// most every ~50 ms, a step down after 10 s without trouble (backing off to
+    /// up to 2 minutes when steps down keep ending in a dropout).
+    pub fn set_auto(&mut self, on: bool, blocks_per_sec: f64) {
+        let a = &mut self.auto;
+        let secs = |s: f64| (s * blocks_per_sec).round().max(1.0) as u32;
+        a.on = on;
+        a.hold = secs(0.05);
+        a.calm_base = secs(10.0);
+        a.calm_max = secs(120.0);
+        a.calm_needed = a.calm_base;
+        a.drop_force = secs(2.0);
+        a.calm = 0;
+        a.min_depth = i64::MAX;
+        a.lowered = false;
+        a.pending_drop = false;
+        a.late = false;
+        a.stall = false;
+    }
+
+    pub fn is_auto(&self) -> bool {
+        self.auto.on
+    }
+
+    /// Bookkeeping for one playout in automatic mode; `depth` is what was
+    /// buffered (including the block about to play), `dropout` whether it ran dry.
+    fn auto_step(&mut self, depth: i64, dropout: bool) {
+        let a = &mut self.auto;
+        if !a.on {
+            return;
+        }
+        a.since_raise = a.since_raise.saturating_add(1);
+        if dropout || std::mem::take(&mut a.late) {
+            if a.since_raise >= a.hold && self.target < AUTO_MAX {
+                self.target += 1;
+                a.since_raise = 0;
+                a.stall = !dropout; // a dropout already held playout back by a block
+                if a.lowered {
+                    a.calm_needed = (a.calm_needed * 2).min(a.calm_max);
+                }
+                a.lowered = false;
+            }
+            a.pending_drop = false;
+            a.calm = 0;
+            a.min_depth = i64::MAX;
+            return;
+        }
+        a.min_depth = a.min_depth.min(depth);
+        a.calm += 1;
+        if a.calm >= a.calm_needed {
+            // a spare block the whole time: one less will do
+            if a.min_depth >= 2 && self.target > 1 && !a.pending_drop {
+                self.target -= 1;
+                a.pending_drop = true;
+                a.drop_wait = 0;
+                a.lowered = true;
+            } else if a.min_depth < 2 {
+                a.lowered = false; // settled here: next time start from the short wait again
+                a.calm_needed = a.calm_base;
+            }
+            a.calm = 0;
+            a.min_depth = i64::MAX;
+        }
+    }
+
+    /// The step down after a lower target: skip one block, preferably a quiet one.
+    fn take_pending_drop(&mut self, next: i64) -> bool {
+        if !self.auto.pending_drop {
+            return false;
+        }
+        let slot = &self.slots[Self::index(next)];
+        let behind = &self.slots[Self::index(next + 1)];
+        if slot.seq != next || behind.seq != next + 1 {
+            return false; // don't make a gap where nothing follows
+        }
+        self.auto.drop_wait += 1;
+        let quiet = (0..slot.channels)
+            .filter(|ch| slot.mask & (1 << ch) != 0)
+            .all(|ch| slot.data[ch * MAX_FRAME..ch * MAX_FRAME + slot.len].iter().all(|v| v.abs() < QUIET));
+        if !quiet && self.auto.drop_wait < self.auto.drop_force {
+            return false;
+        }
+        self.slots[Self::index(next)].seq = -1;
+        self.auto.pending_drop = false;
+        self.stats.dropped += 1;
+        true
     }
 
     pub fn depth(&self) -> i64 {
@@ -104,6 +229,7 @@ impl JitterBuffer {
         if let Some(n) = self.next {
             if seq < n {
                 self.stats.late += 1;
+                self.auto.late |= n - seq <= AUTO_MAX;
                 return;
             }
         }
@@ -141,6 +267,13 @@ impl JitterBuffer {
             self.starved = 0;
         }
         let mut next = self.next.unwrap();
+        self.auto_step((self.highest - next + 1).max(0), self.slots[Self::index(next)].seq != next && self.highest <= next);
+        if std::mem::take(&mut self.auto.stall) {
+            return None;
+        }
+        if self.take_pending_drop(next) {
+            next += 1;
+        }
 
         // Drivers deliver in bursts, so only trim when even the lowest depth over
         // ~half a second sits above target, or right away after a pile-up.
@@ -287,5 +420,76 @@ mod tests {
         jb.push(2, 4, 0, 2, n, &a); // keeps the buffer moving
         assert_eq!(jb.pop(&mut out, n), Some((4, 1)));
         assert_eq!((out[0], out[MAX_FRAME], out[2 * MAX_FRAME], out[3 * MAX_FRAME]), (1.0, 2.0, 0.0, 0.0));
+    }
+
+    /// Plays ticks `from..to`; block s arrives at tick s + delay(s). Returns what
+    /// played (None for a dropout) per tick.
+    fn run(jb: &mut JitterBuffer, from: u32, to: u32, delay: impl Fn(u32) -> u32, level: impl Fn(u32) -> f32) -> Vec<Option<f32>> {
+        let mut inbox: Vec<(u32, u32)> = Vec::new(); // (arrival tick, seq)
+        let mut played = Vec::new();
+        for t in from..to {
+            inbox.push((t + delay(t), t));
+            inbox.retain(|&(at, s)| {
+                if at <= t {
+                    jb.push(s, 1, 0, 1, 128, &[level(s); 128]);
+                }
+                at > t
+            });
+            played.push(pop(jb));
+        }
+        played
+    }
+
+    #[test]
+    fn auto_steps_down_on_a_clean_line() {
+        let mut jb = JitterBuffer::new(3);
+        jb.set_auto(true, 375.0); // 128 @ 48k
+        let played = run(&mut jb, 0, 375 * 25, |_| 0, |_| 0.0);
+        assert_eq!(jb.target, 1);
+        assert_eq!(jb.stats.underruns, 0);
+        assert_eq!(jb.stats.dropped, 2); // one block per step
+        assert!(played.iter().skip(10).all(|p| p.is_some()));
+    }
+
+    #[test]
+    fn auto_grows_to_cover_jitter_and_stays_there() {
+        let mut jb = JitterBuffer::new(1);
+        jb.set_auto(true, 375.0);
+        // a wobbly line: most blocks on time, some up to 5 blocks (13 ms) late
+        let delay = |s: u32| {
+            let r = s.wrapping_mul(2654435761) >> 24;
+            if r < 200 { 0 } else if r < 245 { 2 } else { 5 }
+        };
+        run(&mut jb, 0, 375 * 10, delay, |_| 0.0);
+        assert!((4..=8).contains(&jb.target), "target {}", jb.target);
+        let before = jb.stats.underruns + jb.stats.late;
+        run(&mut jb, 375 * 10, 375 * 130, delay, |_| 0.0);
+        // tries a step down now and then, backing off: only a handful of dropouts in two minutes
+        let after = jb.stats.underruns + jb.stats.late;
+        assert!(after - before <= 8, "{} dropouts / late blocks", after - before);
+    }
+
+    #[test]
+    fn auto_step_down_waits_for_a_quiet_block() {
+        let mut jb = JitterBuffer::new(2);
+        jb.set_auto(true, 375.0);
+        // loud except every 1000th block
+        let level = |s: u32| if s % 1000 == 999 { 0.0 } else { 0.5 };
+        let ticks = 375 * 10 + 1000;
+        let played = run(&mut jb, 0, ticks, |_| 0, level);
+        assert_eq!((jb.target, jb.stats.dropped), (1, 1));
+        let quiet_sent = (0..ticks).filter(|&s| level(s) == 0.0).count();
+        let quiet_played = played.iter().filter(|p| **p == Some(0.0)).count();
+        assert_eq!(quiet_played, quiet_sent - 1, "the quiet block is the one skipped");
+    }
+
+    #[test]
+    fn manual_target_turns_auto_off() {
+        let mut jb = JitterBuffer::new(3);
+        jb.set_auto(true, 375.0);
+        jb.set_target(5);
+        assert!(!jb.is_auto());
+        run(&mut jb, 0, 375 * 25, |_| 0, |_| 0.0);
+        assert_eq!(jb.target, 5);
     }
 }

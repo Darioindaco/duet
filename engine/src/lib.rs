@@ -675,6 +675,12 @@ impl Engine {
         self.cmd(Cmd::JitterTarget(blocks.round().clamp(1.0, 64.0) as i64));
     }
 
+    /// Let the engine pick the safety buffer: up on a dropout, down after a calm
+    /// stretch. A manual set_buffer switches it off again.
+    fn set_buffer_auto(&self, on: bool) {
+        self.cmd(Cmd::JitterAuto(on));
+    }
+
     /// The whole mixer as plain data, for the UI. With states=True, plugin
     /// states are read fresh first (for saving; asks every plugin, so not for
     /// every repaint).
@@ -834,6 +840,7 @@ impl Engine {
         d.set_item("samplerate", s.samplerate.load(Relaxed))?;
         d.set_item("frame", s.frame.load(Relaxed))?;
         d.set_item("jitter_target", s.jitter_target.load(Relaxed))?;
+        d.set_item("jitter_auto", s.jitter_auto.load(Relaxed))?;
         d.set_item("local_levels", s.local_levels.iter().map(|l| l.get()).collect::<Vec<_>>())?;
         d.set_item("remote_levels", s.remote_levels.iter().map(|l| l.get()).collect::<Vec<_>>())?;
         d.set_item("master_level", s.master_level.get())?;

@@ -71,6 +71,34 @@ def test_two_engines(blocks: int = 1100):
     print("two engines: ok")
 
 
+def test_auto_buffer(blocks: int = 375 * 23):
+    """Auto safety buffer on a clean link: steps down from 3 to 1 (one block every
+    10 s of calm), without a dropout and without the partner's audio going missing."""
+    a, b, _ = connect_pair()
+    b.set_buffer(3)
+    b.set_buffer_auto(True)
+    silence = [0.0] * N
+    base = b.state()["packets_in"]
+    targets = []
+    for k in range(blocks):
+        a.process(silence)
+        wait_packets(b, base + k + 1)
+        b.process(silence)
+        if k % 375 == 0:
+            targets.append(b.state()["jitter_target"])
+    s = b.state()
+    print(f"auto buffer: target every 5 s {targets[::5]}, underruns {s['underruns']} trimmed {s['trimmed']}")
+    assert s["jitter_auto"] and s["jitter_target"] == 1, "auto should settle at 1 block on a clean link"
+    assert s["underruns"] == 0 and s["trimmed"] == 2
+    b.set_buffer(2)  # a manual value switches auto off
+    a.process(silence)
+    b.process(silence)
+    assert not b.state()["jitter_auto"] and b.state()["jitter_target"] == 2
+    a.close()
+    b.close()
+    print("auto buffer: ok")
+
+
 def test_signals():
     a, b, _ = connect_pair()
     for e in (a, b):
@@ -538,6 +566,7 @@ def test_stun():
 if __name__ == "__main__":
     test_effects_cpu()
     test_two_engines()
+    test_auto_buffer()
     test_signals()
     test_mixer()
     test_partner_fx()

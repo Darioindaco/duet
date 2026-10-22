@@ -261,7 +261,7 @@ fn scan_moduleinfo(path: &Path) -> Option<Vec<ClassInfo>> {
 
 /// Where VST3 plugins live by convention.
 pub fn default_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
     #[cfg(windows)]
     {
         if let Some(p) = std::env::var_os("CommonProgramFiles") {

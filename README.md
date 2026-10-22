@@ -43,8 +43,11 @@ has two tabs:
    - **M / S**: mute / solo; the fader and pan knob set your own mix
    
    Your partner's channels appear after the divider, one strip each, and you
-   mix them however you like. **Safety buffer** (top right): press + if you
-   hear crackles; each step adds about 2.7 ms.
+   mix them however you like. **Safety buffer** (top right): on **Auto** it
+   finds the smallest buffer that doesn't crackle by itself: up a step on a
+   dropout, down a step after 10 s without trouble (on a quiet moment, so you
+   don't hear it). − / + set it by hand instead; each step is one block (about
+   2.7 ms at 128 / 48k).
 4. **FX rack:** click a strip to see its effects below. *+ Add effect* adds a
    pedal, the arrows reorder, ✕ removes, the round footswitch turns it on/off.
    Drag knobs up/down (Shift = fine, double-click = reset, scroll wheel works).

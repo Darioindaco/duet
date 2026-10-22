@@ -138,6 +138,8 @@ input[type=text] { font-family: var(--mono); letter-spacing: 0.04em; user-select
 .stepper button { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel-2); cursor: pointer; font-size: 15px; line-height: 1; }
 .stepper .v { min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 650; color: var(--text); }
 .stepper .v small { display: block; font-size: 10px; color: var(--muted); font-weight: 500; }
+.stepper button.auto { width: auto; padding: 0 8px; font-size: 11px; font-weight: 700; color: var(--muted); }
+.stepper button.auto.on { background: var(--line-2); color: var(--text); border-color: var(--ok); }
 
 .strips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px; align-items: stretch; }
 .strip { --c: var(--me); width: 94px; flex: none; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 7px 6px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; position: relative; transition: border-color 0.15s, box-shadow 0.15s; }
@@ -446,8 +448,9 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
             <span class="msync" id="metroSync"></span>
           </div>
           <div class="spacer"></div>
-          <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Raise it if you hear crackles.">
+          <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Auto finds the smallest one without crackles; − / + set it yourself.">
             Safety buffer
+            <button class="auto" id="bufAuto" aria-pressed="true">Auto</button>
             <button id="bufMinus" aria-label="Smaller safety buffer">−</button>
             <div class="v" id="bufVal">3<small>8.0 ms</small></div>
             <button id="bufPlus" aria-label="Bigger safety buffer">+</button>
@@ -617,7 +620,7 @@ document.body.insertAdjacentHTML("beforeend", `<svg width="0" height="0" style="
 let api = null;
 let init = null;
 const ui = {
-  block: store.get("block", 128), rate: store.get("rate", 48000), buffer: store.get("buffer", 3),
+  block: store.get("block", 128), rate: store.get("rate", 48000), buffer: store.get("buffer", 3), bufAuto: store.get("bufAuto", true),
   audio: false, audioWanted: true, connected: false, sbOpen: true, tab: "connect",
   mixer: null, sel: "L0", names: store.get("names", {}), partnerNames: [], partnerFx: [], remoteCount: 0,
   meters: {}, inChannels: 0,
@@ -1121,7 +1124,7 @@ function namSection(t, pos, slot) {
     e.preventDefault();
     ui.rate = Math.round(slot.model_sr); store.set("rate", ui.rate);
     for (const b of $("rateSeg").querySelectorAll("button")) b.classList.toggle("on", +b.dataset.v === ui.rate);
-    ui.paintBuf && ui.paintBuf(); restartAudio(); setTimeout(renderRack, 400);
+    ui.paintBuf && ui.paintBuf(!ui.bufAuto); restartAudio(); setTimeout(renderRack, 400);
   };
   return box;
 }
@@ -1350,15 +1353,28 @@ function buildRackControls() {
 }
 
 function buildSafety() {
-  const paintBuf = () => {
+  const showBuf = () => {
     const ms = ui.buffer * ui.block / ui.rate * 1000;
     $("bufVal").innerHTML = `${ui.buffer}<small>${ms.toFixed(1)} ms</small>`;
-    api.set_buffer(ui.buffer); store.set("buffer", ui.buffer);
+    $("bufAuto").classList.toggle("on", ui.bufAuto);
+    $("bufAuto").setAttribute("aria-pressed", ui.bufAuto);
   };
-  $("bufMinus").onclick = () => { ui.buffer = Math.max(1, ui.buffer - 1); paintBuf(); };
-  $("bufPlus").onclick = () => { ui.buffer = Math.min(16, ui.buffer + 1); paintBuf(); };
+  // send=false after a rate/block change in auto mode: the engine rescales its own value
+  const paintBuf = (send = true) => {
+    showBuf();
+    store.set("buffer", ui.buffer); store.set("bufAuto", ui.bufAuto);
+    if (!send) return;
+    // the manual value first: auto starts from there (and set_buffer alone switches auto off)
+    api.set_buffer(ui.buffer);
+    if (ui.bufAuto) api.set_buffer_auto(true);
+  };
+  const manual = (d) => { ui.bufAuto = false; ui.buffer = Math.max(1, Math.min(16, ui.buffer + d)); paintBuf(); };
+  $("bufMinus").onclick = () => manual(-1);
+  $("bufPlus").onclick = () => manual(+1);
+  $("bufAuto").onclick = () => { ui.bufAuto = !ui.bufAuto; paintBuf(); };
   paintBuf();
   ui.paintBuf = paintBuf;
+  ui.showBuf = showBuf;
 }
 
 // ---------- live state ----------
@@ -1419,6 +1435,9 @@ function paint(s) {
 
   // latency
   const L = s.latency;
+  if (L.bufferAuto && L.bufferBlocks != null && L.bufferBlocks !== ui.buffer) {
+    ui.buffer = L.bufferBlocks; ui.showBuf(); // auto moved it
+  }
   const parts = [
     ["Network", L.network, "#4fd6c6"], ["Safety buffer", L.buffer, "#c48dff"],
     ["Sound cards", L.card, "#ff9548"], ["Block", L.block, "#5f586b"],
@@ -1439,7 +1458,7 @@ function paint(s) {
     `<span${hot(st.lost + st.late)}>Lost <b>${st.lost + st.late}</b></span>` +
     `<span${hot(st.xruns)}>Glitches <b>${st.xruns}</b></span>` +
     `<span${s.dspLoad > 0.7 ? ' class="hot"' : ""} title="How much of each audio block the effects and NAM models use">DSP <b>${Math.round((s.dspLoad || 0) * 100)}%</b></span>`;
-  if (st.underruns > 50 && !paint.tipped) { paint.tipped = true; toast("Hearing crackles? Press + on the safety buffer a step or two."); }
+  if (st.underruns > 50 && !ui.bufAuto && !paint.tipped) { paint.tipped = true; toast("Hearing crackles? Press + on the safety buffer a step or two."); }
 }
 
 async function poll() {
@@ -1464,8 +1483,8 @@ async function boot(a) {
     }
     deviceChanged(); restartAudio();
   };
-  seg($("rateSeg"), ui.rate, (v) => { ui.rate = v; store.set("rate", v); ui.paintBuf && ui.paintBuf(); restartAudio(); });
-  seg($("blockSeg"), ui.block, (v) => { ui.block = v; store.set("block", v); ui.paintBuf && ui.paintBuf(); restartAudio(); });
+  seg($("rateSeg"), ui.rate, (v) => { ui.rate = v; store.set("rate", v); ui.paintBuf && ui.paintBuf(!ui.bufAuto); restartAudio(); });
+  seg($("blockSeg"), ui.block, (v) => { ui.block = v; store.set("block", v); ui.paintBuf && ui.paintBuf(!ui.bufAuto); restartAudio(); });
   $("outDev").onchange = restartAudio;
   $("audioBtn").onclick = () => (ui.audioWanted ? stopAudio() : startAudio());
   $("connectBtn").onclick = () => connect();
@@ -1729,6 +1748,7 @@ function demoApi() {
     strip_set: async (tg, k, v) => { target(tg)[k] = typeof target(tg)[k] === "boolean" ? !!v : v; },
     set_master: async (v) => { mixer.master = v; },
     set_buffer: async () => {},
+    set_buffer_auto: async () => {},
     metro_lead: async () => 1000, metro_follow: async () => {}, metro_volume: async () => {},
     rack_add: async (tg, kind) => { target(tg).rack.push(slot(kind)); return copy(); },
     rack_remove: async (tg, pos) => { target(tg).rack.splice(pos, 1); return copy(); },

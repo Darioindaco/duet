@@ -118,6 +118,9 @@ class Api:
     def set_buffer(self, blocks):
         self._engine.set_buffer(float(blocks))
 
+    def set_buffer_auto(self, on):
+        self._engine.set_buffer_auto(bool(on))
+
     def rack_add(self, target, kind):
         self._engine.rack_add(target, kind)
         return self._engine.mixer()
@@ -169,6 +172,7 @@ class Api:
             "rtt": s["rtt"],
             "latency": {"network": s["rtt"] / 2 if s["rtt"] is not None else None,
                         "buffer": s["jitter_target"] * frame / sr * 1000,
+                        "bufferBlocks": s["jitter_target"], "bufferAuto": s["jitter_auto"],
                         "card": (s["lat_in_ms"] + s["lat_out_ms"]) if self._audio else 0.0,
                         "block": frame / sr * 1000},
             "levels": {"local": s["local_levels"], "remote": s["remote_levels"], "master": s["master_level"]},
