@@ -171,6 +171,12 @@ class Api:
                     if k in strip:
                         e.strip_set(t, k, float(strip[k]))
                 e.rack_load(t, list(strip.get("rack", [])))  # tracks (T*) come from the song, not from here
+                inst = strip.get("inst")
+                if side == "local" and inst and inst.get("kind"):
+                    try:
+                        e.inst_set(t, inst["kind"], None, inst)
+                    except Exception:  # a plugin that's gone: back to the input
+                        pass
         if "master" in cfg:
             e.set_master(float(cfg["master"]))
         return True
@@ -201,6 +207,7 @@ class Api:
             "warning": s["warning"],
             "streamError": s["stream_error"],
             "signals": self._daw.take_ui_signals(),
+            "midiEvents": s["midi_events"],
             "daw": self._daw.status(s),
         }
 
@@ -363,8 +370,8 @@ class Api:
     def vst_status(self):
         return self._vst.status
 
-    def vst_plugins(self):
-        return {"plugins": self._vst.plugins(), "failed": self._vst.failed(), "status": self._vst.status}
+    def vst_plugins(self, instruments=False):
+        return {"plugins": self._vst.plugins(bool(instruments)), "failed": self._vst.failed(), "status": self._vst.status}
 
     def vst_add(self, target, path, cid, name):
         """Load a plugin into a rack. Returns the mixer, or {"error": ...}."""
@@ -375,9 +382,56 @@ class Api:
         self._rack_changed(target)
         return self._engine.mixer()
 
+    # --- instruments: a strip plays one instead of its input -------------------
+
+    def inst_set(self, target, kind=None, vst=None):
+        """kind "drums" / "synth" / "vst" (vst = {"path", "cid", "name"}), or None
+        for the input again. Returns the mixer, or {"error": ...}."""
+        try:
+            ref = (vst["path"], vst["cid"], vst["name"]) if vst else None
+            self._engine.inst_set(target, kind or None, ref)
+        except Exception as exc:
+            return {"error": str(exc)}
+        return self._engine.mixer()
+
+    def inst_param(self, target, key, value):
+        self._engine.inst_param(target, key, float(value))
+
+    def inst_pad(self, target, pad, path=None):
+        """Your own sample on a drum pad (None: the built-in sound again)."""
+        try:
+            self._engine.inst_pad(target, int(pad), path)
+        except Exception as exc:
+            return {"error": str(exc)}
+        return self._engine.mixer()
+
+    def inst_pad_open(self):
+        """Native file picker for a sample; returns the path or None."""
+        if not self._window:
+            return None
+        picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
+                                                 file_types=("Audio (*.wav)", "All files (*.*)"))
+        return picked[0] if picked else None
+
+    def note(self, target, on, key, vel=100):
+        self._engine.note(target, bool(on), int(key), int(vel))
+
+    def midi_inputs(self):
+        return self._engine.midi_inputs()
+
+    def midi_open(self, name=None):
+        try:
+            self._engine.midi_open(name or None)
+            return {"ok": True}
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def midi_target(self, target=None):
+        self._engine.midi_target(target or None)
+
     def vst_open(self, target, pos):
         try:
-            self._engine.vst_open_editor(target, int(pos))
+            self._engine.vst_open_editor(target, int(pos))  # pos -1: the strip's instrument
             return {"ok": True}
         except Exception as exc:
             return {"error": str(exc)}

@@ -636,15 +636,46 @@ impl IParameterChangesTrait for Changes {
     }
 }
 
-/// No MIDI in Duet's racks; an empty list for plugins that expect one.
-struct NoEvents;
-impl Class for NoEvents {
+/// Notes for one process() call: preallocated, filled on the audio thread
+/// (instruments), empty for effects.
+const MAX_EVENTS: usize = 256;
+struct Events {
+    list: UnsafeCell<Vec<Event>>,
+    len: UnsafeCell<usize>,
+}
+unsafe impl Sync for Events {}
+unsafe impl Send for Events {}
+impl Events {
+    fn new() -> Self {
+        // plain C structs: all-zero is a valid empty event
+        Events { list: UnsafeCell::new(vec![unsafe { std::mem::zeroed() }; MAX_EVENTS]), len: UnsafeCell::new(0) }
+    }
+    unsafe fn push(&self, e: Event) {
+        let len = &mut *self.len.get();
+        if *len < MAX_EVENTS {
+            (&mut *self.list.get())[*len] = e;
+            *len += 1;
+        }
+    }
+    unsafe fn clear(&self) {
+        *self.len.get() = 0;
+    }
+}
+impl Class for Events {
     type Interfaces = (IEventList,);
 }
-impl IEventListTrait for NoEvents {
-    unsafe fn getEventCount(&self) -> int32 { 0 }
-    unsafe fn getEvent(&self, _index: int32, _e: *mut Event) -> tresult { kResultFalse }
-    unsafe fn addEvent(&self, _e: *mut Event) -> tresult { kResultOk }
+impl IEventListTrait for Events {
+    unsafe fn getEventCount(&self) -> int32 { *self.len.get() as int32 }
+    unsafe fn getEvent(&self, index: int32, e: *mut Event) -> tresult {
+        if index < 0 || index as usize >= *self.len.get() || e.is_null() { return kInvalidArgument; }
+        *e = (&*self.list.get())[index as usize];
+        kResultOk
+    }
+    unsafe fn addEvent(&self, e: *mut Event) -> tresult {
+        if e.is_null() { return kInvalidArgument; }
+        self.push(*e);
+        kResultOk
+    }
 }
 
 // --- an instance ---------------------------------------------------------------
@@ -713,7 +744,7 @@ pub struct VstProc {
     edits: rtrb::Consumer<(ParamID, f64)>,
     changes: ComWrapper<Changes>,
     out_changes: ComWrapper<Changes>,
-    events: ComWrapper<NoEvents>,
+    events: ComWrapper<Events>,
     in_bufs: Vec<Vec<Vec<f32>>>, // [bus][channel][sample]
     out_bufs: Vec<Vec<Vec<f32>>>,
     in_ptrs: Vec<Vec<*mut f32>>,
@@ -754,10 +785,15 @@ impl State {
 impl VstProc {
     /// Create and start an instance. Blocks while the plugin thread builds it.
     pub fn create(path: &str, cid: &str, state: Option<State>, sr: f64) -> Result<VstProc, String> {
+        Self::create_as(path, cid, state, sr, false)
+    }
+
+    /// The same for an instrument: its note input is switched on.
+    pub fn create_as(path: &str, cid: &str, state: Option<State>, sr: f64, instrument: bool) -> Result<VstProc, String> {
         let (edit_tx, edit_rx) = rtrb::RingBuffer::new(1024);
         let path = PathBuf::from(path);
         let cid = hex_tuid(cid)?;
-        let built = on_ui(move || unsafe { build(&path, cid, state, sr, edit_tx) })?;
+        let built = on_ui(move || unsafe { build(&path, cid, state, sr, edit_tx, instrument) })?;
         let (inst, in_ch, out_ch) = built;
         let id = NEXT_ID.fetch_add(1, Relaxed);
         registry().lock().unwrap().insert(id, Arc::downgrade(&inst));
@@ -769,7 +805,7 @@ impl VstProc {
             edits: edit_rx,
             changes: ComWrapper::new(Changes::new()),
             out_changes: ComWrapper::new(Changes::new()),
-            events: ComWrapper::new(NoEvents),
+            events: ComWrapper::new(Events::new()),
             in_bufs: mk(&in_ch),
             out_bufs: mk(&out_ch),
             in_ptrs: vec![],
@@ -815,6 +851,21 @@ impl VstProc {
         });
     }
 
+    /// A note for the next process() call (instruments). `offset` is the sample
+    /// in the block where it happens.
+    pub fn note(&mut self, on: bool, key: u8, vel: u8, offset: usize) {
+        let mut e: Event = unsafe { std::mem::zeroed() };
+        e.sampleOffset = offset.min(MAX_BLOCK - 1) as int32;
+        if on {
+            e.r#type = Event_::EventTypes_::kNoteOnEvent as uint16;
+            e.__field0.noteOn = NoteOnEvent { channel: 0, pitch: key as int16, tuning: 0.0, velocity: vel as f32 / 127.0, length: 0, noteId: -1 };
+        } else {
+            e.r#type = Event_::EventTypes_::kNoteOffEvent as uint16;
+            e.__field0.noteOff = NoteOffEvent { channel: 0, pitch: key as int16, velocity: vel as f32 / 127.0, noteId: -1, tuning: 0.0 };
+        }
+        unsafe { self.events.push(e) };
+    }
+
     /// One block, in place on a mono buffer. `mix` blends dry/wet. `tempo` from
     /// the metronome, for tempo-synced plugins.
     pub fn process(&mut self, buf: &mut [f32], mix: f32, tempo: f64) {
@@ -851,6 +902,7 @@ impl VstProc {
                 processContext: &mut self.context,
             };
             self.processor.0.process(&mut data);
+            self.events.clear();
             self.context.projectTimeSamples += n as i64;
             let Some(main) = self.out_bufs.first() else { return };
             match main.len() {
@@ -878,6 +930,7 @@ unsafe fn build(
     state: Option<State>,
     sr: f64,
     edits: rtrb::Producer<(ParamID, f64)>,
+    instrument: bool,
 ) -> Result<(Arc<Instance>, Vec<usize>, Vec<usize>), String> {
     let m = load_module(path)?;
     let f = &m.0.factory;
@@ -993,7 +1046,8 @@ unsafe fn build(
     let events = MediaTypes_::kEvent as MediaType;
     for d in [dir_in, dir_out] {
         for i in 0..component.getBusCount(events, d).max(0) {
-            component.activateBus(events, d, i, 0);
+            // an instrument's first note input on; nothing else uses events
+            component.activateBus(events, d, i, (instrument && d == dir_in && i == 0) as TBool);
         }
     }
     let mut setup = ProcessSetup {

@@ -9,7 +9,9 @@ mod audio;
 mod daw;
 mod dsp;
 mod fx;
+mod instr;
 mod jitter;
+mod midi;
 mod net;
 mod signal;
 mod transfer;
@@ -27,6 +29,7 @@ use pyo3::types::{PyBytes, PyDict};
 use daw::{AudioCache, ClipDesc, MAX_TRACKS};
 use dsp::{decode_peer, encode_peer, Cmd, Dsp, Garbage, InPacket, RecRings, Shared, StripParam, StripSettings, Target, MAX_LOCAL, MAX_REMOTE};
 use fx::{kind_index, param_index, preset_slots, Slot, SlotCfg, FX, MAX_SLOTS};
+use instr::{InstCfg, InstSlot, NoteEv};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -72,6 +75,7 @@ struct RecSession {
 struct StripMirror {
     s: StripSettings,
     rack: Vec<SlotCfg>,
+    inst: Option<InstCfg>,
 }
 
 struct Inner {
@@ -82,6 +86,10 @@ struct Inner {
     incoming: Mutex<Option<rtrb::Producer<InPacket>>>,
     /// things the audio thread is done with, freed here instead of there
     retired: Mutex<rtrb::Consumer<Garbage>>,
+    /// notes for the strips' instruments (MIDI thread and Python both write)
+    notes: Mutex<rtrb::Producer<(Target, NoteEv)>>,
+    /// the strip a MIDI keyboard plays (encoded Target; u64::MAX = none)
+    midi_target: std::sync::atomic::AtomicU64,
     daw: Mutex<DawCtl>,
     files: Mutex<transfer::Transfers>,
     running: AtomicBool,
@@ -112,6 +120,10 @@ impl Inner {
     }
     fn cmd(&self, c: Cmd) {
         let _ = self.cmds.lock().unwrap().push(c);
+    }
+    fn note(&self, t: Target, ev: NoteEv) {
+        let _ = self.notes.lock().unwrap().push((t, ev));
+        self.shared.midi_events.fetch_add(1, Relaxed);
     }
     /// Drop effect objects the audio thread handed back (freeing happens here,
     /// not in the callback).
@@ -292,6 +304,7 @@ struct Engine {
     inner: Arc<Inner>,
     dsp: Arc<Mutex<Dsp>>,
     audio: audio::AudioThread,
+    midi: midi::MidiThread,
     local: SocketAddrV4,
     public: Mutex<Option<SocketAddrV4>>,
 }
@@ -310,9 +323,10 @@ impl Engine {
         let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(1024);
         let (pkt_tx, pkt_rx) = rtrb::RingBuffer::new(512);
         let (ret_tx, ret_rx) = rtrb::RingBuffer::<Garbage>::new(256);
-        let dsp = Dsp::new(48000, 128, cmd_rx, pkt_rx, ret_tx, socket.clone(), shared.clone());
+        let (note_tx, note_rx) = rtrb::RingBuffer::<(Target, NoteEv)>::new(1024);
+        let dsp = Dsp::new(48000, 128, cmd_rx, pkt_rx, note_rx, ret_tx, socket.clone(), shared.clone());
         let mut local: Vec<StripMirror> =
-            (0..MAX_LOCAL).map(|i| StripMirror { s: StripSettings::local(i), rack: vec![] }).collect();
+            (0..MAX_LOCAL).map(|i| StripMirror { s: StripSettings::local(i), rack: vec![], inst: None }).collect();
         local[0].s.active = true; // same default as the audio side
         let inner = Arc::new(Inner {
             socket,
@@ -326,19 +340,27 @@ impl Engine {
                 stun_txid: [0; 12],
                 stun_reply: None,
                 local,
-                remote: vec![StripMirror { s: StripSettings::remote(), rack: vec![] }; MAX_REMOTE],
-                tracks: vec![StripMirror { s: StripSettings::track(), rack: vec![] }; MAX_TRACKS],
+                remote: vec![StripMirror { s: StripSettings::remote(), rack: vec![], inst: None }; MAX_REMOTE],
+                tracks: vec![StripMirror { s: StripSettings::track(), rack: vec![], inst: None }; MAX_TRACKS],
                 master: 1.0,
             }),
             cmds: Mutex::new(cmd_tx),
             incoming: Mutex::new(Some(pkt_tx)),
             retired: Mutex::new(ret_rx),
+            notes: Mutex::new(note_tx),
+            midi_target: std::sync::atomic::AtomicU64::new(u64::MAX),
             daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], rec: None, export: None }),
             files: Mutex::new(transfer::Transfers::new(std::env::temp_dir().join("duet-incoming"))),
             running: AtomicBool::new(false),
             start: Instant::now(),
         });
-        Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), local: local_addr, public: Mutex::new(None) })
+        let sink_inner = inner.clone();
+        let midi = midi::MidiThread::spawn(Arc::new(move |ev| {
+            if let Some(t) = decode_target(sink_inner.midi_target.load(Relaxed)) {
+                sink_inner.note(t, ev);
+            }
+        }));
+        Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), midi, local: local_addr, public: Mutex::new(None) })
     }
 
     /// Start the network threads.
@@ -646,6 +668,127 @@ impl Engine {
         Ok(())
     }
 
+    // --- instruments and notes --------------------------------------------------
+
+    /// Make a strip play an instrument instead of its input: kind "drums",
+    /// "synth" or "vst" (with vst = (path, cid, name)); None goes back to the
+    /// input. `cfg` restores saved settings ({param: value, "pads": [...],
+    /// "vst": {"state": ...}}).
+    #[pyo3(signature = (target, kind, vst=None, cfg=None))]
+    fn inst_set(&self, py: Python<'_>, target: &str, kind: Option<&str>, vst: Option<(String, String, String)>,
+                cfg: Option<Bound<'_, PyDict>>) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let Some(kind) = kind.filter(|k| !k.is_empty()) else {
+            mirror(&mut self.inner.ctl.lock().unwrap(), t).inst = None;
+            self.cmd(Cmd::Instrument(t, None));
+            return Ok(());
+        };
+        let k = instr::kind_index(kind).ok_or_else(|| PyValueError::new_err(format!("no instrument {kind}")))?;
+        let mut c = InstCfg::new(k);
+        if let Some((path, cid, name)) = vst {
+            c.vst = Some(fx::VstRef { path, cid, name, ..Default::default() });
+        }
+        if let Some(d) = cfg {
+            for (i, name) in instr::PARAMS[k].iter().enumerate() {
+                if let Some(v) = d.get_item(*name)? {
+                    c.p[i] = v.extract::<f32>()?;
+                }
+            }
+            if let Some(p) = d.get_item("pads")? {
+                let pads: Vec<Option<String>> = p.extract()?;
+                for (i, x) in pads.into_iter().take(c.pads.len()).enumerate() {
+                    c.pads[i] = x;
+                }
+            }
+            if let Some(v) = d.get_item("vst")? {
+                if let Ok(v) = v.downcast::<PyDict>() {
+                    let get = |k: &str| -> PyResult<Option<String>> {
+                        Ok(match v.get_item(k)? { Some(x) => x.extract::<Option<String>>()?, None => None })
+                    };
+                    if let (Some(path), Some(cid)) = (get("path")?, get("cid")?) {
+                        c.vst = Some(fx::VstRef { path, cid, name: get("name")?.unwrap_or_default(), state: get("state")?, ..Default::default() });
+                    }
+                }
+            }
+        }
+        let sr = self.samplerate();
+        let slot = py.allow_threads(|| InstSlot::new(c, sr)).map_err(PyRuntimeError::new_err)?;
+        mirror(&mut self.inner.ctl.lock().unwrap(), t).inst = Some(slot.cfg.clone());
+        self.cmd(Cmd::Instrument(t, Some(slot)));
+        Ok(())
+    }
+
+    /// One of an instrument's knobs (0..1).
+    fn inst_param(&self, target: &str, key: &str, value: f32) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let mut c = self.inner.ctl.lock().unwrap();
+        let Some(i) = mirror(&mut c, t).inst.as_mut() else { return Err(PyValueError::new_err("no instrument there")) };
+        let k = instr::PARAMS[i.kind].iter().position(|p| *p == key)
+            .ok_or_else(|| PyValueError::new_err(format!("the {} has no {key}", instr::KINDS[i.kind])))?;
+        i.p[k] = value;
+        drop(c);
+        self.cmd(Cmd::InstParam(t, k, value));
+        Ok(())
+    }
+
+    /// Put your own sample on a drum pad (a WAV path), or None for the built-in sound.
+    #[pyo3(signature = (target, pad, path=None))]
+    fn inst_pad(&self, py: Python<'_>, target: &str, pad: usize, path: Option<String>) -> PyResult<()> {
+        let t = parse_target(target)?;
+        let mut cfg = {
+            let mut c = self.inner.ctl.lock().unwrap();
+            match mirror(&mut c, t).inst.as_ref() {
+                Some(i) if i.kind == instr::DRUMS && pad < i.pads.len() => i.clone(),
+                _ => return Err(PyValueError::new_err("not a drum pad")),
+            }
+        };
+        cfg.pads[pad] = path;
+        let sr = self.samplerate();
+        let slot = py.allow_threads(|| InstSlot::new(cfg, sr)).map_err(PyRuntimeError::new_err)?;
+        if let Some(e) = &slot.cfg.error {
+            return Err(PyRuntimeError::new_err(e.clone()));
+        }
+        mirror(&mut self.inner.ctl.lock().unwrap(), t).inst = Some(slot.cfg.clone());
+        self.cmd(Cmd::Instrument(t, Some(slot)));
+        Ok(())
+    }
+
+    /// Play a note on a strip's instrument (the computer keyboard, a pad click).
+    #[pyo3(signature = (target, on, key, vel=100))]
+    fn note(&self, target: &str, on: bool, key: u8, vel: u8) -> PyResult<()> {
+        let t = parse_target(target)?;
+        self.inner.note(t, if on { NoteEv::On(key & 127, vel.clamp(1, 127)) } else { NoteEv::Off(key & 127) });
+        Ok(())
+    }
+
+    /// The MIDI keyboards there are.
+    fn midi_inputs(&self, py: Python<'_>) -> Vec<String> {
+        py.allow_threads(|| self.midi.list())
+    }
+
+    /// Listen to this MIDI keyboard (None: none).
+    #[pyo3(signature = (name=None))]
+    fn midi_open(&self, py: Python<'_>, name: Option<String>) -> PyResult<()> {
+        py.allow_threads(|| self.midi.open(name)).map_err(PyRuntimeError::new_err)
+    }
+
+    /// Which strip the MIDI keyboard plays (None: none). The old one gets an
+    /// all-notes-off, so nothing hangs.
+    #[pyo3(signature = (target=None))]
+    fn midi_target(&self, target: Option<&str>) -> PyResult<()> {
+        let new = match target {
+            Some(t) => encode_target(parse_target(t)?),
+            None => u64::MAX,
+        };
+        let old = self.inner.midi_target.swap(new, Relaxed);
+        if old != new {
+            if let Some(t) = decode_target(old) {
+                self.inner.note(t, NoteEv::AllOff);
+            }
+        }
+        Ok(())
+    }
+
     // --- VST3 ----------------------------------------------------------------
 
     /// The usual VST3 folders on this system.
@@ -696,12 +839,18 @@ impl Engine {
         Ok(pos)
     }
 
-    /// Show a VST slot's own editor window.
-    fn vst_open_editor(&self, py: Python<'_>, target: &str, pos: usize) -> PyResult<()> {
+    /// Show a plugin's own window: rack slot `pos`, or (pos < 0) the strip's instrument.
+    fn vst_open_editor(&self, py: Python<'_>, target: &str, pos: i64) -> PyResult<()> {
         let t = parse_target(target)?;
         let (id, title) = {
             let mut c = self.inner.ctl.lock().unwrap();
-            let s = mirror(&mut c, t).rack.get(pos).and_then(|s| s.vst.clone()).ok_or_else(|| PyValueError::new_err("not a VST slot"))?;
+            let m = mirror(&mut c, t);
+            let s = if pos < 0 {
+                m.inst.as_ref().and_then(|i| i.vst.clone())
+            } else {
+                m.rack.get(pos as usize).and_then(|s| s.vst.clone())
+            };
+            let s = s.ok_or_else(|| PyValueError::new_err("not a VST slot"))?;
             (s.id, format!("{} · Duet", s.name))
         };
         let inst = vst::instance(id).ok_or_else(|| PyRuntimeError::new_err("that plugin isn't running"))?;
@@ -753,10 +902,14 @@ impl Engine {
                 for (side, n) in [(0, MAX_LOCAL), (1, MAX_REMOTE), (2, MAX_TRACKS)] {
                     for i in 0..n {
                         let t = match side { 0 => Target::Local(i), 1 => Target::Remote(i), _ => Target::Track(i) };
-                        for (pos, s) in mirror(&mut c, t).rack.iter().enumerate() {
+                        let m = mirror(&mut c, t);
+                        for (pos, s) in m.rack.iter().enumerate() {
                             if let Some(v) = &s.vst {
                                 out.push((t, pos, v.id));
                             }
+                        }
+                        if let Some(v) = m.inst.as_ref().and_then(|i| i.vst.as_ref()) {
+                            out.push((t, usize::MAX, v.id)); // MAX: the instrument, not a rack slot
                         }
                     }
                 }
@@ -769,7 +922,13 @@ impl Engine {
             });
             let mut c = self.inner.ctl.lock().unwrap();
             for (t, pos, st) in fresh {
-                if let (Some(st), Some(v)) = (st, mirror(&mut c, t).rack.get_mut(pos).and_then(|s| s.vst.as_mut())) {
+                let m = mirror(&mut c, t);
+                let v = if pos == usize::MAX {
+                    m.inst.as_mut().and_then(|i| i.vst.as_mut())
+                } else {
+                    m.rack.get_mut(pos).and_then(|s| s.vst.as_mut())
+                };
+                if let (Some(st), Some(v)) = (st, v) {
                     v.state = Some(st);
                 }
             }
@@ -815,6 +974,32 @@ impl Engine {
                 Ok(e)
             }).collect::<PyResult<Vec<_>>>()?;
             d.set_item("rack", rack)?;
+            let inst = match &m.inst {
+                None => None,
+                Some(i) => {
+                    let e = PyDict::new(py);
+                    e.set_item("kind", instr::KINDS[i.kind])?;
+                    for (k, name) in instr::PARAMS[i.kind].iter().enumerate() {
+                        e.set_item(*name, i.p[k])?;
+                    }
+                    if i.kind == instr::DRUMS {
+                        e.set_item("pads", i.pads.clone())?;
+                        e.set_item("pad_names", instr::PADS.iter().map(|(n, name)| (*n, *name)).collect::<Vec<_>>())?;
+                    }
+                    if let Some(v) = &i.vst {
+                        let d = PyDict::new(py);
+                        d.set_item("path", &v.path)?;
+                        d.set_item("cid", &v.cid)?;
+                        d.set_item("name", &v.name)?;
+                        d.set_item("state", v.state.clone())?;
+                        d.set_item("has_editor", v.has_editor)?;
+                        e.set_item("vst", d)?;
+                    }
+                    e.set_item("error", i.error.clone())?;
+                    Some(e)
+                }
+            };
+            d.set_item("inst", inst)?;
             Ok(d)
         };
         let d = PyDict::new(py);
@@ -1175,6 +1360,7 @@ impl Engine {
         d.set_item("daw_playing", s.daw_playing.load(Relaxed))?;
         d.set_item("daw_recording", s.rec_on.load(Relaxed))?;
         d.set_item("rec_dropped", s.rec_dropped.load(Relaxed))?;
+        d.set_item("midi_events", s.midi_events.load(Relaxed))?;
         d.set_item("track_levels", s.track_levels.iter().map(|l| l.get()).collect::<Vec<_>>())?;
         for (k, v) in [
             ("depth", &s.depth), ("underruns", &s.underruns), ("lost", &s.lost), ("late", &s.late),
@@ -1238,6 +1424,24 @@ impl Engine {
             rack.push(slot.cfg.clone());
             self.cmd(Cmd::RackInsert(t, i, slot));
         }
+    }
+}
+
+fn encode_target(t: Target) -> u64 {
+    match t {
+        Target::Local(i) => i as u64,
+        Target::Remote(i) => 0x100 | i as u64,
+        Target::Track(i) => 0x200 | i as u64,
+    }
+}
+
+fn decode_target(v: u64) -> Option<Target> {
+    let i = (v & 0xFF) as usize;
+    match v >> 8 {
+        0 if i < MAX_LOCAL => Some(Target::Local(i)),
+        1 if i < MAX_REMOTE => Some(Target::Remote(i)),
+        2 if i < MAX_TRACKS => Some(Target::Track(i)),
+        _ => None,
     }
 }
 

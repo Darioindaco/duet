@@ -227,6 +227,95 @@ def test_song_edit():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_instruments():
+    """A strip plays an instrument instead of an input: the built-in drum kit
+    and synth answer notes, the partner gets them like any channel, and a song
+    track records them. A VST3 instrument (engine/examples/test_synth) gets its
+    notes and keeps its settings."""
+    x = [0.0] * N
+    a, b, _ = connect_pair()
+    for e in (a, b):
+        e.strip_set("L0", "mon", 1)
+    a.inst_set("L0", "drums")
+    assert a.mixer()["local"][0]["inst"]["kind"] == "drums"
+    assert max(abs(v) for v in a.process(x)) == 0.0, "silent until played"
+    a.midi_target("L0")
+    a.note("L0", True, 36, 120)  # kick
+    base = b.state()["packets_in"]
+    heard, played = 0.0, 0.0
+    for k in range(40):
+        played = max(played, max(abs(v) for v in a.process(x)))
+        wait_packets(b, base + k + 1)
+        heard = max(heard, max(abs(v) for v in b.process(x)))
+    assert played > 0.2 and heard > 0.2, (played, heard)
+    # the synth, then back to the input
+    a.inst_set("L0", "synth", None, {"cutoff": 0.9})
+    assert abs(a.mixer()["local"][0]["inst"]["cutoff"] - 0.9) < 1e-6
+    a.note("L0", True, 60, 100)
+    out = []
+    for _ in range(30):
+        out += a.process(x)
+    spec = np.abs(np.fft.rfft(np.array(out[-2048:]) * np.hanning(2048)))
+    f0 = np.argmax(spec[:200]) * SR / 2048
+    assert abs(f0 - 261.6) < 25, f"middle C, not {f0:.0f} Hz"
+    a.inst_set("L0", None)
+    assert a.mixer()["local"][0]["inst"] is None
+    a.close()
+    b.close()
+
+    # a drum part recorded onto a song track
+    import tempfile
+    from pathlib import Path
+    e = Engine()
+    e.inst_set("L1", "drums")
+    e.strip_set("L1", "active", 1)
+    d = tempfile.mkdtemp()
+    e.daw_record([(1, "drumtake", str(Path(d) / "drums.wav"))], 0.0)
+    for k in range(100):
+        if k % 25 == 0:
+            e.note("L1", True, 38, 110)
+        e.process(x)
+    take = e.daw_stop()[0]
+    rec = wave_peak(Path(d) / "drums.wav")
+    assert take["frames"] == 100 * N and rec > 0.2, (take["frames"], rec)
+    e.close()
+
+    path = test_plugin_path("test_synth")
+    if not path:
+        print("instruments: ok  (drums, synth, sent, recorded; VST instrument skipped: build examples/test_synth)")
+        return
+    cls = Engine.vst_scan(path)
+    assert cls[0]["instrument"], cls
+    v = Engine()
+    v.strip_set("L0", "mon", 1)
+    v.inst_set("L0", "vst", (path, cls[0]["cid"], cls[0]["name"]))
+    v.note("L0", True, 69, 100)
+    out = []
+    for _ in range(20):
+        out += v.process(x)
+    spec = np.abs(np.fft.rfft(np.array(out[-2048:]) * np.hanning(2048)))
+    assert abs(np.argmax(spec) * SR / 2048 - 440) < 25, "the plugin plays the note it was sent"
+    v.note("L0", False, 69)
+    v.process(x)
+    assert max(abs(s) for s in v.process(x)) == 0.0, "and stops on note off"
+    saved = v.mixer(True)["local"][0]["inst"]
+    w = Engine()
+    w.inst_set("L0", saved["kind"], None, saved)  # what restoring a saved mixer does
+    assert w.mixer()["local"][0]["inst"]["vst"]["cid"] == cls[0]["cid"]
+    v.close()
+    w.close()
+    print("instruments: ok  (drums, synth, sent to the partner, recorded on a track, VST instrument plays and restores)")
+
+
+def wave_peak(path):
+    import wave
+    with wave.open(str(path)) as w:
+        raw = np.frombuffer(w.readframes(w.getnframes()), dtype=np.uint8).reshape(-1, 3)
+    v = (raw[:, 0].astype(np.int32) | raw[:, 1].astype(np.int32) << 8 | raw[:, 2].astype(np.int32) << 16)
+    v = np.where(v >= 1 << 23, v - (1 << 24), v)
+    return float(np.max(np.abs(v))) / (1 << 23)
+
+
 def test_signals():
     a, b, _ = connect_pair()
     for e in (a, b):
@@ -622,26 +711,30 @@ def test_tone3000():
     print("tone3000: ok  (PKCE pick, token, models, download without leaking the token, library, loads)")
 
 
-def test_plugin_path():
-    """The vst3 crate's gain example (engine/examples/test_gain.rs), packaged as
-    a .vst3. Built with: cd engine && cargo build --release --example test_gain"""
+def test_plugin_path(name="test_gain"):
+    """A test plugin from engine/examples (test_gain: the vst3 crate's gain
+    example; test_synth: a sine instrument), packaged as a .vst3. Built with:
+    cd engine && cargo build --release --example test_gain --example test_synth"""
     import shutil
     import tempfile
     from pathlib import Path
     ex = Path(__file__).resolve().parent / "engine" / "target" / "release" / "examples"
-    lib = next((p for p in (ex / "test_gain.dll", ex / "libtest_gain.dylib", ex / "libtest_gain.so") if p.exists()), None)
+    lib = next((p for p in (ex / f"{name}.dll", ex / f"lib{name}.dylib", ex / f"lib{name}.so") if p.exists()), None)
     if lib is None:
         return None
-    out = Path(tempfile.mkdtemp()) / "test_gain.vst3"
+    out = Path(tempfile.mkdtemp()) / f"{name}.vst3"
     if lib.suffix == ".dll":
         shutil.copy(lib, out)                       # a single-file .vst3 is fine on Windows
+    elif lib.suffix == ".so":
+        (out / "Contents" / "x86_64-linux").mkdir(parents=True)
+        shutil.copy(lib, out / "Contents" / "x86_64-linux" / f"{name}.so")
     else:
         (out / "Contents" / "MacOS").mkdir(parents=True)
-        shutil.copy(lib, out / "Contents" / "MacOS" / "test_gain")
+        shutil.copy(lib, out / "Contents" / "MacOS" / name)
         (out / "Contents" / "Info.plist").write_text(
             '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
-            "<key>CFBundleExecutable</key><string>test_gain</string>"
-            "<key>CFBundleIdentifier</key><string>app.duet.testgain</string>"
+            f"<key>CFBundleExecutable</key><string>{name}</string>"
+            f"<key>CFBundleIdentifier</key><string>app.duet.{name.replace('_', '')}</string>"
             "<key>CFBundlePackageType</key><string>BNDL</string></dict></plist>")
     return str(out)
 
@@ -697,6 +790,7 @@ if __name__ == "__main__":
     test_auto_buffer()
     test_daw()
     test_song_edit()
+    test_instruments()
     test_signals()
     test_mixer()
     test_partner_fx()

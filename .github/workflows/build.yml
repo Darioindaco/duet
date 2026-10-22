@@ -33,9 +33,9 @@ jobs:
       - name: Engine unit tests
         working-directory: engine
         run: cargo test --release
-      - name: Build the test VST3 plugin (for the host test in the self-test)
+      - name: Build the test VST3 plugins (for the host tests in the self-test)
         working-directory: engine
-        run: cargo build --release --example test_gain
+        run: cargo build --release --example test_gain --example test_synth
       - name: Self-test
         run: python selftest.py
       - name: Build Duet.app

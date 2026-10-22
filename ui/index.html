@@ -368,6 +368,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 .toast.bad { border-color: var(--bad); }
 </style>
 <link rel="stylesheet" href="daw.css">
+<link rel="stylesheet" href="instr.css">
 </head>
 <body>
 <div class="app">
@@ -391,6 +392,10 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
       <div class="num" id="bigLatNum">--<small>ms</small></div>
       <div class="lbl">partner → your ears</div>
     </div>
+    <button class="iconbtn" id="keysBtn" title="Play the selected instrument with your computer keyboard">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M7 5v8M12 5v8M17 5v8"/><path d="M5.5 5v5h3V5M15.5 5v5h3V5"/></svg>
+      <span id="keysTxt">Keys</span>
+    </button>
     <button class="iconbtn" id="camBtn" title="Video call">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="3"/><path d="M16 10.5 22 7v10l-6-3.5"/></svg>
       <span id="camTxt">Camera</span>
@@ -429,6 +434,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
             <div class="seg" id="rateSeg"><button data-v="44100">44.1k</button><button data-v="48000">48k</button></div></div>
           <div class="field"><label>Buffer <span class="lbl-hint">smaller = less delay, more CPU</span></label>
             <div class="seg" id="blockSeg"><button data-v="64">64</button><button data-v="128">128</button><button data-v="256">256</button><button data-v="512">512</button></div></div>
+          <div class="field"><label for="midiDev">MIDI keyboard <span class="lbl-hint">plays the selected instrument</span></label><select id="midiDev"></select></div>
           <div class="hint" id="audioHint"></div>
           <p class="fine">Changes apply right away. Use the same sample rate and buffer as your partner.</p>
           <button class="linkbtn" id="audioBtn">Turn sound off</button>
@@ -579,6 +585,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 <div class="toast" id="toast"></div>
 
 <script src="daw.js"></script>
+<script src="instr.js"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -943,7 +950,7 @@ function stripName(t) {
   if (t === "M") return "Master";
   const i = +t.slice(1);
   if (t[0] === "T") return trackBySlot(i)?.name || "Track";
-  if (t[0] === "L") return ui.names[t] || `Input ${stripCfg(t).input + 1}`;
+  if (t[0] === "L") return ui.names[t] || (stripCfg(t).inst ? instLabel(stripCfg(t).inst) : `Input ${stripCfg(t).input + 1}`);
   return ui.partnerNames[i] || `Partner ${i + 1}`;
 }
 
@@ -967,7 +974,8 @@ function sendNames() {
   const sent = ui.mixer.local.map((s, i) => [s, i]).filter(([s]) => s.active && s.send);
   const names = sent.map(([, i]) => stripName("L" + i));
   // the effects each sent channel already carries, so the partner can see them
-  const fx = sent.map(([s]) => s.rack.filter((x) => x.on).map((x) => (x.kind === "nam" && x.model_name) || (x.kind === "vst" && x.vst?.name) || FXMETA[x.kind].name));
+  const fx = sent.map(([s]) => [...(s.inst ? [instLabel(s.inst)] : []),
+    ...s.rack.filter((x) => x.on).map((x) => (x.kind === "nam" && x.model_name) || (x.kind === "vst" && x.vst?.name) || FXMETA[x.kind].name)]);
   // every input, sent or not: what a song track can record from on our side
   const strips = ui.mixer.local.map((s, i) => [s, i]).filter(([s]) => s.active).map(([, i]) => ({ i, name: stripName("L" + i) }));
   const msg = JSON.stringify({ app: "names", names, fx, strips });
@@ -1062,10 +1070,10 @@ function stripEl(t) {
   // source
   if (t[0] === "L") {
     const src = document.createElement("select");
-    src.className = "src"; src.title = "Which input of your interface";
-    for (let i = 0; i < Math.max(inputCount(), cfg.input + 1); i++) src.append(new Option(`In ${i + 1}`, i, false, i === cfg.input));
+    src.className = "src" + (cfg.inst ? " inst" : ""); src.title = "Which input of your interface, or an instrument to play";
+    fillStripSource(src, t, cfg);
     src.onclick = (e) => e.stopPropagation();
-    src.onchange = () => { setStrip(t, "input", +src.value); if (!ui.names[t]) renderStrips(); };
+    src.onchange = () => stripSourceChanged(t, src.value);
     el.append(src);
     if (t !== "L0") {
       const x = document.createElement("button");
@@ -1167,6 +1175,7 @@ async function addStrip() {
   for (const [k, v] of Object.entries({ input, gain: 1, pan: 0, fader: 1, mute: false, solo: false, send: true, mon: false }))
     await setStrip(t, k, v);
   await api.rack_load(t, []);
+  if (stripCfg(t).inst) await api.inst_set(t, null);
   delete ui.names[t];
   await setStrip(t, "active", true);
   ui.mixer = await api.mixer();
@@ -1178,6 +1187,7 @@ async function addStrip() {
 async function removeStrip(t) {
   await setStrip(t, "active", false);
   await api.rack_load(t, []);
+  if (stripCfg(t).inst) await api.inst_set(t, null);
   delete ui.names[t];
   ui.mixer = await api.mixer();
   if (ui.sel === t) ui.sel = "L0";
@@ -1188,6 +1198,7 @@ function selectStrip(t) {
   ui.sel = t;
   for (const el of $("strips").querySelectorAll(".strip")) el.classList.toggle("sel", el.dataset.t === t);
   renderRack();
+  syncMidiTarget();
 }
 
 // ---------- rack of the selected strip ----------
@@ -1241,11 +1252,14 @@ async function loadModel(t, pos, path) {
 }
 
 // ---------- VST3 browser ----------
-async function openVstBrowser() {
+async function openVstBrowser(mode = "fx") {
+  ui.vstMode = mode;
+  ui.vstList = null;
+  $("vstTitle").textContent = mode === "inst" ? "Pick a VST3 instrument" : "Add a VST3 plugin";
   $("vstm").hidden = false;
   $("vstQ").value = "";
   $("vstQ").focus();
-  const res = await api.vst_plugins();
+  const res = await api.vst_plugins(mode === "inst");
   ui.vstList = res.plugins; ui.vstRes = res;
   vstRender(res);
   // new or updated plugins since the last scan get picked up in the background
@@ -1256,7 +1270,7 @@ async function openVstBrowser() {
 async function vstPoll() {
   clearTimeout(vstPoll.t);
   if ($("vstm").hidden) return;
-  const res = await api.vst_plugins();
+  const res = await api.vst_plugins(ui.vstMode === "inst");
   ui.vstRes = res;
   if (res.plugins.length !== (ui.vstList || []).length || res.status.scanning !== vstPoll.was) { ui.vstList = res.plugins; vstRender(res); }
   else vstStatus(res);
@@ -1268,7 +1282,7 @@ function vstStatus(res) {
   const s = res.status;
   $("vstStatus").innerHTML = s.scanning
     ? `<span class="spinner sm"></span>Scanning plugins… ${s.done}/${s.total}`
-    : `${res.plugins.length} effects` + (res.failed.length ? ` · <span title="${esc(res.failed.map((f) => f.path.split(/[\\/]/).pop() + ": " + f.error).join("\n"))}">${res.failed.length} couldn't be read</span>` : "");
+    : `${res.plugins.length} ${ui.vstMode === "inst" ? "instruments" : "effects"}` + (res.failed.length ? ` · <span title="${esc(res.failed.map((f) => f.path.split(/[\\/]/).pop() + ": " + f.error).join("\n"))}">${res.failed.length} couldn't be read</span>` : "");
 }
 
 function vstRender(res) {
@@ -1277,7 +1291,7 @@ function vstRender(res) {
   const list = (ui.vstList || []).filter((p) => !q || (p.name + " " + p.vendor + " " + p.sub).toLowerCase().includes(q));
   const box = $("vstList");
   if (!list.length) {
-    box.innerHTML = `<div class="empty-rack">${(ui.vstList || []).length ? "Nothing matches that." : res.status.scanning ? "Looking for your plugins…" : "No VST3 effects found in the usual folders."}</div>`;
+    box.innerHTML = `<div class="empty-rack">${(ui.vstList || []).length ? "Nothing matches that." : res.status.scanning ? "Looking for your plugins…" : `No VST3 ${ui.vstMode === "inst" ? "instruments" : "effects"} found in the usual folders.`}</div>`;
     return;
   }
   box.innerHTML = list.slice(0, 300).map((p, i) => `<button class="vitem" data-i="${i}"><b>${esc(p.name)}</b><span>${esc(p.vendor)}${p.sub ? " · " + esc(p.sub.replace(/\|/g, ", ")) : ""}</span></button>`).join("");
@@ -1286,6 +1300,16 @@ function vstRender(res) {
     if (!item) return;
     const p = list[+item.dataset.i];
     box.innerHTML = `<div class="mwait"><span class="spinner"></span>Loading ${esc(p.name)}… (some plugins take a while)</div>`;
+    if (ui.vstMode === "inst") {
+      const t = ui.instFor;
+      const r = await api.inst_set(t, "vst", { path: p.path, cid: p.cid, name: p.name });
+      $("vstm").hidden = true;
+      if (r && r.error) { toast(`Couldn't load ${p.name}: ${r.error}`, true); renderStrips(); return; }
+      await instMonitor(t);
+      await rackChanged(r);
+      selectStrip(t); syncMidiTarget(); sendNames();
+      return;
+    }
     const res2 = await api.vst_add(ui.sel, p.path, p.cid, p.name);
     $("vstm").hidden = true;
     if (res2 && res2.error) { toast(`Couldn't load ${p.name}: ${res2.error}`, true); return; }
@@ -1369,13 +1393,14 @@ function renderRack() {
   const color = t[0] === "L" || (track && track.mine) ? "var(--me)" : "var(--partner)";
   $("rackTitle").innerHTML = `FX rack <span class="who" style="--c:${color}">· ${esc(stripName(t))}${track ? " (song track)" : ""}</span>`;
   for (const c of $("presets").children) c.classList.remove("on");
+  if (t[0] === "L" && cfg.inst) rack.append(instPanel(t, cfg.inst));
   if (!cfg.rack.length) {
-    rack.innerHTML = `<div class="empty-rack"><b>No effects on this channel yet.</b><br>Add one with the menu on the right, or start from a preset.
+    rack.insertAdjacentHTML("beforeend", `<div class="empty-rack"><b>No effects on this channel yet.</b><br>Add one with the menu on the right, or start from a preset.
       ${track ? "Effects on a song track are part of the song: you both hear them."
         : t[0] === "L" ? "Your partner hears these effects; turn on MON to hear them yourself."
         : (ui.partnerFx[+t.slice(1)] || []).length
           ? `Their own effects (${esc(ui.partnerFx[+t.slice(1)].join(", "))}) are already in what you hear. Effects you add here only change your own mix.`
-          : "Effects you add here only change what you hear."}</div>`;
+          : "Effects you add here only change what you hear."}</div>`);
   }
   cfg.rack.forEach((slot, pos) => {
     const meta = FXMETA[slot.kind];
@@ -1532,6 +1557,7 @@ function paint(s) {
   s.levels.remote.forEach((v, i) => m["R" + i] && (m["R" + i].style.height = dbPct(v) + "%"));
   if (m.M) m.M.style.height = dbPct(s.levels.master) + "%";
   songPaint(s.daw);
+  paintMidi(s.midiEvents);
 
   // latency
   const L = s.latency;
@@ -1627,6 +1653,7 @@ async function boot(a) {
   renderStrips();
   renderRack();
   songSetup();
+  instSetup();
   $("vstX").onclick = () => ($("vstm").hidden = true);
   $("vstm").onclick = (e) => e.target === $("vstm") && ($("vstm").hidden = true);
   $("vstQ").oninput = () => ui.vstRes && vstRender(ui.vstRes);
@@ -1866,6 +1893,13 @@ function demoApi() {
     rack_preset: async (tg, name) => { target(tg).rack = PRESET_RACKS[name].map((k) => slot(k)); return copy(); },
     rack_load: async (tg, slots) => { target(tg).rack = slots; },
     send_signal: async () => {},
+    inst_set: async (tg, kind, vst) => {
+      target(tg).inst = kind ? { kind, ...(INST_DEFAULTS[kind] || {}), ...(kind === "vst" ? { vst: { ...vst, has_editor: true } } : {}),
+        ...(kind === "drums" ? { pads: Array(16).fill(null), pad_names: [[36, "Kick"], [37, "Rim"], [38, "Snare"], [39, "Clap"], [40, "Snare 2"], [41, "Floor tom"], [42, "Closed hat"], [43, "Low tom"], [44, "Pedal hat"], [45, "Mid tom"], [46, "Open hat"], [47, "Tom"], [48, "High tom"], [49, "Crash"], [50, "Top tom"], [51, "Ride"]] } : {}) } : null;
+      return copy();
+    },
+    inst_param: async () => {}, inst_pad: async () => copy(), inst_pad_open: async () => null, note: async () => {},
+    midi_inputs: async () => ["Arturia KeyStep 37"], midi_open: async () => ({ ok: true }), midi_target: async () => {},
     nam_library: async () => [{ path: "C:/models/plexi.nam", title: "Plexi 1959", name: "Crunch" }, { path: "C:/models/twin.nam", title: "Twin Reverb", name: "Clean" }],
     nam_open_file: async () => null,
     set_model: async (tg, pos, path) => { Object.assign(target(tg).rack[pos], { model: path, model_name: path.split("/").pop(), model_sr: 48000 }); return copy(); },

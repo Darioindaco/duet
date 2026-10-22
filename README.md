@@ -70,7 +70,7 @@ has two tabs:
 6. **VST3 plugins:** *+ Add effect → VST3 plugin…* lists the effects in your
    VST3 folder (search by name, maker or type). *Open window* shows the plugin's
    own controls; *Mix* blends dry/wet. Plugins run inside Duet with no extra
-   delay. Instruments aren't listed (racks have no MIDI). The first scan takes
+   delay. (Instruments are under *Instruments*, below.) The first scan takes
    about half a minute; after that it's instant. A plugin that hangs or shows a
    license dialog while being scanned is skipped, not fatal.
 7. **Metronome** (next to *Mixer*): on/off, tempo (type it, −/+, or *Tap*) and
@@ -139,6 +139,34 @@ start a new one, or open an older one (your partner switches along). If you
 both had a different song open when you connected, Duet asks which one to use;
 the other one stays saved.
 
+## Instruments
+
+A strip of yours can play an **instrument** instead of an input: in the strip's
+input menu (where it says *In 1*) pick **Drum kit**, **Synth** or **VST
+instrument…**. Your partner hears it like any other channel, its FX rack works
+as usual, and a song track set to that strip records it.
+
+- **Drum kit** (built in): 16 pads on the General MIDI drum notes (36–51: kick,
+  snares, clap, hats, toms, crash, ride), so drum parts and pad controllers land
+  on the right sound. Click a pad to hit it (higher up = harder). *⋯* on a pad
+  loads your own WAV onto it. Knobs: level, tune, decay.
+- **Synth** (built in): 8 voices, saw/square blend, a resonant filter, attack,
+  release and detune. Sustain pedal works.
+- **VST3 instruments**: the instruments in your VST3 folder; *Open window* shows
+  their own controls. Like VST effects in a song, your partner only needs the
+  plugin for a song track's effects, not to hear you play it live.
+
+**Playing it:**
+- A **MIDI keyboard**: pick it under *Sound → MIDI keyboard* (Duet opens it again
+  by itself next time, also when you plug it back in).
+- Your **computer keyboard**: press **Keys** (top right). The row *A S D F G H J
+  K L ;* are the white keys, *W E T Y U O P* the black ones; *Z / X* move an
+  octave down / up. While Keys is on, those letters play notes instead of the
+  playlist shortcuts (space still plays and stops).
+
+Both play the **selected** strip's instrument (click a strip), or else your first
+strip that has one.
+
 Effects on your partner's own strips are part of what they send: you hear them
 without doing anything, and their strip shows which ones ("theirs: …").
 Effects you add on their strip only change your own mix.
@@ -180,6 +208,7 @@ pip install ./engine      # compiles the Rust audio engine (or: cd engine && mat
 python duet.py            # --debug opens the web inspector
 python selftest.py        # no sound card needed; --stun also checks the address lookup
 cd engine && cargo test --release   # engine unit tests
+cargo build --release --example test_gain --example test_synth   # test plugins the self-test uses
 pyinstaller --noconfirm duet.spec   # build Duet.exe / Duet.app for this OS
 ```
 
@@ -198,6 +227,8 @@ to it through lock-free queues and atomics.
 | `engine/src/fx.rs` | FX racks: compressor, overdrive, chorus, tremolo, delay, Freeverb, NAM amp (nam-rs) |
 | `engine/src/net.rs` | Packet format, connect codes, STUN |
 | `engine/src/signal.rs` | Reliable side channel for the video call setup |
+| `engine/src/instr.rs` | Instruments: the synthesized drum kit, the synth, VST3 instruments (notes in) |
+| `engine/src/midi.rs` | MIDI keyboards (midir), on a thread of their own |
 | `engine/src/daw.rs` | Song timeline: clips, audio files (WAV in/out, rate conversion, waveform peaks), take writer |
 | `engine/src/transfer.rs` | Reliable, paced file transfer to the partner (recorded takes) over the audio socket |
 | `engine/src/lib.rs` | Network threads (receive, punching, ping, files) and the Python API |
@@ -206,6 +237,7 @@ to it through lock-free queues and atomics.
 | `t3k.py` | TONE3000: OAuth/PKCE tone picker over a loopback redirect, model download, local library |
 | `ui/index.html` | The interface, incl. the WebRTC video call |
 | `ui/daw.js`, `ui/daw.css` | The playlist: transport, track headers, timeline with waveforms, song menu |
+| `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |
 | `.github/workflows/build.yml` | Builds, tests and smoke-tests the Mac app on every push |
 
 Live audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.

@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 use crate::daw::{Timeline, MAX_TRACKS};
 use crate::fx::{Rack, Slot};
+use crate::instr::{InstSlot, NoteEv};
 use crate::jitter::{JitterBuffer, MAX_CH, MAX_FRAME};
 use crate::net;
 
@@ -69,6 +70,9 @@ pub enum Cmd {
     Loop { on: bool, start: i64, end: i64 },
     /// The click while the transport plays (tempo and bar from the project).
     Click { on: bool, bpm: f32, beats: u32 },
+    /// What a strip plays instead of its input (None: back to the input).
+    Instrument(Target, Option<Box<InstSlot>>),
+    InstParam(Target, usize, f32),
 }
 
 /// One ring per local strip to record (None = not recorded).
@@ -80,6 +84,7 @@ pub enum Garbage {
     Slot(Box<Slot>),
     Timeline(Box<Timeline>),
     Rings(Box<RecRings>),
+    Inst(Box<InstSlot>),
 }
 
 /// One received audio packet, from the network thread to the audio thread.
@@ -163,6 +168,8 @@ pub struct Shared {
     /// samples the take writer couldn't keep up with
     pub rec_dropped: AtomicU64,
     pub track_levels: [AtomicF32; MAX_TRACKS],
+    /// notes sent to instruments so far (the UI's MIDI activity light)
+    pub midi_events: AtomicU64,
 }
 
 pub fn encode_peer(a: SocketAddrV4) -> u64 {
@@ -216,6 +223,7 @@ impl StripSettings {
 struct Strip {
     s: StripSettings,
     rack: Rack,
+    inst: Option<Box<InstSlot>>,
     buf: Vec<f32>,
     last: Vec<f32>, // remote strips: last good block, for concealment
     level: f32,
@@ -223,7 +231,7 @@ struct Strip {
 
 impl Strip {
     fn new(s: StripSettings) -> Self {
-        Strip { s, rack: Rack::new(), buf: vec![0.0; MAX_FRAME], last: vec![0.0; MAX_FRAME], level: 0.0 }
+        Strip { s, rack: Rack::new(), inst: None, buf: vec![0.0; MAX_FRAME], last: vec![0.0; MAX_FRAME], level: 0.0 }
     }
 }
 
@@ -330,6 +338,7 @@ pub struct Dsp {
     jitter: JitterBuffer,
     cmds: rtrb::Consumer<Cmd>,
     incoming: rtrb::Consumer<InPacket>,
+    notes: rtrb::Consumer<(Target, NoteEv)>,
     retired: rtrb::Producer<Garbage>,
     socket: Arc<UdpSocket>,
     shared: Arc<Shared>,
@@ -361,6 +370,7 @@ impl Dsp {
         frame: usize,
         cmds: rtrb::Consumer<Cmd>,
         incoming: rtrb::Consumer<InPacket>,
+        notes: rtrb::Consumer<(Target, NoteEv)>,
         retired: rtrb::Producer<Garbage>,
         socket: Arc<UdpSocket>,
         shared: Arc<Shared>,
@@ -385,6 +395,7 @@ impl Dsp {
             jitter: JitterBuffer::new(3),
             cmds,
             incoming,
+            notes,
             retired,
             socket,
             shared,
@@ -415,6 +426,13 @@ impl Dsp {
                     if !slot.fx.set_sample_rate(samplerate as f32) {
                         if let Ok(fx) = crate::fx::make(&slot.cfg, samplerate as f32) {
                             slot.fx = fx;
+                        }
+                    }
+                }
+                if let Some(inst) = strip.inst.as_mut() {
+                    if !inst.inst.set_sample_rate(samplerate as f32) {
+                        if let Ok(fresh) = InstSlot::new(inst.cfg.clone(), samplerate as f32) {
+                            *inst = fresh;
                         }
                     }
                 }
@@ -599,6 +617,31 @@ impl Dsp {
                     self.click.bpm = bpm;
                     self.click.beats = beats.max(1);
                 }
+                Cmd::Instrument(t, inst) => {
+                    let old = match self.strip(t) {
+                        Some(s) => std::mem::replace(&mut s.inst, inst),
+                        None => inst,
+                    };
+                    if let Some(old) = old {
+                        self.discard(Garbage::Inst(old));
+                    }
+                }
+                Cmd::InstParam(t, k, v) => {
+                    if let Some(inst) = self.strip(t).and_then(|s| s.inst.as_mut()) {
+                        if k < inst.cfg.p.len() {
+                            inst.cfg.p[k] = v;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Notes from the MIDI keyboard / computer keyboard to the strips' instruments.
+    fn take_notes(&mut self) {
+        while let Ok((t, ev)) = self.notes.pop() {
+            if let Some(inst) = self.strip(t).and_then(|s| s.inst.as_mut()) {
+                inst.inst.note(ev);
             }
         }
     }
@@ -678,6 +721,7 @@ impl Dsp {
         let t0 = std::time::Instant::now();
         let n = self.frame;
         self.apply_commands();
+        self.take_notes();
         self.take_packets();
 
         let any_solo = self.local.iter().chain(self.remote.iter()).any(|s| s.s.active && s.s.solo);
@@ -692,8 +736,17 @@ impl Dsp {
             }
             let ch = strip.s.input;
             let g = strip.s.gain;
-            for k in 0..n {
-                strip.buf[k] = if ch < in_ch { input[k * in_ch + ch] * g } else { 0.0 };
+            if let Some(inst) = strip.inst.as_mut() {
+                // an instrument strip plays its instrument instead of an input
+                let InstSlot { cfg, inst } = &mut **inst;
+                inst.process(&cfg.p, &mut strip.buf[..n]);
+                for v in strip.buf[..n].iter_mut() {
+                    *v *= g;
+                }
+            } else {
+                for k in 0..n {
+                    strip.buf[k] = if ch < in_ch { input[k * in_ch + ch] * g } else { 0.0 };
+                }
             }
             strip.rack.process(&mut strip.buf[..n]);
             let pk = strip.buf[..n].iter().fold(0f32, |a, v| a.max(v.abs()));

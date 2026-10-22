@@ -154,12 +154,12 @@ class VstLibrary:
         finally:
             self.status = {**self.status, "scanning": False}
 
-    def plugins(self) -> list:
-        """Effects only (no instruments: Duet's racks have no MIDI)."""
+    def plugins(self, instruments: bool = False) -> list:
+        """Effects (for racks), or instruments (for a strip to play)."""
         out = []
         for path, entry in self._cache.items():
             for c in entry.get("classes", []):
-                if c.get("instrument"):
+                if bool(c.get("instrument")) != instruments:
                     continue
                 out.append({"path": path, "cid": c["cid"], "name": c["name"], "vendor": c.get("vendor") or "",
                             "sub": c.get("sub") or "", "file": Path(path).name})
