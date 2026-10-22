@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use crate::dsp::{pan_gains, StripSettings};
 use crate::fx::{Rack, Slot, SlotCfg};
+use crate::instr::{InstCfg, InstSlot, NoteEv};
 
 pub const MAX_TRACKS: usize = 32;
 /// Samples per waveform overview bucket (one min/max pair each).
@@ -42,14 +43,33 @@ pub struct ClipRt {
     pub data: Arc<AudioData>,
 }
 
-/// Every track's clips, sorted by start. Index = track slot.
+/// A note event for a track's instrument, at a timeline position.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoteAt {
+    pub pos: i64,
+    pub on: bool,
+    pub key: u8,
+    pub vel: u8,
+}
+
+/// Every track's clips, sorted by start, and the notes its instrument plays,
+/// sorted by position. Index = track slot.
 pub struct Timeline {
     pub tracks: Vec<Vec<ClipRt>>,
+    pub notes: Vec<Vec<NoteAt>>,
 }
 
 impl Timeline {
     pub fn empty() -> Self {
-        Timeline { tracks: (0..MAX_TRACKS).map(|_| Vec::new()).collect() }
+        Timeline { tracks: (0..MAX_TRACKS).map(|_| Vec::new()).collect(), notes: (0..MAX_TRACKS).map(|_| Vec::new()).collect() }
+    }
+
+    /// Track `t`'s note events in pos..end (a binary search: no scanning).
+    pub fn notes_in(&self, t: usize, pos: i64, end: i64) -> &[NoteAt] {
+        let Some(ns) = self.notes.get(t) else { return &[] };
+        let a = ns.partition_point(|n| n.pos < pos);
+        let b = a + ns[a..].partition_point(|n| n.pos < end);
+        &ns[a..b]
     }
 
     /// Add track `t`'s audio for timeline samples pos..pos+out.len() into `out`.
@@ -99,6 +119,33 @@ pub struct ClipDesc {
     pub fade_out: f64,
 }
 
+/// Play track `t`'s instrument for timeline samples pos..pos+out.len() into
+/// `out` (replacing it), each note at its exact sample.
+pub fn render_inst(tl: &Timeline, t: usize, inst: &mut InstSlot, pos: i64, out: &mut [f32]) {
+    let n = out.len();
+    let mut done = 0;
+    for e in tl.notes_in(t, pos, pos + n as i64) {
+        let at = ((e.pos - pos).max(0) as usize).min(n);
+        if at > done {
+            inst.inst.process(&inst.cfg.p, &mut out[done..at]);
+            done = at;
+        }
+        inst.inst.note(if e.on { NoteEv::On(e.key, e.vel) } else { NoteEv::Off(e.key) });
+    }
+    if done < n {
+        inst.inst.process(&inst.cfg.p, &mut out[done..]);
+    }
+}
+
+/// A note as the song describes it, in seconds.
+#[derive(Clone, Debug)]
+pub struct NoteDesc {
+    pub t: f64,
+    pub dur: f64,
+    pub key: u8,
+    pub vel: u8,
+}
+
 /// Loaded audio, by file key, plus copies converted to the device rate.
 #[derive(Default)]
 pub struct AudioCache {
@@ -139,7 +186,7 @@ impl AudioCache {
     }
 
     /// Build the audio thread's timeline from the project's description.
-    pub fn build(&mut self, desc: &[Vec<ClipDesc>], sr: u32) -> Timeline {
+    pub fn build(&mut self, desc: &[Vec<ClipDesc>], notes: &[Vec<NoteDesc>], sr: u32) -> Timeline {
         let s = |secs: f64| (secs * sr as f64).round() as i64;
         let mut tl = Timeline::empty();
         for (t, clips) in desc.iter().enumerate().take(MAX_TRACKS) {
@@ -160,6 +207,17 @@ impl AudioCache {
                 });
             }
             tl.tracks[t].sort_by_key(|c| c.start);
+        }
+        for (t, ns) in notes.iter().enumerate().take(MAX_TRACKS) {
+            let ev = &mut tl.notes[t];
+            for n in ns {
+                let on = s(n.t);
+                let off = s(n.t + n.dur).max(on + 1);
+                ev.push(NoteAt { pos: on, on: true, key: n.key & 127, vel: n.vel.clamp(1, 127) });
+                ev.push(NoteAt { pos: off, on: false, key: n.key & 127, vel: 0 });
+            }
+            // at the same moment a note ends before the next one starts (repeated notes)
+            ev.sort_by_key(|e| (e.pos, e.on));
         }
         tl
     }
@@ -293,6 +351,7 @@ pub struct TrackMix {
     pub slot: usize,
     pub s: StripSettings,
     pub rack: Vec<SlotCfg>,
+    pub inst: Option<InstCfg>,
     /// also write this track on its own (after its fader and pan)
     pub stem: Option<PathBuf>,
 }
@@ -313,6 +372,7 @@ pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, master: f32, sr: u32, start:
         slot: usize,
         s: StripSettings,
         rack: Rack,
+        inst: Option<Box<InstSlot>>,
         stem: Option<Wav>,
         buf: Vec<f32>,
     }
@@ -328,11 +388,21 @@ pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, master: f32, sr: u32, start:
                 Err(e) => warnings.push(format!("an effect on track {} was left out: {e}", t.slot + 1)),
             }
         }
+        let inst = match t.inst {
+            Some(cfg) => match InstSlot::new(cfg, sr as f32) {
+                Ok(i) => Some(i),
+                Err(e) => {
+                    warnings.push(format!("the instrument on track {} was left out: {e}", t.slot + 1));
+                    None
+                }
+            },
+            None => None,
+        };
         let stem = match &t.stem {
             Some(p) => Some(create(p)?),
             None => None,
         };
-        ts.push(T { slot: t.slot, s: t.s, rack, stem, buf: vec![0.0; BLOCK] });
+        ts.push(T { slot: t.slot, s: t.s, rack, inst, stem, buf: vec![0.0; BLOCK] });
     }
     let mut mixw = match &mix {
         Some(p) => Some(create(p)?),
@@ -348,6 +418,9 @@ pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, master: f32, sr: u32, start:
         for t in ts.iter_mut() {
             let buf = &mut t.buf[..n];
             buf.fill(0.0);
+            if let Some(inst) = t.inst.as_mut() {
+                render_inst(tl, t.slot, inst, pos, buf);
+            }
             tl.render(t.slot, pos, buf);
             for v in buf.iter_mut() {
                 *v *= t.s.gain;
@@ -420,13 +493,13 @@ mod tests {
         let mut cache = AudioCache::default();
         cache.insert("a", AudioData { sr: 24000, samples: vec![0.5; 24000] });
         let desc = vec![vec![ClipDesc { key: "a".into(), start: 1.0, offset: 0.0, len: 0.5, gain: 1.0, fade_in: 0.0, fade_out: 0.0 }]];
-        let tl = cache.build(&desc, 48000);
+        let tl = cache.build(&desc, &[], 48000);
         let c = &tl.tracks[0][0];
         assert_eq!((c.start, c.len, c.data.sr), (48000, 24000, 48000));
         assert!((c.data.samples.len() as i64 - 48000).abs() <= 1);
         // a missing file just isn't there yet
         let desc = vec![vec![ClipDesc { key: "b".into(), ..desc[0][0].clone() }]];
-        assert!(cache.build(&desc, 48000).tracks[0].is_empty());
+        assert!(cache.build(&desc, &[], 48000).tracks[0].is_empty());
     }
 
     #[test]
@@ -439,8 +512,8 @@ mod tests {
         tl.tracks[3].push(clip(0, 0, 4800, &data));
         let s = |pan: f32, mute: bool| StripSettings { active: true, pan, mute, ..StripSettings::track() };
         let tracks = vec![
-            TrackMix { slot: 0, s: s(-1.0, false), rack: vec![], stem: Some(dir.join("a.wav")) },
-            TrackMix { slot: 3, s: s(0.0, true), rack: vec![SlotCfg::new(5)], stem: Some(dir.join("b.wav")) },
+            TrackMix { slot: 0, s: s(-1.0, false), rack: vec![], inst: None, stem: Some(dir.join("a.wav")) },
+            TrackMix { slot: 3, s: s(0.0, true), rack: vec![SlotCfg::new(5)], inst: None, stem: Some(dir.join("b.wav")) },
         ];
         let done = AtomicU64::new(0);
         let warn = render(&tl, tracks, 1.0, 48000, 0, 8000, Some(dir.join("mix.wav")), &done).unwrap();
@@ -459,6 +532,43 @@ mod tests {
         let b = read("b.wav");
         assert!(b[2 * 2000].abs() > 0.1, "a muted track still gets its own stem");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Clicks once on the first sample after each note on.
+    struct Clicker(bool);
+    impl crate::instr::Instrument for Clicker {
+        fn note(&mut self, ev: NoteEv) {
+            if let NoteEv::On(..) = ev {
+                self.0 = true;
+            }
+        }
+        fn process(&mut self, _p: &[f32; crate::instr::N_PARAMS], out: &mut [f32]) {
+            out.fill(0.0);
+            if std::mem::take(&mut self.0) && !out.is_empty() {
+                out[0] = 1.0;
+            }
+        }
+    }
+
+    #[test]
+    fn notes_play_on_their_exact_sample() {
+        let mut cache = AudioCache::default();
+        let notes = vec![vec![], vec![
+            NoteDesc { t: 0.0, dur: 0.1, key: 60, vel: 100 },
+            NoteDesc { t: 300.0 / 48000.0, dur: 0.01, key: 62, vel: 100 },
+            NoteDesc { t: 1000.0 / 48000.0, dur: 0.01, key: 64, vel: 100 },
+        ]];
+        let tl = cache.build(&[], &notes, 48000);
+        assert_eq!(tl.notes[1].len(), 6);
+        assert_eq!(tl.notes_in(1, 256, 384).iter().filter(|n| n.on).count(), 1);
+        let mut inst = InstSlot { cfg: InstCfg::new(crate::instr::SYNTH), inst: Box::new(Clicker(false)) };
+        let mut clicks = vec![];
+        let mut buf = [0f32; 128];
+        for b in 0..10i64 {
+            render_inst(&tl, 1, &mut inst, b * 128, &mut buf);
+            clicks.extend(buf.iter().enumerate().filter(|(_, v)| **v > 0.5).map(|(k, _)| b * 128 + k as i64));
+        }
+        assert_eq!(clicks, vec![0, 300, 1000]);
     }
 
     #[test]

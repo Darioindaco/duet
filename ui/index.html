@@ -369,6 +369,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 </style>
 <link rel="stylesheet" href="daw.css">
 <link rel="stylesheet" href="instr.css">
+<link rel="stylesheet" href="seq.css">
 </head>
 <body>
 <div class="app">
@@ -384,7 +385,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
       </svg>
       <h1><span>Duet</span></h1>
     </div>
-    <div class="seg views" id="viewSeg" role="tablist"><button data-v="song">Playlist</button><button data-v="mixer">Mixer</button></div>
+    <div class="seg views" id="viewSeg" role="tablist"><button data-v="song">Playlist</button><button data-v="seq">Sequencer</button><button data-v="mixer">Mixer</button></div>
     <button class="songbtn" id="songBtn"><span class="sh" id="songShared"></span><span class="nm" id="songName">Song</span>
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
     <div class="spacer"></div>
@@ -478,6 +479,31 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
               <canvas id="lanesCv"></canvas><canvas id="lanesOv"></canvas>
               <div class="lanes" id="lanes"><div id="lanesSize"></div></div>
             </div>
+          </div>
+        </section>
+      </div>
+      <div class="view" id="viewSeq" hidden>
+        <section class="card seqcard">
+          <div class="seqbar">
+            <button class="tbtn play" id="patPlay" title="Play this pattern on its own, looped (space)" aria-label="Play the pattern">
+              <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg></button>
+            <select id="patSel" aria-label="Pattern" title="The pattern you're editing"></select>
+            <select id="patLen" aria-label="Pattern length" title="Length"><option value="1">1 bar</option><option value="2">2 bars</option><option value="4">4 bars</option><option value="8">8 bars</option></select>
+            <button class="ttog" id="patMore" title="Rename, copy, clear or delete the pattern">⋯</button>
+            <button class="ttog" id="patPlace" title="Put the pattern in the playlist at the playhead (or double-click an empty spot in the playlist)">+ Into the song</button>
+            <div class="spacer"></div>
+            <select id="addChannel" class="addfx" aria-label="Add a channel"><option value="">+ Channel</option><option value="drums">Drum kit</option><option value="synth">Synth</option><option value="vst">VST instrument…</option></select>
+          </div>
+          <div class="chanrows" id="chanRows"></div>
+          <div class="prhead"><h2 id="prTitle">Piano roll</h2><div class="spacer"></div>
+            <span class="prhint">Click: a note · drag: move / longer · right-click: delete · alt: no snap</span>
+            <select id="prSnap" aria-label="Snap"></select>
+            <div class="zoom"><button id="prZoomOut" aria-label="Zoom out">−</button><button id="prZoomIn" aria-label="Zoom in">+</button></div></div>
+          <div class="prwrap" id="prWrap">
+            <div class="prkeys"><div id="prKeysIn"></div></div>
+            <div class="prlanewrap"><canvas id="prCv"></canvas><div class="prlanes" id="prLanes"><div id="prSize"></div></div></div>
+            <div class="prvelpad"></div>
+            <canvas id="prVel" title="Velocity: drag the bars up or down"></canvas>
           </div>
         </section>
       </div>
@@ -586,6 +612,7 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 
 <script src="daw.js"></script>
 <script src="instr.js"></script>
+<script src="seq.js"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -1085,7 +1112,8 @@ function stripEl(t) {
     const l = document.createElement("div");
     const theirs = t[0] === "R" ? ui.partnerFx[+t.slice(1)] || [] : [];
     l.className = "srclbl" + (theirs.length ? " theirs" : "");
-    l.textContent = t === "M" ? "out" : track ? (track.mine ? "song · you" : "song · partner") : theirs.length ? "theirs: " + theirs.join(", ") : "from partner";
+    l.textContent = t === "M" ? "out" : track ? (track.inst ? "channel · " + instLabel(track.inst) : track.mine ? "song · you" : "song · partner")
+      : theirs.length ? "theirs: " + theirs.join(", ") : "from partner";
     if (theirs.length) l.title = `Effects on their side, already in what you hear: ${theirs.join(" → ")}`;
     el.append(l);
   }
@@ -1300,6 +1328,12 @@ function vstRender(res) {
     if (!item) return;
     const p = list[+item.dataset.i];
     box.innerHTML = `<div class="mwait"><span class="spinner"></span>Loading ${esc(p.name)}… (some plugins take a while)</div>`;
+    if (ui.vstMode === "inst" && ui.instFor === "new-channel") {
+      $("vstm").hidden = true;
+      makeChannel({ kind: "vst", vst: { path: p.path, cid: p.cid, name: p.name } }, p.name);
+      setMainView("seq");
+      return;
+    }
     if (ui.vstMode === "inst") {
       const t = ui.instFor;
       const r = await api.inst_set(t, "vst", { path: p.path, cid: p.cid, name: p.name });
@@ -1393,7 +1427,7 @@ function renderRack() {
   const color = t[0] === "L" || (track && track.mine) ? "var(--me)" : "var(--partner)";
   $("rackTitle").innerHTML = `FX rack <span class="who" style="--c:${color}">· ${esc(stripName(t))}${track ? " (song track)" : ""}</span>`;
   for (const c of $("presets").children) c.classList.remove("on");
-  if (t[0] === "L" && cfg.inst) rack.append(instPanel(t, cfg.inst));
+  if ((t[0] === "L" || t[0] === "T") && cfg.inst) rack.append(instPanel(t, cfg.inst));
   if (!cfg.rack.length) {
     rack.insertAdjacentHTML("beforeend", `<div class="empty-rack"><b>No effects on this channel yet.</b><br>Add one with the menu on the right, or start from a preset.
       ${track ? "Effects on a song track are part of the song: you both hear them."
@@ -1654,6 +1688,7 @@ async function boot(a) {
   renderRack();
   songSetup();
   instSetup();
+  seqSetup();
   $("vstX").onclick = () => ($("vstm").hidden = true);
   $("vstm").onclick = (e) => e.target === $("vstm") && ($("vstm").hidden = true);
   $("vstQ").oninput = () => ui.vstRes && vstRender(ui.vstRes);
@@ -1854,7 +1889,9 @@ function demoApi() {
             strip(1, true, { pan: -0.3, fader: 0.8, rack: [slot("comp", { threshold: 0.35 }), slot("reverb", { mix: 0.25 })] }),
             strip(2, false), strip(3, false)],
     remote: Array.from({ length: 8 }, (_, i) => strip(0, true, { send: false, mon: true, pan: i === 1 ? 0.35 : 0, rack: i === 0 ? [slot("reverb", { mix: 0.2 })] : [] })),
-    tracks: Array.from({ length: 32 }, (_, i) => strip(0, i < 3, { send: false, mon: true, fader: 0.8, rack: i === 0 ? [slot("reverb", { mix: 0.25 })] : [] })),
+    tracks: Array.from({ length: 32 }, (_, i) => strip(0, i < 5, { send: false, mon: true, fader: 0.8, rack: i === 0 ? [slot("reverb", { mix: 0.25 })] : [],
+      inst: i === 3 ? { kind: "drums", level: 0.8, tune: 0.5, decay: 0.5, pads: Array(16).fill(null), pad_names: [[36, "Kick"], [37, "Rim"], [38, "Snare"], [39, "Clap"], [40, "Snare 2"], [41, "Floor tom"], [42, "Closed hat"], [43, "Low tom"], [44, "Pedal hat"], [45, "Mid tom"], [46, "Open hat"], [47, "Tom"], [48, "High tom"], [49, "Crash"], [50, "Top tom"], [51, "Ride"]] }
+        : i === 4 ? { kind: "synth", wave: 0.3, cutoff: 0.4, resonance: 0.3, attack: 0.02, release: 0.2, detune: 0.2 } : null })),
     master: 1,
   };
   const songDemo = demoSong();

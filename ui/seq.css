@@ -1,0 +1,54 @@
+/* Duet: the sequencer (channel rack + piano roll). */
+
+.views button { padding: 6px 12px; }
+.card.seqcard { display: flex; flex-direction: column; min-height: 0; padding: 12px; gap: 10px; }
+.seqbar { display: flex; align-items: center; gap: 8px; }
+.seqbar select { width: auto; padding: 6px 26px 6px 9px; font-size: 12.5px; border-radius: 9px; background-position: calc(100% - 13px) 52%, calc(100% - 9px) 52%; }
+#patSel { min-width: 160px; font-weight: 650; }
+#patPlay.on { background: var(--ok); color: #062012; border-color: transparent; }
+
+.chanrows { flex: 0 1 auto; max-height: 42%; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 2px; }
+.chan { --c: var(--me); display: grid; grid-template-columns: 236px 1fr; gap: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 11px; padding: 6px; }
+.chan.partner { --c: var(--partner); }
+.chan.sel { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset; }
+.chead { display: flex; flex-direction: column; gap: 5px; padding: 2px 4px; cursor: pointer; border-left: 3px solid var(--c); border-radius: 2px; }
+.cname b { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cname span { font-size: 11px; color: var(--muted); }
+.ctools { display: flex; align-items: center; gap: 4px; }
+.ctools .tb { width: 24px; height: 22px; font-size: 10px; }
+.ctools .hs { width: 64px; flex: none; }
+.ctools .fxb { height: 22px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--muted); font-size: 10px; font-weight: 750; cursor: pointer; }
+.cgrid { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-x: auto; }
+.srow { display: grid; grid-template-columns: 82px 1fr; gap: 6px; align-items: center; }
+.rname { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.rname:hover { color: var(--text); }
+.cells { display: grid; gap: 3px; }
+.step { height: 20px; border-radius: 4px; border: 1px solid #000; cursor: pointer; padding: 0; background: #2b2733; }
+.step.odd { background: #221f29; }
+.step.bar { box-shadow: -2px 0 0 rgba(255,255,255,0.12); }
+.step:hover { filter: brightness(1.35); }
+.step.on { background: var(--c); opacity: calc(0.5 + 0.5 * var(--v, 0.8)); }
+.step.now { outline: 2px solid #fff; outline-offset: -2px; }
+.seq-empty { color: var(--faint); font-size: 13px; line-height: 1.6; padding: 14px 6px; }
+.seq-empty b { color: var(--muted); }
+
+.prhead { display: flex; align-items: center; gap: 8px; }
+.prhead h2 { margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+.prhead .who { text-transform: none; letter-spacing: 0; color: var(--text); font-size: 13px; }
+.prhead select { width: auto; padding: 5px 24px 5px 8px; font-size: 12px; border-radius: 8px; background-position: calc(100% - 12px) 52%, calc(100% - 8px) 52%; }
+.prhint { font-size: 11px; color: var(--faint); }
+.prwrap { flex: 1; min-height: 160px; display: grid; grid-template-columns: 74px 1fr; grid-template-rows: 1fr 54px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #0c0b10; }
+.prkeys { position: relative; overflow: hidden; border-right: 1px solid var(--line); background: #e9e6ee; }
+#prKeysIn { position: absolute; left: 0; right: 0; top: 0; }
+.pkey { box-sizing: border-box; border-bottom: 1px solid #c8c3d0; font-size: 10px; color: #3a3542; padding-right: 5px; text-align: right; display: flex; align-items: center; justify-content: flex-end; cursor: pointer; background: #f2f0f5; white-space: nowrap; overflow: hidden; }
+.pkey.black { background: #2a2733; color: #ccc; border-bottom-color: #1a1820; margin-right: 26px; }
+.pkey.c { font-weight: 750; }
+.pkey:active { filter: brightness(0.85); }
+.prlanewrap { position: relative; min-width: 0; min-height: 0; }
+#prCv { position: absolute; left: 0; top: 0; pointer-events: none; }
+.prlanes { position: absolute; inset: 0; overflow: auto; cursor: crosshair; }
+.prvelpad { border-top: 1px solid var(--line); border-right: 1px solid var(--line); background: var(--panel); }
+#prVel { display: block; border-top: 1px solid var(--line); cursor: ns-resize; }
+#viewSeq { grid-template-rows: 1fr; }
+.ctools .fxb { white-space: nowrap; }
+.minipr { display: block; width: 100%; height: 44px; border-radius: 6px; cursor: pointer; }

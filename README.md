@@ -139,6 +139,37 @@ start a new one, or open an older one (your partner switches along). If you
 both had a different song open when you connected, Duet asks which one to use;
 the other one stays saved.
 
+## Sequencer: patterns, channel rack, piano roll
+
+The **Sequencer** tab works like FL Studio's channel rack and piano roll, in
+the shared song (your partner sees every note you place, and you theirs).
+
+- **Channels** are the song's instruments: *+ Channel* → Drum kit, Synth or a
+  VST instrument. A channel is also a track in the playlist and a strip in the
+  mixer (*Sound* opens its knobs, pads and effects there).
+- **Patterns** hold notes for any number of channels. Pick one at the top (or
+  *+ New pattern*), set its length (1–8 bars); *⋯* renames, copies, clears or
+  deletes it.
+- **Steps:** every channel has a row of 16th-note steps per bar; a drum kit has a
+  row per pad (*All pads* shows all 16). Click a step to switch it on or off.
+- **Piano roll** (below) for the selected channel: click to draw a note, drag to
+  move it (up/down changes the pitch), drag its right end to make it longer,
+  right-click to delete. Notes snap to the grid (*Snap*, or hold *Alt*). The bars
+  underneath are the velocities: drag them up or down. Click a key on the left to
+  hear it. *Ctrl+A*, *Delete* and *Ctrl+Z* work here too.
+- **▶** plays the pattern on its own, looped (*space*), while you work on it.
+- **Into the song:** *+ Into the song* puts the pattern in the playlist at the
+  playhead, or double-click an empty spot in the playlist. A pattern block plays
+  the pattern's notes on their channels; drag its right end to make it longer and
+  the pattern repeats. Blocks move, trim, split, copy and delete like clips;
+  double-click one to edit the pattern.
+- **Recording notes:** arm a channel (its red dot in the playlist) and record:
+  what you play on the MIDI keyboard or the computer keyboard becomes a new
+  pattern, placed where you started.
+
+Patterns play on both computers from the same notes, so they sound the same and
+in full quality on both sides (a VST instrument needs to be installed on both).
+
 ## Instruments
 
 A strip of yours can play an **instrument** instead of an input: in the strip's
@@ -237,6 +268,7 @@ to it through lock-free queues and atomics.
 | `t3k.py` | TONE3000: OAuth/PKCE tone picker over a loopback redirect, model download, local library |
 | `ui/index.html` | The interface, incl. the WebRTC video call |
 | `ui/daw.js`, `ui/daw.css` | The playlist: transport, track headers, timeline with waveforms, song menu |
+| `ui/seq.js`, `ui/seq.css` | The sequencer: patterns, channel rack with steps, piano roll with velocities |
 | `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |
 | `.github/workflows/build.yml` | Builds, tests and smoke-tests the Mac app on every push |
 

@@ -27,9 +27,18 @@ const typing = { on: false, octave: 4, held: new Map(), target: null, midiTarget
 
 const instLabel = (inst) => (inst.kind === "vst" ? inst.vst?.name || "Instrument" : INST[inst.kind].name);
 
-// the strip the keyboards play: the selected one if it has an instrument, else the first that has one
+// the strip the keyboards play: while recording, an armed channel; in the
+// sequencer, the channel you're on; else the selected strip if it has an
+// instrument, else your first strip that has one
 function instTarget() {
   if (!ui.mixer) return null;
+  const chan = (tid) => { const t = song.view?.tracks.find((x) => x.id === tid); return t && t.inst && t.slot != null ? "T" + t.slot : null; };
+  if (song.st?.recording) {
+    const armed = song.view?.tracks.find((t) => t.inst && t.arm && t.slot != null);
+    if (armed) return "T" + armed.slot;
+  }
+  if (ui.view === "seq" && chan(seq.channel)) return chan(seq.channel);
+  if (ui.sel[0] === "T" && stripCfg(ui.sel)?.inst) return ui.sel;
   const has = (t) => t[0] === "L" && stripCfg(t)?.active && stripCfg(t)?.inst;
   if (has(ui.sel)) return ui.sel;
   const i = ui.mixer.local.findIndex((s) => s.active && s.inst);

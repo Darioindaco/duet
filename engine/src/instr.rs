@@ -45,6 +45,9 @@ pub enum NoteEv {
     On(u8, u8), // key, velocity
     Off(u8),
     Sustain(bool),
+    /// let every sounding note go (stop, a loop jumping back): releases ring out
+    Release,
+    /// silence now (panic)
     AllOff,
 }
 
@@ -107,7 +110,7 @@ impl InstSlot {
                     has_editor: inst.has_editor,
                     ..v
                 });
-                Box::new(VstInst { proc, pending: [None; 128], n_pending: 0, sustain: false, held: [false; 128] })
+                Box::new(VstInst { proc, pending: [None; 160], n_pending: 0, sustain: false, held: [false; 128], sounding: [false; 128] })
             }
             k => return Err(format!("no instrument kind {k}")),
         };
@@ -434,6 +437,13 @@ impl Instrument for Synth {
                     }
                 }
             }
+            NoteEv::Release => {
+                self.sustain = false;
+                for v in self.voices.iter_mut().flatten() {
+                    v.on = false;
+                    v.held = false;
+                }
+            }
             NoteEv::AllOff => self.voices = [None; 8],
         }
     }
@@ -487,10 +497,11 @@ impl Instrument for Synth {
 
 pub struct VstInst {
     pub proc: crate::vst::VstProc,
-    pending: [Option<(bool, u8, u8)>; 128],
+    pending: [Option<(bool, u8, u8)>; 160],
     n_pending: usize,
     sustain: bool,
     held: [bool; 128],
+    sounding: [bool; 128],
 }
 
 impl VstInst {
@@ -508,10 +519,23 @@ impl Instrument for VstInst {
         match ev {
             NoteEv::On(k, v) => {
                 self.held[k as usize & 127] = false;
+                self.sounding[k as usize & 127] = true;
                 self.queue((true, k, v));
             }
             NoteEv::Off(k) if self.sustain => self.held[k as usize & 127] = true,
-            NoteEv::Off(k) => self.queue((false, k, 0)),
+            NoteEv::Off(k) => {
+                self.sounding[k as usize & 127] = false;
+                self.queue((false, k, 0));
+            }
+            NoteEv::Release => {
+                self.sustain = false;
+                for k in 0..128u8 {
+                    self.held[k as usize] = false;
+                    if std::mem::take(&mut self.sounding[k as usize]) {
+                        self.queue((false, k, 0));
+                    }
+                }
+            }
             NoteEv::Sustain(down) => {
                 self.sustain = down;
                 if !down {
@@ -523,6 +547,7 @@ impl Instrument for VstInst {
                 }
             }
             NoteEv::AllOff => {
+                self.sounding = [false; 128];
                 for k in 0..128u8 {
                     self.queue((false, k, 0));
                 }

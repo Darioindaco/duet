@@ -16,13 +16,20 @@ against its own playback of the timeline, corrected for its own sound card
 delay, so they land on the beat however far apart you are.
 
 Times: clip starts, the loop and the playhead are in beats (so they follow the
-tempo, like the grid); offsets into audio and clip lengths are in seconds.
+tempo, like the grid); offsets into audio and audio clip lengths are in seconds.
+Everything about notes is in beats: a pattern clip's length (blen) and offset
+into its pattern (boff), a note's start and length within its pattern.
+
+Patterns (FL style): a pattern holds notes for any number of channels; a
+channel is a track with an instrument. A pattern clip on any lane plays the
+pattern's notes on their channels, repeating it when the clip is longer.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -33,27 +40,31 @@ import time
 import traceback
 from pathlib import Path
 
-KINDS = ("meta", "track", "clip", "file")
+KINDS = ("meta", "track", "clip", "file", "pattern", "note")
 MAX_TRACKS = 32
 META_DEFAULTS = {"name": "Untitled", "bpm": 120.0, "beats": 4, "loop": False, "loop_start": 0.0, "loop_end": 16.0}
 # per field, what the UI may set (anything else in an edit is ignored)
 FIELDS = {
     "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end"},
-    "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "del"},
-    "clip": {"track", "file", "start", "offset", "len", "gain", "fade_in", "fade_out", "del"},
+    "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "inst", "seq", "del"},
+    "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out", "del"},
     "file": {"frames", "sr", "owner", "del"},
+    "pattern": {"name", "len", "color", "del"},
+    "note": {"pattern", "track", "start", "len", "key", "vel", "del"},
 }
 
 
 # what a field reads as when it was never set (to undo setting it)
 FIELD_DEFAULTS = {
     "meta": META_DEFAULTS,
-    "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "del": False},
-    "clip": {"gain": 1.0, "offset": 0.0, "fade_in": 0.0, "fade_out": 0.0, "del": False},
+    "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None, "del": False},
+    "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "del": False},
     "file": {"del": False},
+    "pattern": {"del": False},
+    "note": {"vel": 100, "del": False},
 }
 # controls you turn rather than click: a run of turns is one undo step
-CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack"}
+CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel"}
 UNDO_DEPTH = 200
 
 # ids and file names end up in paths: only plain names, whatever the partner sends
@@ -195,7 +206,10 @@ class Daw:
         self.slots: dict[str, int] = {}
         self.sent_strip: dict = {}
         self.sent_rack: dict[int, list] = {}
+        self.sent_inst: dict[int, dict | None] = {}
         self.sent_desc = None
+        self.sent_notes = None
+        self.pattern_mode: str | None = None  # playing just this pattern, looped (local)
         self.sent_loop = None
         self.sent_click = None
         self.cursor = 0.0  # playhead while stopped, in beats
@@ -270,6 +284,7 @@ class Daw:
         self.load_failed.clear()
         self.wanted.clear()
         self.sent_desc = None
+        self.pattern_mode = None
         self.cursor = 0.0
         self.undos.clear()
         self.redos.clear()
@@ -396,6 +411,10 @@ class Daw:
                 if any(x.get("vst") for x in rack) and rack != self.p.live("track").get(tid, {}).get("rack"):
                     self.sent_rack[slot] = rack
                     changes.append(["track", tid, {"rack": rack}])
+                inst = clean_inst(tracks[slot].get("inst"))
+                if inst and inst.get("vst") and inst != self.p.live("track").get(tid, {}).get("inst"):
+                    self.sent_inst[slot] = json.loads(json.dumps(inst))
+                    changes.append(["track", tid, {"inst": inst}])
             self._do(changes, undoable=False)
 
     def _apply(self, ops: list, local: bool):
@@ -449,15 +468,19 @@ class Daw:
         self.play_from = pos
         sources = {}
         if rec:
-            mine = {tid: t for tid, t in self.p.live("track").items()
-                    if t.get("arm") and t.get("owner") == self.me and tid in self.slots}
+            live = self.p.live("track")
+            # armed audio tracks record your input; armed channels record the notes you play
+            mine = {tid: t for tid, t in live.items()
+                    if t.get("arm") and t.get("owner") == self.me and tid in self.slots and not t.get("inst")}
+            channels = [tid for tid, t in live.items() if t.get("arm") and t.get("inst") and tid in self.slots]
             for tid, t in mine.items():
                 src = int(t.get("src", 0))
                 if src not in sources:
                     sources[src] = new_id("take-") + ".wav"
             self.p.audio_dir.mkdir(parents=True, exist_ok=True)
-            self.rec = {"punch": at, "sources": sources, "tracks": {tid: int(t.get("src", 0)) for tid, t in mine.items()}}
-        if sources:
+            self.rec = {"punch": at, "sources": sources, "tracks": {tid: int(t.get("src", 0)) for tid, t in mine.items()},
+                        "channels": channels}
+        if sources or (self.rec and self.rec["channels"]):
             self.e.daw_record([(src, key, str(self.p.audio_dir / key)) for src, key in sources.items()], start, until)
         else:
             self.e.daw_play(start, until)
@@ -470,8 +493,13 @@ class Daw:
             self._stop(broadcast=True)
 
     def _stop(self, broadcast: bool):
+        stop_at = self.e.state()["daw_pos"]
         takes = self.e.daw_stop()
+        played = self.e.daw_rec_notes()
         rec, self.rec = self.rec, None
+        if self.pattern_mode:
+            self.pattern_mode = None
+            self._push()
         if rec and takes:
             spb = self._spb()
             changes = []
@@ -501,11 +529,68 @@ class Daw:
                     self.notices.append("The recording skipped a little (the disk couldn't keep up).")
             self._do(changes)  # one undo step takes the whole take back out
             self._flush()
+        if rec and played:
+            self._take_notes(rec, played, stop_at)
         self.cursor = self.play_from  # back to where you started, like FL
         self.e.daw_locate(self.cursor * self._spb())
         if broadcast:
             self._send({"t": "tp", "play": False})
         self.version += 1
+
+    def _take_notes(self, rec: dict, played: list, stop_at: float):
+        """Notes played on armed channels while recording become a new pattern
+        per channel, placed where the recording started."""
+        spb, beats = self._spb(), int(self.p.meta()["beats"])
+        lat = (self.e.state().get("lat_out_ms") or 0.0) / 1000.0  # you played to what you heard
+        punch = rec["punch"] / spb
+        tracks = self.p.live("track")
+        changes = []
+        for tid in rec.get("channels", []):
+            slot = self.slots.get(tid)
+            evs = [ev for ev in played if ev[0] == slot]
+            if slot is None or not evs:
+                continue
+            down, pedal, held, notes = {}, False, set(), []
+
+            def end(key, at):
+                b0, vel = down.pop(key)
+                notes.append((b0, max(0.02, at - b0), key, vel))
+            for _slot, kind, key, vel, t in evs:
+                at = (t - lat) / spb - punch
+                if kind == "on":
+                    if key in down:
+                        end(key, at)
+                    down[key] = (at, vel)
+                    held.discard(key)
+                elif kind == "off" and key in down:
+                    if pedal:
+                        held.add(key)
+                    else:
+                        end(key, at)
+                elif kind == "pedal down":
+                    pedal = True
+                elif kind == "pedal up":
+                    pedal = False
+                    for k in [k for k in held if k in down]:
+                        end(k, at)
+                    held.clear()
+            last = (stop_at - lat) / spb - punch
+            for k in list(down):
+                end(k, last)
+            notes = [n for n in notes if n[0] >= -1e-6]  # not what was played during the count-in
+            if not notes:
+                continue
+            length = max(beats, math.ceil(max(b + d for b, d, _, _ in notes) / beats - 1e-9) * beats)
+            pid = new_id("p")
+            name = f"{tracks[tid].get('name') or 'Channel'} take"
+            changes.append(["pattern", pid, {"name": name, "len": float(length)}])
+            for b, d, key, vel in notes:
+                changes.append(["note", new_id("n"), {"pattern": pid, "track": tid, "start": max(0.0, b), "len": d,
+                                                      "key": int(key), "vel": int(vel)}])
+            changes.append(["clip", new_id("c"), {"track": tid, "pattern": pid, "start": punch, "blen": float(length), "boff": 0.0}])
+        if changes:
+            self._do(changes)
+            self._flush()
 
     def locate(self, pos: float):
         with self.lock:
@@ -528,7 +613,8 @@ class Daw:
                 if not clips:
                     return {"error": "Nothing to export yet: record something first."}
                 start = 0.0
-                end = max(float(c.get("start", 0)) * spb + float(c.get("len", 0)) for c in clips) + 2.0  # + reverb tails
+                end = max(float(c.get("start", 0)) * spb + (float(c.get("blen") or 0) * spb if c.get("pattern")
+                                                            else float(c.get("len", 0))) for c in clips) + 2.0  # + tails
             stems, files = [], [mix] if mix else []
             if stems_dir:
                 song = file_name(m["name"])
@@ -538,7 +624,7 @@ class Daw:
                     path = str(Path(stems_dir) / f"{song} - {n:02d} {file_name(t.get('name') or 'Track')}.wav")
                     stems.append((slot, path))
                     files.append(path)
-            missing = sum(1 for c in clips if c.get("file") not in self.loaded)
+            missing = sum(1 for c in clips if c.get("file") and c.get("file") not in self.loaded)
             self.e.mixer(True)  # plugin settings changed in their own windows: into the render too
             try:
                 self.e.daw_export(mix, stems, start, end)
@@ -559,6 +645,8 @@ class Daw:
             slot = self.slots.pop(tid)
             e.strip_set(f"T{slot}", "active", 0)
             e.rack_load(f"T{slot}", [])
+            if self.sent_inst.pop(slot, None):
+                e.inst_set(f"T{slot}", None)
             self.sent_rack.pop(slot, None)
             for k in [k for k in self.sent_strip if k[0] == slot]:
                 del self.sent_strip[k]
@@ -583,20 +671,29 @@ class Daw:
             if self.sent_rack.get(slot) != rack:
                 self._apply_rack(slot, self.sent_rack.get(slot) or [], rack)
                 self.sent_rack[slot] = json.loads(json.dumps(rack))
+            inst = t.get("inst") or None
+            if self.sent_inst.get(slot) != inst:
+                self._apply_inst(slot, self.sent_inst.get(slot), inst)
+                self.sent_inst[slot] = json.loads(json.dumps(inst))
         spb = self._spb()
+        if self.pattern_mode and self.pattern_mode not in p.live("pattern"):
+            self.pattern_mode = None
         desc = [[] for _ in range(MAX_TRACKS)]
-        for c in p.live("clip").values():
+        for c in ([] if self.pattern_mode else p.live("clip").values()):
             slot = self.slots.get(c.get("track"))
             key = c.get("file")
             if slot is None or key not in self.loaded:
                 continue
             desc[slot].append((key, float(c.get("start", 0)) * spb, float(c.get("offset", 0)), float(c.get("len", 0)),
                                float(c.get("gain", 1.0)), float(c.get("fade_in", 0)), float(c.get("fade_out", 0))))
-        if desc != self.sent_desc:
-            e.daw_timeline(desc)
-            self.sent_desc = desc
+        notes = self._notes(spb)
+        if desc != self.sent_desc or notes != self.sent_notes:
+            e.daw_timeline(desc, notes)
+            self.sent_desc, self.sent_notes = desc, notes
         m = p.meta()
         loop = (bool(m["loop"]), float(m["loop_start"]) * spb, float(m["loop_end"]) * spb)
+        if self.pattern_mode:
+            loop = (True, 0.0, self._pattern_len(self.pattern_mode) * spb)
         if loop != self.sent_loop:
             e.daw_loop(*loop)
             self.sent_loop = loop
@@ -604,6 +701,93 @@ class Daw:
         if click != self.sent_click:
             e.daw_click(*click)
             self.sent_click = click
+
+    def _pattern_len(self, pid: str) -> float:
+        return max(0.25, float(self.p.live("pattern").get(pid, {}).get("len") or 4 * int(self.p.meta()["beats"])))
+
+    def _notes(self, spb: float) -> list:
+        """Every channel's notes in seconds: patterns unrolled where their clips
+        are (repeating to fill a clip), or the open pattern alone in pattern mode."""
+        p = self.p
+        out = [[] for _ in range(MAX_TRACKS)]
+        by_pat: dict[str, list] = {}
+        for n in p.live("note").values():
+            by_pat.setdefault(n.get("pattern"), []).append(n)
+
+        def put(n, t, until):
+            slot = self.slots.get(n.get("track"))
+            if slot is None:
+                return
+            dur = min(float(n.get("len", 0.25)), until - t)
+            if dur > 1e-6:
+                out[slot].append((t * spb, dur * spb, int(n.get("key", 60)) & 127, max(1, min(127, int(n.get("vel", 100))))))
+
+        if self.pattern_mode:
+            plen = self._pattern_len(self.pattern_mode)
+            for n in by_pat.get(self.pattern_mode, []):
+                t = float(n.get("start", 0))
+                if 0 <= t < plen:
+                    put(n, t, plen)
+            return out
+        pats = p.live("pattern")
+        for c in p.live("clip").values():
+            pid = c.get("pattern")
+            if pid not in pats or not by_pat.get(pid):
+                continue
+            plen = self._pattern_len(pid)
+            start, boff = float(c.get("start", 0)), float(c.get("boff", 0))
+            end = start + float(c.get("blen") or plen)
+            origin = start - boff  # where beat 0 of the pattern's first round falls
+            k = math.floor(boff / plen)
+            while origin + k * plen < end:
+                base = origin + k * plen
+                for n in by_pat[pid]:
+                    t = base + float(n.get("start", 0))
+                    if start - 1e-9 <= t < end and float(n.get("start", 0)) < plen:
+                        put(n, t, end)
+                k += 1
+        return out
+
+    def _apply_inst(self, slot: int, old: dict | None, new: dict | None):
+        t = f"T{slot}"
+        try:
+            if not new:
+                self.e.inst_set(t, None)
+                return
+            same = (old and old.get("kind") == new.get("kind") and old.get("pads") == new.get("pads")
+                    and (old.get("vst") or {}).get("cid") == (new.get("vst") or {}).get("cid"))
+            if not same:
+                self.e.inst_set(t, new["kind"], None, new)
+                return
+            for k, v in new.items():
+                if k not in ("kind", "pads", "vst") and old.get(k) != v and isinstance(v, (int, float)):
+                    self.e.inst_param(t, k, float(v))
+        except Exception as exc:  # e.g. a VST instrument the other side has and we don't
+            self.notices.append(f"Couldn't load the instrument on a track: {exc}")
+
+    def track_inst_changed(self, slot: int):
+        """The UI changed a song track's instrument (or its knobs, pads) through
+        the instrument calls: put it in the song."""
+        with self.lock:
+            tid = next((t for t, s in self.slots.items() if s == slot), None)
+            if tid is None:
+                return
+            inst = clean_inst(self.e.mixer()["tracks"][slot]["inst"])
+            self.sent_inst[slot] = json.loads(json.dumps(inst))
+            self._do([["track", tid, {"inst": inst}]])
+
+    def play_pattern(self, pid: str):
+        """Play one pattern on its own, looped (just here, not for the partner)."""
+        with self.lock:
+            if pid not in self.p.live("pattern"):
+                return
+            if self.rec or self._playing():
+                self._stop(broadcast=True)
+            self.pattern_mode = pid
+            self._push()
+            self.play_from = self.cursor
+            self.e.daw_play(0.0)
+            self.version += 1
 
     def _apply_rack(self, slot: int, old: list, new: list):
         t = f"T{slot}"
@@ -840,6 +1024,9 @@ class Daw:
                 "clips": [{"id": i, **c} for i, c in p.live("clip").items()],
                 "files": files, "me": self.me, "partner": self.partner,
                 "local": {"click": p.local.get("click"), "countin": p.local.get("countin")},
+                "patterns": sorted(({"id": i, **x} for i, x in p.live("pattern").items()), key=lambda x: str(x.get("name", ""))),
+                "notes": [{"id": i, **n} for i, n in p.live("note").items()],
+                "patternMode": self.pattern_mode,
                 "conflict": self.conflict, "shared": self.connected and self.partner_pid == p.pid,
                 "undo": bool(self.undos), "redo": bool(self.redos),
             }
@@ -878,6 +1065,16 @@ def file_name(name: str) -> str:
     """A song or track name as part of a file name, on any system."""
     out = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name)).strip(" .")
     return out[:80] or "Untitled"
+
+
+def clean_inst(x: dict | None) -> dict | None:
+    """An instrument as the song keeps it: its kind, knobs, pads and plugin."""
+    if not x:
+        return None
+    out = {k: v for k, v in x.items() if k not in ("error", "pad_names")}
+    if isinstance(out.get("vst"), dict):
+        out["vst"] = {k: out["vst"].get(k) for k in ("path", "cid", "name", "state")}
+    return out
 
 
 def clean_slot(x: dict) -> dict:

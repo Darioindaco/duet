@@ -26,7 +26,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use daw::{AudioCache, ClipDesc, MAX_TRACKS};
+use daw::{AudioCache, ClipDesc, NoteDesc, MAX_TRACKS};
 use dsp::{decode_peer, encode_peer, Cmd, Dsp, Garbage, InPacket, RecRings, Shared, StripParam, StripSettings, Target, MAX_LOCAL, MAX_REMOTE};
 use fx::{kind_index, param_index, preset_slots, Slot, SlotCfg, FX, MAX_SLOTS};
 use instr::{InstCfg, InstSlot, NoteEv};
@@ -54,6 +54,7 @@ struct Ctl {
 struct DawCtl {
     cache: AudioCache,
     desc: Vec<Vec<ClipDesc>>,
+    notes: Vec<Vec<NoteDesc>>,
     rec: Option<RecSession>,
     export: Option<ExportJob>,
 }
@@ -88,6 +89,8 @@ struct Inner {
     retired: Mutex<rtrb::Consumer<Garbage>>,
     /// notes for the strips' instruments (MIDI thread and Python both write)
     notes: Mutex<rtrb::Producer<(Target, NoteEv)>>,
+    /// notes played on song tracks while recording, with their timeline position
+    noterec: Mutex<rtrb::Consumer<(u8, NoteEv, i64)>>,
     /// the strip a MIDI keyboard plays (encoded Target; u64::MAX = none)
     midi_target: std::sync::atomic::AtomicU64,
     daw: Mutex<DawCtl>,
@@ -324,7 +327,8 @@ impl Engine {
         let (pkt_tx, pkt_rx) = rtrb::RingBuffer::new(512);
         let (ret_tx, ret_rx) = rtrb::RingBuffer::<Garbage>::new(256);
         let (note_tx, note_rx) = rtrb::RingBuffer::<(Target, NoteEv)>::new(1024);
-        let dsp = Dsp::new(48000, 128, cmd_rx, pkt_rx, note_rx, ret_tx, socket.clone(), shared.clone());
+        let (noterec_tx, noterec_rx) = rtrb::RingBuffer::<(u8, NoteEv, i64)>::new(8192);
+        let dsp = Dsp::new(48000, 128, cmd_rx, pkt_rx, note_rx, noterec_tx, ret_tx, socket.clone(), shared.clone());
         let mut local: Vec<StripMirror> =
             (0..MAX_LOCAL).map(|i| StripMirror { s: StripSettings::local(i), rack: vec![], inst: None }).collect();
         local[0].s.active = true; // same default as the audio side
@@ -349,7 +353,8 @@ impl Engine {
             retired: Mutex::new(ret_rx),
             notes: Mutex::new(note_tx),
             midi_target: std::sync::atomic::AtomicU64::new(u64::MAX),
-            daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], rec: None, export: None }),
+            daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], notes: vec![], rec: None, export: None }),
+            noterec: Mutex::new(noterec_rx),
             files: Mutex::new(transfer::Transfers::new(std::env::temp_dir().join("duet-incoming"))),
             running: AtomicBool::new(false),
             start: Instant::now(),
@@ -1074,7 +1079,17 @@ impl Engine {
     /// The whole clip layout: tracks[i] = [(key, start, offset, length, gain,
     /// fade in, fade out)] for track strip Ti, all times in seconds. Clips whose
     /// audio isn't loaded yet are skipped (send the layout again once it is).
-    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, f64, f64)>>) {
+    /// notes[i] = [(start, duration, key, velocity)] for Ti's instrument.
+    #[pyo3(signature = (tracks, notes=None))]
+    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, f64, f64)>>,
+                    notes: Option<Vec<Vec<(f64, f64, u8, u8)>>>) {
+        let notes: Vec<Vec<NoteDesc>> = notes
+            .unwrap_or_default()
+            .into_iter()
+            .take(MAX_TRACKS)
+            .map(|ns| ns.into_iter().map(|(t, dur, key, vel)| NoteDesc { t, dur, key, vel }).collect())
+            .collect();
+        self.inner.daw.lock().unwrap().notes = notes;
         let desc = tracks
             .into_iter()
             .take(MAX_TRACKS)
@@ -1173,6 +1188,25 @@ impl Engine {
         Ok(res)
     }
 
+    /// Notes played on song tracks while recording (since last asked):
+    /// [(track slot, "on" / "off" / "pedal down" / "pedal up", key, velocity, timeline seconds)].
+    fn daw_rec_notes(&self) -> Vec<(usize, &'static str, u8, u8, f64)> {
+        let sr = self.samplerate() as f64;
+        let mut r = self.inner.noterec.lock().unwrap();
+        let mut out = Vec::new();
+        while let Ok((t, ev, pos)) = r.pop() {
+            let (kind, key, vel) = match ev {
+                NoteEv::On(k, v) => ("on", k, v),
+                NoteEv::Off(k) => ("off", k, 0),
+                NoteEv::Sustain(true) => ("pedal down", 0, 0),
+                NoteEv::Sustain(false) => ("pedal up", 0, 0),
+                _ => continue,
+            };
+            out.push((t as usize, kind, key, vel, pos as f64 / sr));
+        }
+        out
+    }
+
     fn daw_locate(&self, pos: f64) {
         self.cmd(Cmd::Locate((pos * self.samplerate() as f64).round() as i64));
     }
@@ -1204,6 +1238,7 @@ impl Engine {
                     slot,
                     s: m.s,
                     rack: m.rack.clone(),
+                    inst: m.inst.clone(),
                     stem: stems.iter().find(|(s, _)| *s == slot).map(|(_, p)| p.into()),
                 })
                 .collect();
@@ -1214,8 +1249,8 @@ impl Engine {
             return Err(PyRuntimeError::new_err("an export is already running"));
         }
         let tl = {
-            let DawCtl { cache, desc, .. } = &mut *d;
-            cache.build(desc, sr)
+            let DawCtl { cache, desc, notes, .. } = &mut *d;
+            cache.build(desc, notes, sr)
         };
         let s = |x: f64| (x * sr as f64).round() as i64;
         let (a, b) = (s(start), s(end).max(s(start)));
@@ -1382,8 +1417,8 @@ impl Engine {
         let sr = self.samplerate() as u32;
         let tl = {
             let mut d = self.inner.daw.lock().unwrap();
-            let DawCtl { cache, desc, .. } = &mut *d;
-            cache.build(desc, sr)
+            let DawCtl { cache, desc, notes, .. } = &mut *d;
+            cache.build(desc, notes, sr)
         };
         self.cmd(Cmd::Timeline(Box::new(tl)));
     }

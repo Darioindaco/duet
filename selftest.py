@@ -307,6 +307,95 @@ def test_instruments():
     print("instruments: ok  (drums, synth, sent to the partner, recorded on a track, VST instrument plays and restores)")
 
 
+def test_patterns():
+    """FL-style patterns: a channel (a track with the drum kit), a pattern with
+    a closed hat on every beat, one clip twice its length (it repeats). Both sides
+    play the same kicks at the same samples; notes played while recording turn
+    into a new pattern; pattern mode plays one pattern looped."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    a, b, _ = connect_pair()
+    root = Path(tempfile.mkdtemp(prefix="duet-pat-"))
+    da, db = Daw(a, root / "A", "alice"), Daw(b, root / "B", "bob")
+    x = [0.0] * N
+    try:
+        wait_for(lambda: da.p.pid == db.p.pid and da.view()["shared"] and db.view()["shared"], what="one shared song")
+        da.edit([["meta", "meta", {"bpm": 120.0}],
+                 ["track", "drums", {"name": "Drums", "order": 5.0, "owner": "alice", "vol": 1.0, "pan": -1.0,
+                                     "inst": {"kind": "drums", "level": 0.8, "tune": 0.5, "decay": 1.0}}],
+                 ["pattern", "p1", {"name": "Beat", "len": 4.0}]]
+                + [["note", f"n{k}", {"pattern": "p1", "track": "drums", "start": float(k), "len": 0.25, "key": 42, "vel": 120}]
+                   for k in range(4)]
+                + [["clip", "pc", {"track": "drums", "pattern": "p1", "start": 0.0, "blen": 8.0, "boff": 0.0}]])
+        wait_for(lambda: len(db.view()["notes"]) == 4 and db.view()["patterns"] and
+                 any(t.get("inst") for t in db.view()["tracks"]), what="pattern on bob's side")
+        onsets = []
+        for d, e in ((da, a), (db, b)):
+            d.set_local("click", False)
+            e.daw_play(0.0)
+            out = []
+            for _ in range(int(4.2 * SR / N)):  # 8 beats at 120 bpm + a bit
+                out += e.process(x)
+            e.daw_stop()
+            onsets.append(hits_in(out))
+        spb = SR // 2  # samples per beat at 120 bpm
+        assert onsets[0] == onsets[1], f"both sides play the same: {onsets}"
+        assert len(onsets[0]) == 8 and all(abs(h - k * spb) < 4 for k, h in enumerate(onsets[0])), onsets[0]
+
+        # record: arm the channel, play three notes, and they become a pattern + clip
+        da.edit([["track", "drums", {"arm": True}]])
+        da.set_local("countin", False)
+        assert da.record(0.0) == {"ok": True}
+        slot = da.slots["drums"]
+        for k in range(200):
+            if k in (10, 60, 110):
+                a.note(f"T{slot}", True, 38, 100)
+            if k in (20, 70, 120):
+                a.note(f"T{slot}", False, 38)
+            a.process(x)
+        da.stop()
+        v = da.view()
+        takes = [p for p in v["patterns"] if p["id"] != "p1"]
+        assert len(takes) == 1, v["patterns"]
+        mine = sorted((n["start"], n["key"]) for n in v["notes"] if n["pattern"] == takes[0]["id"])
+        assert [k for _, k in mine] == [38, 38, 38] and abs(mine[1][0] - mine[0][0] - 50 * N / spb) < 0.02, mine
+        assert any(c.get("pattern") == takes[0]["id"] for c in v["clips"]), "placed in the playlist"
+        wait_for(lambda: len(db.view()["patterns"]) == 2, what="the recorded pattern on bob's side")
+
+        # pattern mode: just "Beat", looped, whatever else is in the song
+        da.play_pattern("p1")
+        assert da.view()["patternMode"] == "p1"
+        out = []
+        for _ in range(int(2.5 * SR / N)):
+            out += a.process(x)
+        da.stop()
+        assert da.view()["patternMode"] is None
+        hits = hits_in(out)
+        assert len(hits) == 5 and abs(hits[4] - 4 * spb) < 4, f"loops after 4 beats: {hits}"
+        print("patterns: ok  (channel + pattern + repeating clip play the same on both sides, to the sample; "
+              "recorded notes become a pattern; pattern mode loops)")
+    finally:
+        da.close()
+        db.close()
+        a.close()
+        b.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def hits_in(out, gap=12000):
+    """Sample positions where something starts sounding (after `gap` samples of nothing new)."""
+    env = np.abs(np.array(out))
+    hits = []
+    for k in np.nonzero(env > 0.05)[0]:
+        if not hits or k - hits[-1] > gap:
+            hits.append(int(k))
+    return hits
+
+
 def wave_peak(path):
     import wave
     with wave.open(str(path)) as w:
@@ -791,6 +880,7 @@ if __name__ == "__main__":
     test_daw()
     test_song_edit()
     test_instruments()
+    test_patterns()
     test_signals()
     test_mixer()
     test_partner_fx()

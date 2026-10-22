@@ -253,6 +253,9 @@ class Api:
         self._daw.resolve(choice)
         return self._daw.view()
 
+    def daw_play_pattern(self, pid):
+        self._daw.play_pattern(pid)
+
     def daw_undo(self):
         return self._daw.undo()
 
@@ -384,6 +387,11 @@ class Api:
 
     # --- instruments: a strip plays one instead of its input -------------------
 
+    def _inst_changed(self, target):
+        # a song track's instrument is part of the song (channels in the sequencer)
+        if str(target).startswith("T"):
+            self._daw.track_inst_changed(int(target[1:]))
+
     def inst_set(self, target, kind=None, vst=None):
         """kind "drums" / "synth" / "vst" (vst = {"path", "cid", "name"}), or None
         for the input again. Returns the mixer, or {"error": ...}."""
@@ -392,10 +400,12 @@ class Api:
             self._engine.inst_set(target, kind or None, ref)
         except Exception as exc:
             return {"error": str(exc)}
+        self._inst_changed(target)
         return self._engine.mixer()
 
     def inst_param(self, target, key, value):
         self._engine.inst_param(target, key, float(value))
+        self._inst_changed(target)
 
     def inst_pad(self, target, pad, path=None):
         """Your own sample on a drum pad (None: the built-in sound again)."""
@@ -403,6 +413,7 @@ class Api:
             self._engine.inst_pad(target, int(pad), path)
         except Exception as exc:
             return {"error": str(exc)}
+        self._inst_changed(target)
         return self._engine.mixer()
 
     def inst_pad_open(self):

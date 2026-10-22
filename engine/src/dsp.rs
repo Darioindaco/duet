@@ -16,7 +16,7 @@ use std::net::{SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 
-use crate::daw::{Timeline, MAX_TRACKS};
+use crate::daw::{render_inst, Timeline, MAX_TRACKS};
 use crate::fx::{Rack, Slot};
 use crate::instr::{InstSlot, NoteEv};
 use crate::jitter::{JitterBuffer, MAX_CH, MAX_FRAME};
@@ -339,6 +339,8 @@ pub struct Dsp {
     cmds: rtrb::Consumer<Cmd>,
     incoming: rtrb::Consumer<InPacket>,
     notes: rtrb::Consumer<(Target, NoteEv)>,
+    /// while recording: notes played on song tracks, with where they fell
+    noterec: rtrb::Producer<(u8, NoteEv, i64)>,
     retired: rtrb::Producer<Garbage>,
     socket: Arc<UdpSocket>,
     shared: Arc<Shared>,
@@ -371,6 +373,7 @@ impl Dsp {
         cmds: rtrb::Consumer<Cmd>,
         incoming: rtrb::Consumer<InPacket>,
         notes: rtrb::Consumer<(Target, NoteEv)>,
+        noterec: rtrb::Producer<(u8, NoteEv, i64)>,
         retired: rtrb::Producer<Garbage>,
         socket: Arc<UdpSocket>,
         shared: Arc<Shared>,
@@ -396,6 +399,7 @@ impl Dsp {
             cmds,
             incoming,
             notes,
+            noterec,
             retired,
             socket,
             shared,
@@ -475,6 +479,16 @@ impl Dsp {
         // hand it back so it's freed off the audio thread; if that queue is
         // somehow full, freeing here is the lesser evil
         let _ = self.retired.push(g);
+    }
+
+    /// The song's instruments let go of whatever they play (the transport
+    /// stopped or jumped, or the notes changed under them).
+    fn release_tracks(&mut self) {
+        for s in self.tracks.iter_mut() {
+            if let Some(inst) = s.inst.as_mut() {
+                inst.inst.note(NoteEv::Release);
+            }
+        }
     }
 
     /// Let go of the take rings: the writer sees them abandoned and finishes.
@@ -581,9 +595,13 @@ impl Dsp {
                     if let Some(old) = self.timeline.replace(tl) {
                         self.discard(Garbage::Timeline(old));
                     }
+                    if self.tp.playing {
+                        self.release_tracks(); // a note's end may be gone with the old one
+                    }
                 }
                 Cmd::Play { pos, click_until, rec } => {
                     self.stop_recording();
+                    self.release_tracks();
                     self.tp.playing = true;
                     self.tp.pos = pos;
                     self.tp.click_until = click_until;
@@ -602,8 +620,10 @@ impl Dsp {
                 Cmd::Stop => {
                     self.tp.playing = false;
                     self.stop_recording();
+                    self.release_tracks();
                 }
                 Cmd::Locate(pos) => {
+                    self.release_tracks();
                     self.tp.pos = pos;
                     self.click.last_beat = i64::MIN;
                 }
@@ -640,6 +660,11 @@ impl Dsp {
     /// Notes from the MIDI keyboard / computer keyboard to the strips' instruments.
     fn take_notes(&mut self) {
         while let Ok((t, ev)) = self.notes.pop() {
+            if let Target::Track(i) = t {
+                if self.tp.recording && self.tp.playing {
+                    let _ = self.noterec.push((i as u8, ev, self.tp.pos));
+                }
+            }
             if let Some(inst) = self.strip(t).and_then(|s| s.inst.as_mut()) {
                 inst.inst.note(ev);
             }
@@ -831,7 +856,9 @@ impl Dsp {
         let mut segs = [(0usize, tp_pos, n); 2];
         let mut nseg = 1;
         let looping = self.tp.playing && self.tp.loop_on && !self.tp.recording;
-        if looping && tp_pos < self.tp.loop_end && tp_pos + n as i64 > self.tp.loop_end {
+        // (>=: a block that ends right on the loop's end still jumps back, with an
+        // empty second stretch, or the next block would start past the end)
+        if looping && tp_pos < self.tp.loop_end && tp_pos + n as i64 >= self.tp.loop_end {
             let k = (self.tp.loop_end - tp_pos) as usize;
             segs[0] = (0, tp_pos, k);
             segs[1] = (k, self.tp.loop_start, n - k);
@@ -846,6 +873,20 @@ impl Dsp {
                     continue;
                 }
                 strip.buf[..n].fill(0.0);
+                if let Some(inst) = strip.inst.as_mut() {
+                    if self.tp.playing {
+                        for (k, &(off, p, len)) in segs[..nseg].iter().enumerate() {
+                            if k == 1 {
+                                inst.inst.note(NoteEv::Release); // the loop jumped back
+                            }
+                            render_inst(tl, i, inst, p, &mut strip.buf[off..off + len]);
+                        }
+                    } else {
+                        // stopped: still playable live, and tails ring out
+                        let InstSlot { cfg, inst } = &mut **inst;
+                        inst.process(&cfg.p, &mut strip.buf[..n]);
+                    }
+                }
                 if self.tp.playing {
                     for &(off, p, len) in &segs[..nseg] {
                         tl.render(i, p, &mut strip.buf[off..off + len]);

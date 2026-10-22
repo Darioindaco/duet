@@ -24,7 +24,8 @@ const spb = () => 60 / (song.view ? song.view.meta.bpm : 120);
 const bpb = () => (song.view ? song.view.meta.beats : 4);
 const trackRow = (tid) => song.view.tracks.findIndex((t) => t.id === tid);
 const tColor = (t) => (t && !t.mine ? song.colors.partner : song.colors.me);
-const clipBeats = (c) => c.len / spb();
+// pattern clips are measured in beats (blen), audio clips in seconds (len)
+const clipBeats = (c) => (c.pattern ? c.blen ?? 4 : c.len / spb());
 function snapBeat(b, mode = song.snap) {
   if (mode < 0) return b;
   const g = mode === 0 ? bpb() : mode;
@@ -57,7 +58,7 @@ function applyLocal(changes) {
   const v = song.view;
   for (const [kind, id, f] of changes) {
     if (kind === "meta") Object.assign(v.meta, f);
-    const list = kind === "track" ? v.tracks : kind === "clip" ? v.clips : null;
+    const list = { track: v.tracks, clip: v.clips, pattern: (v.patterns ||= []), note: (v.notes ||= []) }[kind];
     if (!list) continue;
     const o = list.find((x) => x.id === id);
     if (o) Object.assign(o, f);
@@ -90,6 +91,7 @@ function setSongView(v) {
     api.mixer().then((m) => { ui.mixer = m; renderStrips(); if (ui.sel[0] === "T") renderRack(); });
   }
   songRender();
+  seqRender();
   paintConflict();
 }
 
@@ -176,12 +178,15 @@ function songSetup() {
 }
 
 function setMainView(v) {
-  ui.view = v === "mixer" ? "mixer" : "song";
+  ui.view = ["mixer", "seq"].includes(v) ? v : "song";
   store.set("view", ui.view);
   $("viewSong").hidden = ui.view !== "song";
+  $("viewSeq").hidden = ui.view !== "seq";
   $("viewMixer").hidden = ui.view !== "mixer";
   for (const b of $("viewSeg").querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === ui.view);
   if (ui.view === "song") requestAnimationFrame(songDraw);
+  if (ui.view === "seq") requestAnimationFrame(seqRender);
+  if (typeof syncMidiTarget === "function") syncMidiTarget();
 }
 
 function songKeys(e) {
@@ -306,7 +311,7 @@ function renderHeads() {
     btns.className = "tbtns";
     const arm = document.createElement("button");
     arm.className = "arm" + (t.arm ? " on" : "");
-    arm.title = t.mine ? "Record on this track (from your input)" : "Record on this track (from your partner's input, on their side)";
+    arm.title = t.inst ? "Record the notes you play on this channel" : t.mine ? "Record on this track (from your input)" : "Record on this track (from your partner's input, on their side)";
     arm.onclick = () => songEdit([["track", t.id, { arm: !t.arm }]]);
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "✕"; del.title = "Delete this track";
@@ -317,16 +322,26 @@ function renderHeads() {
 
     const row2 = document.createElement("div");
     row2.className = "row2";
-    const src = document.createElement("select");
-    src.className = "tsrc"; src.title = "Who plays on this track, and from which input";
-    const { opts, cur } = srcOptions(t);
-    for (const [val, label] of opts) src.append(new Option(label, val, false, val === cur));
-    src.onfocus = () => (song.headBusy = true);
-    src.onblur = () => { song.headBusy = false; if (song.pendingHeads) renderHeads(); };
-    src.onchange = () => {
-      const [owner, s] = src.value.split("|");
-      songEdit([["track", t.id, { owner, src: +s }]]);
-    };
+    let src;
+    if (t.inst) {
+      // a channel: it plays its instrument (notes from patterns), it has no input
+      src = document.createElement("button");
+      src.className = "tsrc chanlbl";
+      src.textContent = "♪ " + (t.inst.kind === "vst" ? t.inst.vst?.name || "VST" : INST[t.inst.kind]?.name || "Instrument");
+      src.title = "A channel: open it in the sequencer";
+      src.onclick = () => { setMainView("seq"); selectChannel(t.id); };
+    } else {
+      src = document.createElement("select");
+      src.className = "tsrc"; src.title = "Who plays on this track, and from which input";
+      const { opts, cur } = srcOptions(t);
+      for (const [val, label] of opts) src.append(new Option(label, val, false, val === cur));
+      src.onfocus = () => (song.headBusy = true);
+      src.onblur = () => { song.headBusy = false; if (song.pendingHeads) renderHeads(); };
+      src.onchange = () => {
+        const [owner, s] = src.value.split("|");
+        songEdit([["track", t.id, { owner, src: +s }]]);
+      };
+    }
     const vol = hslider(t.vol ?? 0.8, (g) => songEditThrottled(t.id, { vol: g }), `Volume: ${fmtDb(t.vol ?? 0.8)}`);
     const fx = document.createElement("button");
     fx.className = "fxb" + ((t.rack || []).length ? " has" : "");
@@ -489,6 +504,7 @@ function songDraw() {
 }
 
 function drawClip(ctx, c, x, y, w, h, track) {
+  if (c.pattern) { drawPatternClip(ctx, c, x, y, w, h); return; }
   const col = tColor(track), sel = song.sel.has(c.id);
   const r = 6;
   ctx.save();
@@ -567,6 +583,52 @@ function drawClip(ctx, c, x, y, w, h, track) {
   ctx.stroke();
 }
 
+// a pattern block: its name and a sketch of its notes, repeated to fill it
+function drawPatternClip(ctx, c, x, y, w, h) {
+  const p = (song.view.patterns || []).find((q) => q.id === c.pattern);
+  const col = patColor(c.pattern), sel = song.sel.has(c.id);
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(x + 0.5, y + 0.5, Math.max(2, w - 1), h - 1, 6);
+  ctx.fillStyle = "rgba(20,18,26,0.92)";
+  ctx.fill();
+  ctx.clip();
+  ctx.fillStyle = col;
+  ctx.globalAlpha = sel ? 0.95 : 0.7;
+  ctx.fillRect(x, y, w, 15);
+  ctx.globalAlpha = 1;
+  if (p) {
+    const notes = (song.view.notes || []).filter((n) => n.pattern === p.id);
+    if (notes.length) {
+      const plen = p.len || 4 * bpb(), boff = c.boff || 0;
+      let lo = 127, hi = 0;
+      for (const n of notes) { lo = Math.min(lo, n.key); hi = Math.max(hi, n.key); }
+      const span = Math.max(6, hi - lo + 1), top = y + 18, hh = h - 21;
+      ctx.fillStyle = col;
+      const lane = $("lanes").clientWidth;
+      for (let k = Math.floor(boff / plen); (k * plen - boff) < clipBeats(c); k++) {
+        for (const n of notes) {
+          const b = k * plen + n.start - boff;
+          if (b < 0 || b >= clipBeats(c) || n.start >= plen) continue;
+          const nx = x + b * song.ppb;
+          if (nx > lane || nx < -40) continue;
+          const nw = Math.max(1.5, Math.min(n.len, clipBeats(c) - b) * song.ppb - 0.5);
+          ctx.fillRect(nx, top + (hi - n.key) / span * (hh - 3), nw, Math.max(2, hh / span - 0.5));
+        }
+      }
+    }
+  }
+  ctx.fillStyle = "#121016";
+  ctx.font = "700 10.5px system-ui, sans-serif";
+  ctx.fillText(p ? p.name || "Pattern" : "(pattern gone)", Math.max(x, 0) + 6, y + 11);
+  ctx.restore();
+  ctx.beginPath();
+  ctx.roundRect(x + 0.5, y + 0.5, Math.max(2, w - 1), h - 1, 6);
+  ctx.strokeStyle = sel ? "#ffffff" : col;
+  ctx.lineWidth = sel ? 1.5 : 1;
+  ctx.stroke();
+}
+
 function drawRuler() {
   const cv = song.ruler, w = $("lanewrap").clientWidth, h = 26;
   const ctx = sizeCanvas(cv, w, h);
@@ -634,6 +696,7 @@ function drawOverlay() {
 
 let lastFrameDraw = 0;
 function songFrame() {
+  seqFrame();
   if (!song.view || ui.view !== "song") return;
   const st = song.st;
   const pos = curPos();
@@ -681,7 +744,7 @@ function hitZone(p) {
   if (!c) return null;
   const ppb = song.ppb, w = clipBeats(c) * ppb, lx = p.px - c.start * ppb, ly = p.py - (p.row * ROW + 2);
   const fin = (c.fade_in || 0) / spb() * ppb, fout = (c.fade_out || 0) / spb() * ppb;
-  if (ly < 14 && w > 30) {
+  if (ly < 14 && w > 30 && !c.pattern) {
     if (Math.abs(lx - Math.max(fin, 5)) <= 6 && lx < w / 2) return { c, zone: "fin" };
     if (Math.abs(lx - Math.min(w - fout, w - 5)) <= 6 && lx >= w / 2) return { c, zone: "fout" };
   }
@@ -690,8 +753,9 @@ function hitZone(p) {
   return { c, zone: "body" };
 }
 
-const clipFields = (c) => ({ track: c.track, file: c.file, start: c.start, offset: c.offset || 0, len: c.len,
-  gain: c.gain ?? 1, fade_in: c.fade_in || 0, fade_out: c.fade_out || 0 });
+const clipFields = (c) => (c.pattern ? { track: c.track, pattern: c.pattern, start: c.start, blen: c.blen, boff: c.boff || 0 }
+  : { track: c.track, file: c.file, start: c.start, offset: c.offset || 0, len: c.len,
+      gain: c.gain ?? 1, fade_in: c.fade_in || 0, fade_out: c.fade_out || 0 });
 const fileDur = (c) => { const f = song.view.files[c.file]; return f && f.frames ? f.frames / f.sr : Infinity; };
 const gridOf = (mode) => (mode < 0 ? 0 : mode === 0 ? bpb() : mode);
 const selClips = () => song.view.clips.filter((c) => song.sel.has(c.id));
@@ -750,6 +814,14 @@ function dragResult(d, q, snap) {
     const shift = Math.max(db, -minStart);
     const dr = q.row - d.row0;
     for (const k of d.sel) out[k.id] = { start: k.start + shift, row: clampRow(trackRow(k.track) + dr) };
+  } else if (c.pattern && d.zone === "left") {
+    // a pattern clip can start anywhere in its pattern (and wraps round)
+    const hi = c.start + clipBeats(c) - STEP;
+    const start = Math.min(hi, Math.max(0, snapBeat(q.beat, snap)));
+    out[c.id] = { start, boff: Math.max(0, (c.boff || 0) + start - c.start), blen: c.blen - (start - c.start) };
+  } else if (c.pattern && d.zone === "right") {
+    const end = Math.max(c.start + STEP, snapBeat(q.beat, snap));
+    out[c.id] = { blen: end - c.start };
   } else if (d.zone === "left") {
     const lo = Math.max(0, c.start - (c.offset || 0) / s), hi = c.start + clipBeats(c) - MIN_LEN / s;
     const start = Math.min(hi, Math.max(lo, snapBeat(q.beat, snap)));
@@ -823,11 +895,22 @@ function bandSelect(e, p) {
 }
 
 function lanesDbl(e) {
-  // double-click a clip: select everything on its track from there on
+  // double-click: a pattern opens in the sequencer; empty space gets the
+  // current pattern; an audio clip selects everything on its track from there on
   const p = lanePoint(e), c = hitClip(p.beat, p.row);
-  if (!c) return;
+  if (!c) { insertPattern(p); return; }
+  if (c.pattern) { seq.pat = c.pattern; setMainView("seq"); return; }
   for (const k of song.view.clips) if (k.track === c.track && k.start >= c.start) song.sel.add(k.id);
   songDraw();
+}
+
+function insertPattern(p) {
+  const pat = curPattern(), t = song.view.tracks[p.row];
+  if (!pat || !t) return;
+  const at = Math.max(0, Math.floor(p.beat / bpb() + 1e-9) * bpb());
+  const id = newId("c");
+  song.sel = new Set([id]);
+  songEdit([["clip", id, { track: t.id, pattern: pat.id, start: at, blen: patLen(pat), boff: 0 }]]);
 }
 
 // ---------- editing: split, duplicate, copy/paste, delete ----------
@@ -835,6 +918,12 @@ function splitClips(beat, clips) {
   const s = spb(), ch = [];
   for (const c of clips) {
     if (beat <= c.start + 1e-6 || beat >= c.start + clipBeats(c) - 1e-6) continue;
+    if (c.pattern) {
+      const lb = beat - c.start;
+      ch.push(["clip", c.id, { blen: lb }]);
+      ch.push(["clip", newId("c"), { ...clipFields(c), start: beat, boff: (c.boff || 0) + lb, blen: c.blen - lb }]);
+      continue;
+    }
     const left = (beat - c.start) * s, right = c.len - left;
     ch.push(["clip", c.id, { len: left, fade_out: 0, fade_in: Math.min(c.fade_in || 0, left) }]);
     ch.push(["clip", newId("c"), { ...clipFields(c), start: beat, offset: (c.offset || 0) + left, len: right,
@@ -920,9 +1009,15 @@ function lanesContext(e) {
     items.push([n > 1 ? `Duplicate ${n} clips` : "Duplicate", "Ctrl+D", duplicateSel]);
     items.push(["Copy", "Ctrl+C", () => copySel()]);
     items.push([n > 1 ? `Delete ${n} clips` : "Delete", "Del", deleteSel]);
-    items.push(["Remove fades", "", () => songEdit(selClips().map((k) => ["clip", k.id, { fade_in: 0, fade_out: 0 }]))]);
-    items.push({ gain: c });
+    if (c.pattern) {
+      items.push(["Open in the sequencer", "dbl-click", () => { seq.pat = c.pattern; setMainView("seq"); }]);
+    } else {
+      items.push(["Remove fades", "", () => songEdit(selClips().map((k) => ["clip", k.id, { fade_in: 0, fade_out: 0 }]))]);
+      items.push({ gain: c });
+    }
   } else {
+    const pat = curPattern();
+    if (pat) items.push([`Put "${pat.name}" here`, "dbl-click", () => insertPattern(p)]);
     items.push(["Paste here", "Ctrl+V", () => paste(Math.max(0, snapBeat(p.beat)), p.row), !song.clipboard]);
     items.push(["Add a track", "", addTrack]);
   }
@@ -1118,6 +1213,8 @@ function demoSong() {
     pid: "pdemo", meta: { name: "Summer jam", bpm: 96, beats: 4, loop: true, loop_start: 8, loop_end: 24 },
     tracks: [
       { id: "t1", name: "Guitar", order: 1, owner: me, src: 0, arm: true, vol: 0.8, pan: 0, rack: [{ kind: "reverb" }], slot: 0, mine: true, mute: false, solo: false },
+      { id: "t4", name: "Drums", order: 0.5, owner: me, src: 0, arm: false, vol: 0.8, pan: 0, rack: [], slot: 3, mine: true, mute: false, solo: false, inst: { kind: "drums", level: 0.8, tune: 0.5, decay: 0.5 } },
+      { id: "t5", name: "Bass synth", order: 0.7, owner: partner, src: 0, arm: false, vol: 0.7, pan: 0, rack: [], slot: 4, mine: false, mute: false, solo: false, inst: { kind: "synth", wave: 0.3, cutoff: 0.4, resonance: 0.3, attack: 0.02, release: 0.2, detune: 0.2 } },
       { id: "t2", name: "Vocals", order: 2, owner: partner, src: 0, arm: true, vol: 0.75, pan: 0, rack: [], slot: 1, mine: false, mute: false, solo: false },
       { id: "t3", name: "Keys", order: 3, owner: partner, src: 1, arm: false, vol: 0.7, pan: 0, rack: [], slot: 2, mine: false, mute: false, solo: false },
     ],
@@ -1125,7 +1222,17 @@ function demoSong() {
       { id: "c1", track: "t1", file: "take-g1.wav", start: 0, offset: 0, len: 15, gain: 1 },
       { id: "c2", track: "t2", file: "take-v1.wav", start: 8, offset: 0.5, len: 11, gain: 0.7, fade_in: 1.2, fade_out: 2.5 },
       { id: "c3", track: "t3", file: "take-k1.wav", start: 16, offset: 0, len: 8, gain: 1 },
+      { id: "c4", track: "t4", pattern: "pa", start: 0, blen: 16, boff: 0 },
+      { id: "c5", track: "t5", pattern: "pb", start: 8, blen: 16, boff: 0 },
     ],
+    patterns: [{ id: "pa", name: "Beat", len: 4 }, { id: "pb", name: "Bassline", len: 8 }],
+    notes: [
+      ...[0, 1.5, 2, 3.5].map((b, i) => ({ id: "k" + i, pattern: "pa", track: "t4", start: b, len: 0.25, key: 36, vel: 115 })),
+      ...[1, 3].map((b, i) => ({ id: "s" + i, pattern: "pa", track: "t4", start: b, len: 0.25, key: 38, vel: 105 })),
+      ...Array.from({ length: 8 }, (_, i) => ({ id: "h" + i, pattern: "pa", track: "t4", start: i / 2, len: 0.25, key: 42, vel: i % 2 ? 70 : 100 })),
+      ...[[0, 45, 1.5], [1.5, 45, 0.5], [2, 48, 1], [3, 50, 1], [4, 41, 1.5], [5.5, 41, 0.5], [6, 43, 1], [7, 48, 1]].map(([b, k, l], i) => ({ id: "b" + i, pattern: "pb", track: "t5", start: b, len: l, key: k, vel: 100 })),
+    ],
+    patternMode: null,
     files, me, partner, local: { click: true, countin: true }, conflict: null, shared: true, undo: true, redo: false,
   };
   let v = 1, playing = false, recording = false, recFrom = null, pos = 0, t0 = 0, exportAt = 0;
@@ -1136,7 +1243,7 @@ function demoSong() {
     daw_edit: async (changes) => {
       for (const [kind, id, f] of changes) {
         if (kind === "meta") Object.assign(view.meta, f);
-        const list = kind === "track" ? view.tracks : kind === "clip" ? view.clips : null;
+        const list = { track: view.tracks, clip: view.clips, pattern: view.patterns, note: view.notes }[kind];
         if (!list) continue;
         const o = list.find((x) => x.id === id);
         if (f.del) { if (o) list.splice(list.indexOf(o), 1); continue; }
@@ -1148,8 +1255,9 @@ function demoSong() {
       if (tid) view.tracks.find((t) => t.id === tid)[k] = val; else view.local[k] = val;
       v++; return copy();
     },
-    daw_play: async () => { pos = now(); playing = true; t0 = performance.now(); },
-    daw_stop: async () => { playing = false; recording = false; pos = 0; },
+    daw_play: async () => { pos = now(); playing = true; t0 = performance.now(); view.patternMode = null; },
+    daw_play_pattern: async (pid) => { pos = 0; playing = true; t0 = performance.now(); view.patternMode = pid; v++; },
+    daw_stop: async () => { playing = false; recording = false; pos = 0; view.patternMode = null; v++; },
     daw_record: async () => { playing = true; recording = true; recFrom = pos; t0 = performance.now(); return { ok: true }; },
     daw_locate: async (p) => { pos = p; t0 = performance.now(); },
     daw_peaks: async (n) => pk[n] || null,
