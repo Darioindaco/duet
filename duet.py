@@ -128,9 +128,12 @@ class Api:
         self._engine.set_buffer_auto(bool(on))
 
     def _rack_changed(self, target):
-        # a track's effects are part of the song: the project (and the partner) gets them
+        # a track's effects, and the master's, are part of the song: the project
+        # (and the partner) gets them
         if str(target).startswith("T"):
             self._daw.track_rack_changed(int(target[1:]))
+        elif target == "M":
+            self._daw.master_rack_changed()
 
     def rack_add(self, target, kind):
         self._engine.rack_add(target, kind)
@@ -457,7 +460,7 @@ class Api:
         if names is not None:
             self._names = names
         snap = {"mixer": self._engine.mixer(True), "names": self._names}
-        self._daw.sync_rack_states(snap["mixer"]["tracks"])
+        self._daw.sync_rack_states(snap["mixer"])
         try:
             (data_dir() / "mixer.json").write_text(json.dumps(snap), encoding="utf-8")
         except OSError:

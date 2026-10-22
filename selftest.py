@@ -481,6 +481,71 @@ def test_live():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_routing():
+    """The song's mixer, through the shared song: a channel routed to a bus
+    goes through that bus (its fader), a send adds to a bus, the master rack (a
+    limiter) holds its ceiling, and the partner's mixer follows all of it."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    a, b, _ = connect_pair()
+    root = Path(tempfile.mkdtemp(prefix="duet-mix-"))
+    da, db = Daw(a, root / "A", "alice"), Daw(b, root / "B", "bob")
+    x = [0.0] * N
+
+    def peak(e, blocks=60):
+        e.daw_play(0.0)
+        out = []
+        for _ in range(blocks):
+            out += e.process(x)
+        e.daw_stop()
+        return max(abs(v) for v in out[len(out) // 2:])
+
+    try:
+        wait_for(lambda: da.p.pid == db.p.pid and da.view()["shared"] and db.view()["shared"], what="one shared song")
+        db.set_local("click", False)
+        da.edit([["track", "keys", {"name": "Keys", "order": 1.0, "owner": "alice", "vol": 1.0,
+                                    "inst": {"kind": "synth", "cutoff": 0.7}}],
+                 ["track", "grp", {"name": "Group", "order": 1001.0, "owner": "alice", "bus": True, "vol": 0.0}],
+                 ["pattern", "p1", {"name": "Hold", "len": 8.0}],
+                 ["note", "n1", {"pattern": "p1", "track": "keys", "start": 0.0, "len": 8.0, "key": 60, "vel": 110}],
+                 ["clip", "c1", {"track": "keys", "pattern": "p1", "start": 0.0, "blen": 8.0}]])
+        wait_for(lambda: {"keys", "grp"} <= set(db.slots) and len(db.view()["notes"]) == 1, what="the song on bob's side")
+        assert [t["id"] for t in db.view()["buses"]] == ["grp"] and "grp" not in [t["id"] for t in db.view()["tracks"]]
+        loud = peak(b)
+        assert loud > 0.05, f"the channel plays straight to the master: {loud}"
+
+        # into the bus, whose fader is down: silence; up: there again
+        da.edit([["track", "keys", {"out": "grp"}]])
+        wait_for(lambda: (db.sent_routes or [])[db.slots["keys"]][0] == db.slots["grp"], what="the route on bob's side")
+        assert peak(b) < 1e-4, "through the bus, fader down"
+        da.edit([["track", "grp", {"vol": 1.0}]])
+        wait_for(lambda: b.mixer()["tracks"][db.slots["grp"]]["fader"] == 1.0, what="the bus fader on bob's side")
+        assert abs(peak(b) - loud) < 0.02 * loud + 1e-3, "the bus at unity: as loud as before"
+
+        # a send from the channel (back on the master) to a bus adds to it
+        da.edit([["track", "keys", {"out": None, "sends": {"grp": 1.0}}]])
+        wait_for(lambda: (db.sent_routes or [])[db.slots["keys"]] == (-1, [(db.slots["grp"], 1.0)]), what="the send on bob's side")
+        assert peak(b) > 1.6 * loud, "the dry sound plus the same again through the bus"
+
+        # the master rack: a limiter at -12 dB, 24 dB of gain into it
+        da.edit([["meta", "meta", {"master_rack": [{"kind": "limiter", "on": True, "gain": 1.0, "ceiling": 0.0, "release": 0.4}]}]])
+        wait_for(lambda: [s["kind"] for s in b.mixer()["master_strip"]["rack"]] == ["limiter"], what="the master rack on bob's side")
+        assert b.state()["master_latency_ms"] > 1.0, "the limiter looks ahead"
+        held = peak(b)
+        assert 0.2 < held <= 10 ** (-12 / 20) + 1e-4, f"at the ceiling, not over: {held}"
+        print(f"routing: ok  (channel -> bus -> master, a send, the master limiter at its ceiling: {held:.3f}; all on the partner's side)")
+    finally:
+        da.close()
+        db.close()
+        a.close()
+        b.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def hits_in(out, gap=12000):
     """Sample positions where something starts sounding (after `gap` samples of nothing new)."""
     env = np.abs(np.array(out))
@@ -524,9 +589,11 @@ def test_signals():
 
 
 def test_effects_cpu():
-    """Worst realistic load: 4 inputs, each with all six effects, monitored."""
+    """Worst realistic load: 4 inputs, each with every built-in effect (a full
+    rack: an empty NAM slot does nothing anyway), monitored, all in stereo."""
     e = Engine()
-    kinds = [fx["name"] for fx in Engine.effects() if fx["name"] != "vst"]  # a VST slot needs a plugin
+    kinds = [fx["name"] for fx in Engine.effects() if fx["name"] not in ("vst", "nam")]  # a VST slot needs a plugin
+    assert len(kinds) == 8, kinds
     try:
         e.rack_add("L0", "vst")
         raise AssertionError("adding a VST slot without a plugin should be refused")
@@ -544,11 +611,13 @@ def test_effects_cpu():
         out = e.process(x, 4)
     assert np.all(np.isfinite(out))
     us = e.state()["cpu_us"]
-    print(f"effects: ok  (4 strips x 6 effects: {us:.1f} us per block of {N / SR * 1e6:.0f} us)")
+    print(f"effects: ok  (4 strips x 8 effects: {us:.1f} us per block of {N / SR * 1e6:.0f} us)")
     assert us < 1500, us
     assert set(Engine.presets()) == {"Clean", "Dreamy", "Crunch", "Vocal", "Surf"}
     e.rack_preset("L0", "Crunch")
     assert [s["kind"] for s in e.mixer()["local"][0]["rack"]] == ["comp", "drive", "reverb"]
+    e.rack_preset("L0", "Vocal")
+    assert [s["kind"] for s in e.mixer()["local"][0]["rack"]] == ["eq", "comp", "reverb"]
     e.close()
 
 
@@ -977,6 +1046,7 @@ if __name__ == "__main__":
     test_instruments()
     test_patterns()
     test_live()
+    test_routing()
     test_signals()
     test_mixer()
     test_partner_fx()

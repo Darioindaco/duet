@@ -53,7 +53,12 @@ has two tabs:
    Drag knobs up/down (Shift = fine, double-click = reset, scroll wheel works).
    Presets replace the strip's whole rack. Effects on your strips are heard by
    your partner; effects on their strips only change what you hear (e.g. some
-   reverb on their vocals).
+   reverb on their vocals). The effects: **EQ** (low and high cut, low and high
+   shelf, a mid band, with its curve drawn), **Compressor** (attack, release, and
+   a sidechain on song tracks), **Limiter**, Overdrive, Chorus, Tremolo (*Stereo*
+   turns it into an auto-pan), Delay (*Ping-pong*), Reverb (*Width*), NAM amps
+   and VST3 plugins. Everything is stereo inside Duet; what goes to your partner
+   live is mono, to keep the line light.
 
 5. **NAM amps:** *+ Add effect → NAM Amp* adds a Neural Amp Modeler slot. Load a
    capture with **TONE3000** (pick a tone on tone3000.com in your browser; Duet
@@ -132,7 +137,34 @@ Each track also has a strip in the **Mixer** (under *Song*) with volume, pan
 and its own FX rack, NAM amps and VST3 plugins included; *FX* on a track header
 takes you there. Volume, pan and effects are part of the song (you both hear
 them); mute and solo are just for you. A VST on a song track needs that plugin
-on both computers.
+on both computers (without it, that slot lets the sound through and says so).
+
+## Mixing the song
+
+Everything below is part of the song, like the tracks themselves: you both
+hear it, either of you can change it, and the export sounds exactly like it.
+
+- **Buses:** *+ Bus* in the mixer adds a reverb bus, a delay bus or an empty one.
+  A bus is a mixer track that other tracks feed: one shared room for every
+  track that sends to it, or a group (all drums through one compressor, one
+  fader for all of them).
+- **Routing:** a song track's FX rack starts with a **Routing** box. *Output*
+  sends the track to a bus instead of the master (the strip then says
+  *→ Drums*); the knobs below are **sends**: some of the track to a bus, after
+  its fader, on top of its own sound. Up to four per track. A bus can go to
+  another bus, as long as it doesn't loop back.
+- **Sidechain:** a compressor on a song track or the master can listen to
+  another track instead of its own sound (*Sidechain:* under its knobs): the
+  kick pushes the bass down.
+- **Master FX:** click the *Master* strip: its rack shapes the whole song (an EQ
+  and a limiter at the end make it fuller and louder). It's on what you hear
+  live too.
+- **Delay compensation:** plugins that delay the sound (the limiter's
+  look-ahead, many VSTs) don't put a track behind the beat: the song is read
+  that much earlier, also through buses with slow plugins on them. The rack's
+  title says how much (*1.5 ms delay, compensated*). Recording allows for it
+  too. What you play live can't be read early: a slow plugin on your own input
+  delays it by its latency, as in any DAW.
 
 Songs are saved by themselves. The song name opens the song menu: rename it,
 start a new one, or open an older one (your partner switches along). If you
@@ -278,10 +310,11 @@ to it through lock-free queues and atomics.
 
 | File | What |
 |---|---|
-| `engine/src/dsp.rs` | The per-block audio work: effects, send, jitter buffer playout, loss concealment, mix |
+| `engine/src/dsp.rs` | The per-block audio work: effects, send, jitter buffer playout, loss concealment, mix, master rack |
+| `engine/src/mix.rs` | The song's mixer: track strips, buses, sends, sidechain keys, delay compensation (playback and export share it) |
 | `engine/src/audio.rs` | Sound card via cpal (ASIO / CoreAudio / WASAPI), on one COM-STA thread |
 | `engine/src/jitter.rs` | Jitter buffer: reorder, loss detection, burst-tolerant clock-drift trim |
-| `engine/src/fx.rs` | FX racks: compressor, overdrive, chorus, tremolo, delay, Freeverb, NAM amp (nam-rs) |
+| `engine/src/fx.rs` | FX racks (stereo): EQ, compressor with sidechain, look-ahead limiter, overdrive, chorus, tremolo, delay, Freeverb, NAM amp (nam-rs) |
 | `engine/src/net.rs` | Packet format, connect codes, STUN |
 | `engine/src/signal.rs` | Reliable side channel for the video call setup |
 | `engine/src/instr.rs` | Instruments: the synthesized drum kit, the synth, VST3 instruments (notes in) |
@@ -298,6 +331,7 @@ to it through lock-free queues and atomics.
 | `ui/seq.js`, `ui/seq.css` | The sequencer: patterns, channel rack with steps, piano roll with velocities |
 | `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |
 | `ui/presence.js` | Seeing each other work: the partner's pointer, selection, view and live notes; Follow |
+| `ui/mixer.js` | Buses, routing and sends, the sidechain picker, the EQ's curve |
 | `.github/workflows/build.yml` | Every push: engine tests + self-test on Linux. The Mac apps (built, tested, smoke-tested) for main, or on request: Actions → build → Run workflow |
 
 Live audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.

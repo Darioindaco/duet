@@ -3,12 +3,12 @@
 //! talk to it through lock-free queues (commands and packets in, retired
 //! effect objects out) and atomics (levels and stats out).
 //!
-//! Signal flow per block:
-//!   interface inputs -> local strip: gain -> FX rack -> [send to partner]
+//! Signal flow per block (strips are stereo from their input on):
+//!   interface inputs -> local strip: gain -> FX rack -> [send to partner, as mono]
 //!                                                     -> [Mon] pan/fader -> master
 //!   partner channels -> jitter buffer -> remote strip: gain -> FX rack -> pan/fader -> master
-//!   timeline clips -> track strip: gain -> FX rack -> pan/fader -> master
-//!   master fader -> stereo out
+//!   timeline -> track strips: the song mixer (mix.rs: buses, sends, delay compensation) -> master
+//!   master -> master FX rack -> master fader -> stereo out
 //! While recording, each recorded local strip's signal (after its rack, so the
 //! same as what the partner hears) also goes into a ring for the take writer.
 
@@ -16,9 +16,10 @@ use std::net::{SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 
-use crate::daw::{render_inst, Timeline, MAX_TRACKS};
-use crate::fx::{Rack, Slot};
+use crate::daw::{Timeline, MAX_TRACKS};
+use crate::fx::{no_keys, Slot};
 use crate::instr::{InstSlot, NoteEv};
+use crate::mix::{render_tracks, Play, Strip, TrackBufs, Wiring};
 use crate::jitter::{JitterBuffer, MAX_CH, MAX_FRAME};
 use crate::net;
 
@@ -30,6 +31,8 @@ pub enum Target {
     Local(usize),
     Remote(usize),
     Track(usize),
+    /// the master's FX rack
+    Master,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +76,10 @@ pub enum Cmd {
     /// What a strip plays instead of its input (None: back to the input).
     Instrument(Target, Option<Box<InstSlot>>),
     InstParam(Target, usize, f32),
+    /// How the song's tracks are wired (the old one comes back as garbage).
+    Wiring(Box<Wiring>),
+    /// A send's level: (track, bus, level).
+    SendLevel(usize, usize, f32),
 }
 
 /// One ring per local strip to record (None = not recorded).
@@ -85,6 +92,7 @@ pub enum Garbage {
     Timeline(Box<Timeline>),
     Rings(Box<RecRings>),
     Inst(Box<InstSlot>),
+    Wiring(Box<Wiring>),
 }
 
 /// One received audio packet, from the network thread to the audio thread.
@@ -220,21 +228,6 @@ impl StripSettings {
     }
 }
 
-struct Strip {
-    s: StripSettings,
-    rack: Rack,
-    inst: Option<Box<InstSlot>>,
-    buf: Vec<f32>,
-    last: Vec<f32>, // remote strips: last good block, for concealment
-    level: f32,
-}
-
-impl Strip {
-    fn new(s: StripSettings) -> Self {
-        Strip { s, rack: Rack::new(), inst: None, buf: vec![0.0; MAX_FRAME], last: vec![0.0; MAX_FRAME], level: 0.0 }
-    }
-}
-
 /// The click track. Lives entirely in the audio thread; only your own ears get
 /// it (it's added after the mix, never sent).
 ///
@@ -330,6 +323,9 @@ pub struct Dsp {
     local: Vec<Strip>,
     remote: Vec<Strip>,
     tracks: Vec<Strip>,
+    master_strip: Strip,
+    wiring: Option<Box<Wiring>>,
+    bufs: TrackBufs,
     timeline: Option<Box<Timeline>>,
     tp: Transport,
     click: Metro,
@@ -389,6 +385,9 @@ impl Dsp {
             local,
             remote: (0..MAX_REMOTE).map(|_| Strip::new(StripSettings::remote())).collect(),
             tracks: (0..MAX_TRACKS).map(|_| Strip::new(StripSettings::track())).collect(),
+            master_strip: Strip::new(StripSettings::remote()),
+            wiring: Some(Wiring::plain()),
+            bufs: TrackBufs::new(),
             timeline: Some(Box::new(Timeline::empty())),
             tp: Transport { playing: false, pos: 0, loop_on: false, loop_start: 0, loop_end: 0, click_on: false,
                             click_until: i64::MIN, recording: false, rec_started: false },
@@ -423,7 +422,8 @@ impl Dsp {
     pub fn set_format(&mut self, samplerate: u32, frame: usize) {
         let frame = frame.min(MAX_FRAME);
         if samplerate != self.samplerate {
-            for strip in self.local.iter_mut().chain(self.remote.iter_mut()).chain(self.tracks.iter_mut()) {
+            for strip in self.local.iter_mut().chain(self.remote.iter_mut()).chain(self.tracks.iter_mut())
+                .chain(std::iter::once(&mut self.master_strip)) {
                 for slot in strip.rack.slots.iter_mut() {
                     // plugins re-setup in place (keeping their state); the rest
                     // are rebuilt; a model that can't be reloaded keeps its old instance
@@ -468,6 +468,7 @@ impl Dsp {
             Target::Local(i) => self.local.get_mut(i),
             Target::Remote(i) => self.remote.get_mut(i),
             Target::Track(i) => self.tracks.get_mut(i),
+            Target::Master => Some(&mut self.master_strip),
         }
     }
 
@@ -653,6 +654,16 @@ impl Dsp {
                         }
                     }
                 }
+                Cmd::Wiring(w) => {
+                    if let Some(old) = self.wiring.replace(w) {
+                        self.discard(Garbage::Wiring(old));
+                    }
+                }
+                Cmd::SendLevel(t, bus, level) => {
+                    if let Some(w) = self.wiring.as_mut() {
+                        w.set_send(t, bus, level);
+                    }
+                }
             }
         }
     }
@@ -716,7 +727,7 @@ impl Dsp {
             self.send_buf.push(net::T_AUDIO);
             self.send_buf.extend_from_slice(&seq.to_be_bytes());
             for k in 0..n {
-                let v: f32 = list[..total].iter().map(|&i| self.local[i].buf[k]).sum();
+                let v: f32 = list[..total].iter().map(|&i| 0.5 * (self.local[i].l[k] + self.local[i].r[k])).sum();
                 self.send_buf.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
             }
             let _ = self.socket.send_to(&self.send_buf, peer);
@@ -733,7 +744,9 @@ impl Dsp {
             self.send_buf.extend_from_slice(&seq.to_be_bytes());
             self.send_buf.extend_from_slice(&[total as u8, first as u8, count as u8]);
             for &i in &list[first..first + count] {
-                for &s in &self.local[i].buf[..n] {
+                let st = &self.local[i];
+                for (a, b) in st.l[..n].iter().zip(&st.r[..n]) {
+                    let s = 0.5 * (a + b); // live audio goes out mono
                     self.send_buf.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
                 }
             }
@@ -766,28 +779,30 @@ impl Dsp {
             if let Some(inst) = strip.inst.as_mut() {
                 // an instrument strip plays its instrument instead of an input
                 let InstSlot { cfg, inst } = &mut **inst;
-                inst.process(&cfg.p, &mut strip.buf[..n]);
-                for v in strip.buf[..n].iter_mut() {
-                    *v *= g;
+                inst.process(&cfg.p, &mut strip.l[..n], &mut strip.r[..n]);
+                for k in 0..n {
+                    strip.l[k] *= g;
+                    strip.r[k] *= g;
                 }
             } else {
                 for k in 0..n {
-                    strip.buf[k] = if ch < in_ch { input[k * in_ch + ch] * g } else { 0.0 };
+                    let v = if ch < in_ch { input[k * in_ch + ch] * g } else { 0.0 };
+                    strip.l[k] = v;
+                    strip.r[k] = v;
                 }
             }
-            strip.rack.process(&mut strip.buf[..n]);
-            let pk = strip.buf[..n].iter().fold(0f32, |a, v| a.max(v.abs()));
-            strip.level = pk.max(strip.level * 0.9);
+            strip.rack.process(&mut strip.l[..n], &mut strip.r[..n], &no_keys);
+            strip.meter(n);
             if strip.s.mon && audible(&strip.s) {
-                let (l, r) = pan_gains(strip.s.pan);
+                let (gl, gr) = pan_gains(strip.s.pan);
                 let f = strip.s.fader;
                 for k in 0..n {
-                    self.mix_l[k] += strip.buf[k] * f * l;
-                    self.mix_r[k] += strip.buf[k] * f * r;
+                    self.mix_l[k] += strip.l[k] * f * gl;
+                    self.mix_r[k] += strip.r[k] * f * gr;
                 }
             }
         }
-        // --- recording: each recorded strip's signal, as sent ---
+        // --- recording: each recorded strip's signal, as sent (mono) ---
         if self.tp.recording {
             if !self.tp.rec_started {
                 self.tp.rec_started = true;
@@ -799,7 +814,7 @@ impl Dsp {
                 let strip = &self.local[i];
                 match ring.write_chunk_uninit(n) {
                     Ok(chunk) if strip.s.active => {
-                        chunk.fill_from_iter(strip.buf[..n].iter().copied());
+                        chunk.fill_from_iter(strip.l[..n].iter().zip(&strip.r[..n]).map(|(a, b)| 0.5 * (a + b)));
                     }
                     Ok(chunk) => {
                         chunk.fill_from_iter(std::iter::repeat(0.0));
@@ -820,8 +835,8 @@ impl Dsp {
                 self.remote_count = c;
                 self.plc_gain = 1.0;
                 for (i, strip) in self.remote.iter_mut().enumerate().take(c) {
-                    strip.buf[..n].copy_from_slice(&self.rx[i * MAX_FRAME..i * MAX_FRAME + n]);
-                    strip.last[..n].copy_from_slice(&strip.buf[..n]);
+                    strip.l[..n].copy_from_slice(&self.rx[i * MAX_FRAME..i * MAX_FRAME + n]);
+                    strip.last[..n].copy_from_slice(&strip.l[..n]);
                 }
             }
             None => {
@@ -830,92 +845,60 @@ impl Dsp {
                 let g = self.plc_gain;
                 for strip in self.remote.iter_mut().take(self.remote_count) {
                     for k in 0..n {
-                        strip.buf[k] = strip.last[k] * g;
+                        strip.l[k] = strip.last[k] * g;
                     }
                 }
             }
         }
         for strip in self.remote.iter_mut().take(self.remote_count) {
             let g = strip.s.gain;
-            for v in strip.buf[..n].iter_mut() {
-                *v *= g;
+            for k in 0..n {
+                strip.l[k] *= g;
+                strip.r[k] = strip.l[k];
             }
-            strip.rack.process(&mut strip.buf[..n]);
-            let pk = strip.buf[..n].iter().fold(0f32, |a, v| a.max(v.abs()));
-            strip.level = pk.max(strip.level * 0.9);
+            strip.rack.process(&mut strip.l[..n], &mut strip.r[..n], &no_keys);
+            strip.meter(n);
             if audible(&strip.s) {
-                let (l, r) = pan_gains(strip.s.pan);
+                let (gl, gr) = pan_gains(strip.s.pan);
                 let f = strip.s.fader;
                 for k in 0..n {
-                    self.mix_l[k] += strip.buf[k] * f * l;
-                    self.mix_r[k] += strip.buf[k] * f * r;
+                    self.mix_l[k] += strip.l[k] * f * gl;
+                    self.mix_r[k] += strip.r[k] * f * gr;
                 }
             }
         }
 
-        // --- the timeline: one or (wrapping around a loop) two stretches ---
+        // --- the song: one or (wrapping around a loop) two stretches of the timeline ---
         let tp_pos = self.tp.pos;
-        let mut segs = [(0usize, tp_pos, n); 2];
-        let mut nseg = 1;
+        let mut play = Play { segs: [(0usize, tp_pos, n); 2], nseg: 1, looping: None };
         let looping = self.tp.playing && self.tp.loop_on && !self.tp.recording;
         // (>=: a block that ends right on the loop's end still jumps back, with an
         // empty second stretch, or the next block would start past the end)
         if looping && tp_pos < self.tp.loop_end && tp_pos + n as i64 >= self.tp.loop_end {
             let k = (self.tp.loop_end - tp_pos) as usize;
-            segs[0] = (0, tp_pos, k);
-            segs[1] = (k, self.tp.loop_start, n - k);
-            nseg = 2;
+            play.segs[0] = (0, tp_pos, k);
+            play.segs[1] = (k, self.tp.loop_start, n - k);
+            play.nseg = 2;
         }
-        // solo on a track only silences other tracks, never the live channels
-        let track_solo = self.tracks.iter().any(|s| s.s.active && s.s.solo);
-        if let Some(tl) = self.timeline.as_deref() {
-            for (i, strip) in self.tracks.iter_mut().enumerate() {
-                if !strip.s.active {
-                    strip.level = 0.0;
-                    continue;
-                }
-                strip.buf[..n].fill(0.0);
-                if let Some(inst) = strip.inst.as_mut() {
-                    if self.tp.playing {
-                        for (k, &(off, p, len)) in segs[..nseg].iter().enumerate() {
-                            if k == 1 {
-                                inst.inst.note(NoteEv::Release); // the loop jumped back
-                            }
-                            render_inst(tl, i, inst, p, &mut strip.buf[off..off + len]);
-                        }
-                    } else {
-                        // stopped: still playable live, and tails ring out
-                        let InstSlot { cfg, inst } = &mut **inst;
-                        inst.process(&cfg.p, &mut strip.buf[..n]);
-                    }
-                }
-                if self.tp.playing {
-                    for &(off, p, len) in &segs[..nseg] {
-                        tl.render(i, p, &mut strip.buf[off..off + len]);
-                    }
-                }
-                let g = strip.s.gain;
-                for v in strip.buf[..n].iter_mut() {
-                    *v *= g;
-                }
-                strip.rack.process(&mut strip.buf[..n]);
-                let pk = strip.buf[..n].iter().fold(0f32, |a, v| a.max(v.abs()));
-                strip.level = pk.max(strip.level * 0.9);
-                if !strip.s.mute && (!track_solo || strip.s.solo) {
-                    let (l, r) = pan_gains(strip.s.pan);
-                    let f = strip.s.fader;
-                    for k in 0..n {
-                        self.mix_l[k] += strip.buf[k] * f * l;
-                        self.mix_r[k] += strip.buf[k] * f * r;
-                    }
-                }
-            }
+        if looping {
+            play.looping = Some((self.tp.loop_start, self.tp.loop_end));
         }
+        if let Some(w) = self.wiring.as_deref_mut() {
+            let playing = self.tp.playing.then_some(&play);
+            render_tracks(&mut self.tracks, w, &mut self.bufs, self.timeline.as_deref(), playing, n,
+                          &mut self.mix_l[..n], &mut self.mix_r[..n]);
+        }
+        let segs = play.segs;
+        let nseg = play.nseg;
         if self.tp.playing {
             self.tp.pos = if nseg == 2 { segs[1].1 + segs[1].2 as i64 } else { tp_pos + n as i64 };
         }
 
-        // --- master ---
+        // --- master: its rack (part of the song), then the fader ---
+        {
+            let bufs = &self.bufs;
+            self.master_strip.rack.process(&mut self.mix_l[..n], &mut self.mix_r[..n], &|slot| bufs.key(slot, n));
+        }
         let m = self.master;
         let mut pk = 0f32;
         for k in 0..n {
@@ -941,9 +924,11 @@ impl Dsp {
         mr.fill(0.0);
         let daw_click = self.tp.playing && (self.tp.click_on || tp_pos < self.tp.click_until);
         if daw_click {
-            // the timeline's own click (and count-in) while it plays
+            // the timeline's own click (and count-in) while it plays; the music
+            // comes out of the master rack that much later, so the click waits too
+            let m_lat = self.wiring.as_ref().map_or(0, |w| w.master_lat) as f64;
             for &(off, p, len) in &segs[..nseg] {
-                self.click.render_at(p as f64, self.samplerate as f32, &mut ml[off..off + len], &mut mr[off..off + len], &self.shared);
+                self.click.render_at(p as f64 - m_lat, self.samplerate as f32, &mut ml[off..off + len], &mut mr[off..off + len], &self.shared);
             }
         } else {
             self.click.left = 0;

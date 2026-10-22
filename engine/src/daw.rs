@@ -16,9 +16,10 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::dsp::{pan_gains, StripSettings};
+use crate::dsp::StripSettings;
 use crate::fx::{Rack, Slot, SlotCfg};
 use crate::instr::{InstCfg, InstSlot, NoteEv};
+use crate::mix::{render_tracks, Play, Strip, TrackBufs, Wiring};
 
 pub const MAX_TRACKS: usize = 32;
 /// Samples per waveform overview bucket (one min/max pair each).
@@ -26,10 +27,25 @@ pub const PEAK_BUCKET: usize = 512;
 /// Short ramps at every clip edge, so a cut never clicks.
 const DECLICK: i64 = 32;
 
-/// One audio file, mono, at its own sample rate.
+/// One audio file at its own sample rate: mono (`samples`), or stereo
+/// (`samples` left, `right` right).
 pub struct AudioData {
     pub sr: u32,
     pub samples: Vec<f32>,
+    pub right: Option<Vec<f32>>,
+}
+
+impl AudioData {
+    pub fn mono(sr: u32, samples: Vec<f32>) -> Self {
+        AudioData { sr, samples, right: None }
+    }
+    /// Both sides mixed (a waveform, a drum pad).
+    pub fn to_mono(&self) -> Vec<f32> {
+        match &self.right {
+            Some(r) => self.samples.iter().zip(r).map(|(a, b)| 0.5 * (a + b)).collect(),
+            None => self.samples.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -72,9 +88,10 @@ impl Timeline {
         &ns[a..b]
     }
 
-    /// Add track `t`'s audio for timeline samples pos..pos+out.len() into `out`.
-    pub fn render(&self, t: usize, pos: i64, out: &mut [f32]) {
-        let n = out.len() as i64;
+    /// Add track `t`'s audio for timeline samples pos..pos+l.len() into `l`, `r`
+    /// (a mono clip into both).
+    pub fn render(&self, t: usize, pos: i64, l: &mut [f32], r: &mut [f32]) {
+        let n = l.len() as i64;
         let Some(clips) = self.tracks.get(t) else { return };
         for c in clips {
             if c.start >= pos + n {
@@ -85,6 +102,7 @@ impl Timeline {
                 continue;
             }
             let src = &c.data.samples;
+            let src_r = c.data.right.as_ref().unwrap_or(src);
             let fi = c.fade_in.max(DECLICK) as f32;
             let fo = c.fade_out.max(DECLICK) as f32;
             for x in a..b {
@@ -101,7 +119,9 @@ impl Timeline {
                 if left <= fo {
                     g *= (left - 0.5) / fo;
                 }
-                out[(x - pos) as usize] += src[si as usize] * g;
+                let k = (x - pos) as usize;
+                l[k] += src[si as usize] * g;
+                r[k] += src_r[si as usize] * g;
             }
         }
     }
@@ -119,21 +139,21 @@ pub struct ClipDesc {
     pub fade_out: f64,
 }
 
-/// Play track `t`'s instrument for timeline samples pos..pos+out.len() into
-/// `out` (replacing it), each note at its exact sample.
-pub fn render_inst(tl: &Timeline, t: usize, inst: &mut InstSlot, pos: i64, out: &mut [f32]) {
-    let n = out.len();
+/// Play track `t`'s instrument for timeline samples pos..pos+l.len() into
+/// `l`, `r` (replacing them), each note at its exact sample.
+pub fn render_inst(tl: &Timeline, t: usize, inst: &mut InstSlot, pos: i64, l: &mut [f32], r: &mut [f32]) {
+    let n = l.len();
     let mut done = 0;
     for e in tl.notes_in(t, pos, pos + n as i64) {
         let at = ((e.pos - pos).max(0) as usize).min(n);
         if at > done {
-            inst.inst.process(&inst.cfg.p, &mut out[done..at]);
+            inst.inst.process(&inst.cfg.p, &mut l[done..at], &mut r[done..at]);
             done = at;
         }
         inst.inst.note(if e.on { NoteEv::On(e.key, e.vel) } else { NoteEv::Off(e.key) });
     }
     if done < n {
-        inst.inst.process(&inst.cfg.p, &mut out[done..]);
+        inst.inst.process(&inst.cfg.p, &mut l[done..], &mut r[done..]);
     }
 }
 
@@ -180,7 +200,7 @@ impl AudioCache {
         if let Some(c) = self.converted.get(&k) {
             return Some(c.clone());
         }
-        let c = Arc::new(AudioData { sr, samples: resample(&a.samples, a.sr, sr) });
+        let c = Arc::new(AudioData { sr, samples: resample(&a.samples, a.sr, sr), right: a.right.as_ref().map(|r| resample(r, a.sr, sr)) });
         self.converted.insert(k, c.clone());
         Some(c)
     }
@@ -257,7 +277,8 @@ pub fn peaks(x: &[f32]) -> Vec<u8> {
     out
 }
 
-/// Any PCM or float WAV, mixed down to mono.
+/// Any PCM or float WAV: mono stays mono, two channels or more come in as
+/// stereo (the first two).
 pub fn read_wav(path: &Path) -> Result<AudioData, String> {
     let mut r = hound::WavReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let spec = r.spec();
@@ -269,12 +290,12 @@ pub fn read_wav(path: &Path) -> Result<AudioData, String> {
             r.samples::<i32>().map(|s| s.map(|v| v as f32 * scale)).collect::<Result<_, _>>().map_err(|e| e.to_string())?
         }
     };
-    let samples = if ch == 1 {
-        inter
-    } else {
-        inter.chunks_exact(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect()
-    };
-    Ok(AudioData { sr: spec.sample_rate, samples })
+    if ch == 1 {
+        return Ok(AudioData::mono(spec.sample_rate, inter));
+    }
+    let l = inter.chunks_exact(ch).map(|f| f[0]).collect();
+    let r = inter.chunks_exact(ch).map(|f| f[1]).collect();
+    Ok(AudioData { sr: spec.sample_rate, samples: l, right: Some(r) })
 }
 
 /// What one recorded source turned into.
@@ -357,38 +378,38 @@ pub struct TrackMix {
 }
 
 /// Render timeline samples start..end to stereo 24-bit WAV files: the mix
-/// (if `mix`) and any stems. Same clips, gains, pans and effects as playback,
-/// but with effect instances of its own, so the live audio keeps running.
-/// `done` counts rendered frames. Returns warnings (effects that couldn't load).
+/// (if `mix`) and any stems. The same mixer as playback (wiring, buses,
+/// sends, delay compensation, the master rack and fader), with effect
+/// instances of its own so the live audio keeps running. `done` counts
+/// rendered frames. Returns warnings (effects that couldn't load).
 #[allow(clippy::too_many_arguments)]
-pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, master: f32, sr: u32, start: i64, end: i64,
-              mix: Option<PathBuf>, done: &AtomicU64) -> Result<Vec<String>, String> {
+pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, master_rack: Vec<SlotCfg>, master: f32,
+              sr: u32, start: i64, end: i64, mix: Option<PathBuf>, done: &AtomicU64) -> Result<Vec<String>, String> {
     const BLOCK: usize = 512;
     type Wav = hound::WavWriter<std::io::BufWriter<std::fs::File>>;
     let spec = hound::WavSpec { channels: 2, sample_rate: sr, bits_per_sample: 24, sample_format: hound::SampleFormat::Int };
     let create = |p: &Path| hound::WavWriter::create(p, spec).map_err(|e| format!("can't write {}: {e}", p.display()));
     let put = |w: &mut Wav, v: f32| w.write_sample((v.clamp(-1.0, 1.0) * 8_388_607.0) as i32).map_err(|e| e.to_string());
-    struct T {
-        slot: usize,
-        s: StripSettings,
-        rack: Rack,
-        inst: Option<Box<InstSlot>>,
-        stem: Option<Wav>,
-        buf: Vec<f32>,
-    }
     let mut warnings = Vec::new();
-    let mut ts = Vec::new();
-    for t in tracks {
+    let build_rack = |cfgs: Vec<SlotCfg>, what: &str, warnings: &mut Vec<String>| {
         let mut rack = Rack::new();
-        for cfg in t.rack {
+        for cfg in cfgs {
             match Slot::new(cfg, sr as f32) {
                 Ok(slot) => {
                     let _ = rack.insert(MAX_TRACKS, slot);
                 }
-                Err(e) => warnings.push(format!("an effect on track {} was left out: {e}", t.slot + 1)),
+                Err(e) => warnings.push(format!("an effect on {what} was left out: {e}")),
             }
         }
-        let inst = match t.inst {
+        rack
+    };
+    let mut strips: Vec<Strip> = (0..MAX_TRACKS).map(|_| Strip::new(StripSettings::track())).collect();
+    let mut stems: Vec<Option<Wav>> = (0..MAX_TRACKS).map(|_| None).collect();
+    for t in tracks {
+        let Some(strip) = strips.get_mut(t.slot) else { continue };
+        strip.s = t.s;
+        strip.rack = build_rack(t.rack, &format!("track {}", t.slot + 1), &mut warnings);
+        strip.inst = match t.inst {
             Some(cfg) => match InstSlot::new(cfg, sr as f32) {
                 Ok(i) => Some(i),
                 Err(e) => {
@@ -398,62 +419,54 @@ pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, master: f32, sr: u32, start:
             },
             None => None,
         };
-        let stem = match &t.stem {
-            Some(p) => Some(create(p)?),
-            None => None,
-        };
-        ts.push(T { slot: t.slot, s: t.s, rack, inst, stem, buf: vec![0.0; BLOCK] });
+        if let Some(p) = &t.stem {
+            stems[t.slot] = Some(create(p)?);
+        }
     }
+    let mut master_rack = build_rack(master_rack, "the master", &mut warnings);
     let mut mixw = match &mix {
         Some(p) => Some(create(p)?),
         None => None,
     };
-    let any_solo = ts.iter().any(|t| t.s.solo);
+    let mut bufs = TrackBufs::new();
+    // run in early so slow plugins are full when `start` comes out of them, and
+    // on past the end by the master rack's delay
+    let preroll = (0..MAX_TRACKS).map(|i| wiring.ahead_notes[i].max(wiring.ahead_audio[i])).max().unwrap_or(0).max(0);
+    let m_lat = wiring.master_lat.max(0);
     let (mut l, mut r) = (vec![0f32; BLOCK], vec![0f32; BLOCK]);
-    let mut pos = start;
-    while pos < end {
-        let n = (end - pos).min(BLOCK as i64) as usize;
+    let mut x = start - preroll;
+    while x < end + m_lat {
+        let n = (end + m_lat - x).min(BLOCK as i64) as usize;
         l[..n].fill(0.0);
         r[..n].fill(0.0);
-        for t in ts.iter_mut() {
-            let buf = &mut t.buf[..n];
-            buf.fill(0.0);
-            if let Some(inst) = t.inst.as_mut() {
-                render_inst(tl, t.slot, inst, pos, buf);
-            }
-            tl.render(t.slot, pos, buf);
-            for v in buf.iter_mut() {
-                *v *= t.s.gain;
-            }
-            t.rack.process(buf);
-            let (pl, pr) = pan_gains(t.s.pan);
-            let f = t.s.fader;
-            if let Some(w) = t.stem.as_mut() {
-                for &v in buf.iter() {
-                    put(w, v * f * pl)?;
-                    put(w, v * f * pr)?;
-                }
-            }
-            if !t.s.mute && (!any_solo || t.s.solo) {
-                for k in 0..n {
-                    l[k] += buf[k] * f * pl;
-                    r[k] += buf[k] * f * pr;
+        let play = Play { segs: [(0, x, n), (0, 0, 0)], nseg: 1, looping: None };
+        render_tracks(&mut strips, &mut wiring, &mut bufs, Some(tl), Some(&play), n, &mut l[..n], &mut r[..n]);
+        // stems: the tracks as they leave their faders (no master rack: no delay)
+        for (slot, w) in stems.iter_mut().enumerate() {
+            let Some(w) = w.as_mut() else { continue };
+            for k in 0..n {
+                let at = x + k as i64;
+                if at >= start && at < end {
+                    put(w, bufs.post_l[slot][k])?;
+                    put(w, bufs.post_r[slot][k])?;
                 }
             }
         }
+        master_rack.process(&mut l[..n], &mut r[..n], &|slot| bufs.key(slot, n));
         if let Some(w) = mixw.as_mut() {
             for k in 0..n {
-                put(w, l[k] * master)?;
-                put(w, r[k] * master)?;
+                let at = x + k as i64 - m_lat; // what comes out of the master rack now
+                if at >= start && at < end {
+                    put(w, l[k] * master)?;
+                    put(w, r[k] * master)?;
+                }
             }
         }
-        pos += n as i64;
-        done.store((pos - start) as u64, Relaxed);
+        x += n as i64;
+        done.store((x - start).clamp(0, end - start) as u64, Relaxed);
     }
-    for t in ts {
-        if let Some(w) = t.stem {
-            w.finalize().map_err(|e| e.to_string())?;
-        }
+    for w in stems.into_iter().flatten() {
+        w.finalize().map_err(|e| e.to_string())?;
     }
     if let Some(w) = mixw {
         w.finalize().map_err(|e| e.to_string())?;
@@ -471,27 +484,36 @@ mod tests {
 
     #[test]
     fn clips_play_at_their_place_with_offset_and_declick() {
-        let data = Arc::new(AudioData { sr: 48000, samples: (0..1000).map(|i| i as f32).collect() });
+        let data = Arc::new(AudioData::mono(48000, (0..1000).map(|i| i as f32).collect()));
         let mut tl = Timeline::empty();
         tl.tracks[0].push(clip(100, 200, 300, &data));
-        let mut out = vec![0f32; 128];
-        tl.render(0, 0, &mut out);
+        let render = |pos: i64| {
+            let (mut l, mut r) = (vec![0f32; 128], vec![0f32; 128]);
+            tl.render(0, pos, &mut l, &mut r);
+            assert_eq!(l, r, "mono: the same on both sides");
+            l
+        };
+        let out = render(0);
         assert!(out[..100].iter().all(|v| *v == 0.0));
         // first sample ramps in, sample 200 of the file lands on timeline 100
         assert!(out[100] > 0.0 && out[100] < 200.0);
-        let mut out = vec![0f32; 128];
-        tl.render(0, 200, &mut out);
-        assert_eq!(out[0], 300.0); // timeline 200 = file sample 300, past the ramp
-        let mut out = vec![0f32; 128];
-        tl.render(0, 380, &mut out);
+        assert_eq!(render(200)[0], 300.0); // timeline 200 = file sample 300, past the ramp
+        let out = render(380);
         assert!(out[19] > 0.0 && out[19] < 500.0, "ramps out at the end");
         assert_eq!(out[20], 0.0, "nothing after the clip");
+        // a stereo file plays each side on its own side
+        let st = Arc::new(AudioData { sr: 48000, samples: vec![0.25; 1000], right: Some(vec![-0.5; 1000]) });
+        let mut tl = Timeline::empty();
+        tl.tracks[0].push(clip(0, 0, 1000, &st));
+        let (mut l, mut r) = (vec![0f32; 128], vec![0f32; 128]);
+        tl.render(0, 200, &mut l, &mut r);
+        assert_eq!((l[0], r[0]), (0.25, -0.5));
     }
 
     #[test]
     fn build_converts_seconds_and_rates() {
         let mut cache = AudioCache::default();
-        cache.insert("a", AudioData { sr: 24000, samples: vec![0.5; 24000] });
+        cache.insert("a", AudioData::mono(24000, vec![0.5; 24000]));
         let desc = vec![vec![ClipDesc { key: "a".into(), start: 1.0, offset: 0.0, len: 0.5, gain: 1.0, fade_in: 0.0, fade_out: 0.0 }]];
         let tl = cache.build(&desc, &[], 48000);
         let c = &tl.tracks[0][0];
@@ -506,7 +528,7 @@ mod tests {
     fn export_renders_the_mix_and_stems() {
         let dir = std::env::temp_dir().join(format!("duet-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let data = Arc::new(AudioData { sr: 48000, samples: vec![0.5; 4800] });
+        let data = Arc::new(AudioData::mono(48000, vec![0.5; 4800]));
         let mut tl = Timeline::empty();
         tl.tracks[0].push(clip(1000, 0, 4800, &data));
         tl.tracks[3].push(clip(0, 0, 4800, &data));
@@ -516,7 +538,7 @@ mod tests {
             TrackMix { slot: 3, s: s(0.0, true), rack: vec![SlotCfg::new(5)], inst: None, stem: Some(dir.join("b.wav")) },
         ];
         let done = AtomicU64::new(0);
-        let warn = render(&tl, tracks, 1.0, 48000, 0, 8000, Some(dir.join("mix.wav")), &done).unwrap();
+        let warn = render(&tl, tracks, Wiring::plain(), vec![], 1.0, 48000, 0, 8000, Some(dir.join("mix.wav")), &done).unwrap();
         assert!(warn.is_empty());
         assert_eq!(done.load(Relaxed), 8000);
         let read = |n: &str| {
@@ -534,6 +556,48 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn export_lines_up_slow_plugins_buses_and_the_master() {
+        // an impulse on track 0 (straight out) and on track 1 (through bus 5,
+        // which has a limiter: a look-ahead delay), a limiter on the master too:
+        // both impulses come out on the same sample, the one they're on
+        use crate::mix::{Route, WireDesc};
+        let dir = std::env::temp_dir().join(format!("duet-pdc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut one = vec![0f32; 2000];
+        one[100] = 0.5; // (past the clip's de-click ramp)
+        let data = Arc::new(AudioData::mono(48000, one));
+        let mut tl = Timeline::empty();
+        tl.tracks[0].push(clip(900, 0, 2000, &data));
+        tl.tracks[1].push(clip(2900, 0, 2000, &data));
+        let s = StripSettings { active: true, ..StripSettings::track() };
+        let mut lim = SlotCfg::new(crate::fx::LIMITER);
+        lim.p[1] = 1.0;
+        let tracks = vec![
+            TrackMix { slot: 0, s, rack: vec![], inst: None, stem: None },
+            TrackMix { slot: 1, s, rack: vec![], inst: None, stem: None },
+            TrackMix { slot: 5, s, rack: vec![lim.clone()], inst: None, stem: None },
+        ];
+        let mut routes = vec![crate::mix::Route::default(); MAX_TRACKS];
+        routes[1] = Route { out: Some(5), sends: vec![] };
+        let la = crate::fx::Limiter::lookahead(48000.0) as u32;
+        let mut rack_lat = [0; MAX_TRACKS];
+        rack_lat[5] = la;
+        let mut active = [false; MAX_TRACKS];
+        for i in [0, 1, 5] {
+            active[i] = true;
+        }
+        let w = Wiring::build(&WireDesc { active, routes: &routes, rack_lat, inst_lat: [0; MAX_TRACKS], keys: vec![], master_lat: la, max_pad: 48000 });
+        let done = AtomicU64::new(0);
+        render(&tl, tracks, w, vec![lim], 1.0, 48000, 0, 6000, Some(dir.join("mix.wav")), &done).unwrap();
+        let mix: Vec<f32> = hound::WavReader::open(dir.join("mix.wav")).unwrap().samples::<i32>()
+            .map(|v| v.unwrap() as f32 / 8_388_607.0).step_by(2).collect();
+        assert_eq!(mix.len(), 6000);
+        let hits: Vec<usize> = (0..mix.len()).filter(|&k| mix[k].abs() > 0.05).collect();
+        assert_eq!(hits, vec![1000, 3000], "{hits:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Clicks once on the first sample after each note on.
     struct Clicker(bool);
     impl crate::instr::Instrument for Clicker {
@@ -542,11 +606,12 @@ mod tests {
                 self.0 = true;
             }
         }
-        fn process(&mut self, _p: &[f32; crate::instr::N_PARAMS], out: &mut [f32]) {
+        fn process(&mut self, _p: &[f32; crate::instr::N_PARAMS], out: &mut [f32], r: &mut [f32]) {
             out.fill(0.0);
             if std::mem::take(&mut self.0) && !out.is_empty() {
                 out[0] = 1.0;
             }
+            r.copy_from_slice(out);
         }
     }
 
@@ -563,9 +628,9 @@ mod tests {
         assert_eq!(tl.notes_in(1, 256, 384).iter().filter(|n| n.on).count(), 1);
         let mut inst = InstSlot { cfg: InstCfg::new(crate::instr::SYNTH), inst: Box::new(Clicker(false)) };
         let mut clicks = vec![];
-        let mut buf = [0f32; 128];
+        let (mut buf, mut right) = ([0f32; 128], [0f32; 128]);
         for b in 0..10i64 {
-            render_inst(&tl, 1, &mut inst, b * 128, &mut buf);
+            render_inst(&tl, 1, &mut inst, b * 128, &mut buf, &mut right);
             clicks.extend(buf.iter().enumerate().filter(|(_, v)| **v > 0.5).map(|(k, _)| b * 128 + k as i64));
         }
         assert_eq!(clicks, vec![0, 300, 1000]);

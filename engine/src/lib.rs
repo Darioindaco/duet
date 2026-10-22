@@ -13,6 +13,7 @@ mod instr;
 mod jitter;
 mod livenotes;
 mod midi;
+mod mix;
 mod net;
 mod signal;
 mod transfer;
@@ -31,6 +32,7 @@ use daw::{AudioCache, ClipDesc, NoteDesc, MAX_TRACKS};
 use dsp::{decode_peer, encode_peer, Cmd, Dsp, Garbage, InPacket, RecRings, Shared, StripParam, StripSettings, Target, MAX_LOCAL, MAX_REMOTE};
 use fx::{kind_index, param_index, preset_slots, Slot, SlotCfg, FX, MAX_SLOTS};
 use instr::{InstCfg, InstSlot, NoteEv};
+use mix::{Route, WireDesc, Wiring};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -48,6 +50,32 @@ struct Ctl {
     remote: Vec<StripMirror>,
     tracks: Vec<StripMirror>,
     master: f32,
+    /// the master's FX rack (only `rack` is used)
+    master_strip: StripMirror,
+    /// where each song track's sound goes (from the song)
+    routes: Vec<Route>,
+    /// what the audio thread's wiring was last built from
+    wired: Option<WireKey>,
+}
+
+/// Everything the wiring depends on except send levels (those change without a rebuild).
+#[derive(Clone, PartialEq)]
+struct WireKey {
+    active: [bool; MAX_TRACKS],
+    shape: Vec<(Option<usize>, Vec<usize>)>,
+    levels: Vec<Vec<f32>>,
+    rack_lat: [u32; MAX_TRACKS],
+    inst_lat: [u32; MAX_TRACKS],
+    keys: Vec<(usize, usize)>,
+    master_lat: u32,
+    sr: u32,
+}
+
+impl WireKey {
+    fn same_but_levels(&self, o: &WireKey) -> bool {
+        (self.active, &self.shape, self.rack_lat, self.inst_lat, &self.keys, self.master_lat, self.sr)
+            == (o.active, &o.shape, o.rack_lat, o.inst_lat, &o.keys, o.master_lat, o.sr)
+    }
 }
 
 /// The control side of the timeline: loaded audio, the clip layout (kept to
@@ -69,8 +97,9 @@ struct ExportJob {
 struct RecSession {
     writer: std::thread::JoinHandle<Vec<daw::RecOut>>,
     sr: u32,
-    /// what the sound cards add (input + output): a take lands this much earlier
-    comp: f64,
+    /// per source: what the sound cards, the master rack and the strip's own
+    /// effects add; a take lands this much earlier
+    comp: Vec<(usize, f64)>,
 }
 
 #[derive(Clone)]
@@ -399,6 +428,9 @@ impl Engine {
                 remote: vec![StripMirror { s: StripSettings::remote(), rack: vec![], inst: None }; MAX_REMOTE],
                 tracks: vec![StripMirror { s: StripSettings::track(), rack: vec![], inst: None }; MAX_TRACKS],
                 master: 1.0,
+                master_strip: StripMirror { s: StripSettings::remote(), rack: vec![], inst: None },
+                routes: vec![Route::default(); MAX_TRACKS],
+                wired: None,
             }),
             cmds: Mutex::new(cmd_tx),
             incoming: Mutex::new(Some(pkt_tx)),
@@ -522,6 +554,7 @@ impl Engine {
         self.inner.shared.streaming.store(res.is_ok(), Relaxed);
         let ok = res.map_err(PyRuntimeError::new_err)?;
         self.rebuild_timeline(); // clip positions are samples at the (maybe new) rate
+        self.reroute(); // and the delay compensation is in samples too
         Ok((ok.lat_in_ms, ok.lat_out_ms, ok.in_channels))
     }
 
@@ -546,6 +579,7 @@ impl Engine {
     fn set_format(&self, samplerate: u32, frame: usize) {
         self.dsp.lock().unwrap().set_format(samplerate, frame);
         self.rebuild_timeline();
+        self.reroute();
     }
 
     // --- mixer ---------------------------------------------------------------------
@@ -571,6 +605,10 @@ impl Engine {
         let mut c = self.inner.ctl.lock().unwrap();
         mirror(&mut c, t).s.set(p, value as f32);
         self.cmd(Cmd::Strip(t, p, value as f32));
+        drop(c);
+        if p == StripParam::Active {
+            self.reroute();
+        }
         Ok(())
     }
 
@@ -594,6 +632,8 @@ impl Engine {
         // a fresh slot has no model file to load, so this can't fail
         let slot = Slot::new(cfg, self.samplerate()).expect("plain slot");
         self.cmd(Cmd::RackInsert(t, pos, slot));
+        drop(c);
+        self.reroute();
         Ok(pos)
     }
 
@@ -605,6 +645,8 @@ impl Engine {
             rack.remove(pos);
             self.cmd(Cmd::RackRemove(t, pos));
         }
+        drop(c);
+        self.reroute();
         Ok(())
     }
 
@@ -621,16 +663,32 @@ impl Engine {
         Ok(())
     }
 
-    /// Slot setting: "on" or one of the effect's parameter names (0..1).
+    /// Slot setting: "on", "key" (a compressor's sidechain: a song track slot,
+    /// or -1 for none) or one of the effect's parameter names (0..1).
     fn rack_set(&self, target: &str, pos: usize, key: &str, value: f64) -> PyResult<()> {
         let t = parse_target(target)?;
         let mut c = self.inner.ctl.lock().unwrap();
         let Some(slot) = mirror(&mut c, t).rack.get_mut(pos) else {
             return Err(PyValueError::new_err(format!("no slot {pos}")));
         };
-        if key == "on" {
-            slot.on = value != 0.0;
-            self.cmd(Cmd::RackOn(t, pos, slot.on));
+        if key == "on" || key == "key" {
+            if key == "on" {
+                slot.on = value != 0.0;
+                self.cmd(Cmd::RackOn(t, pos, slot.on));
+            } else {
+                if slot.kind != fx::COMP {
+                    return Err(PyValueError::new_err("only a compressor listens to another track"));
+                }
+                slot.key = (value >= 0.0 && (value as usize) < MAX_TRACKS).then_some(value as usize);
+                // a fresh one (a compressor is cheap to build) carries the new key in
+                let cfg = slot.clone();
+                drop(c);
+                self.cmd(Cmd::RackReplace(t, pos, Slot::new(cfg, self.samplerate()).expect("plain slot")));
+                self.reroute();
+                return Ok(());
+            }
+            drop(c);
+            self.reroute(); // switching a slow plugin on or off changes the delay
         } else {
             let k = param_index(slot.kind, key)
                 .ok_or_else(|| PyValueError::new_err(format!("{} has no {key}", FX[slot.kind].name)))?;
@@ -645,6 +703,7 @@ impl Engine {
         let t = parse_target(target)?;
         let slots = preset_slots(name).ok_or_else(|| PyValueError::new_err(format!("no preset {name}")))?;
         self.load_rack(t, slots);
+        self.reroute();
         Ok(())
     }
 
@@ -667,6 +726,9 @@ impl Engine {
             if let Some(m) = d.get_item("model")? {
                 cfg.model = m.extract::<Option<String>>()?;
             }
+            if let Some(k) = d.get_item("key")? {
+                cfg.key = k.extract::<Option<i64>>()?.filter(|&k| k >= 0 && (k as usize) < MAX_TRACKS).map(|k| k as usize);
+            }
             if let Some(v) = d.get_item("vst")? {
                 if let Ok(v) = v.downcast::<PyDict>() {
                     let get = |k: &str| -> PyResult<Option<String>> {
@@ -684,6 +746,7 @@ impl Engine {
             cfgs.push(cfg);
         }
         self.load_rack(t, cfgs);
+        self.reroute();
         Ok(())
     }
 
@@ -741,6 +804,7 @@ impl Engine {
         let Some(kind) = kind.filter(|k| !k.is_empty()) else {
             mirror(&mut self.inner.ctl.lock().unwrap(), t).inst = None;
             self.cmd(Cmd::Instrument(t, None));
+            self.reroute();
             return Ok(());
         };
         let k = instr::kind_index(kind).ok_or_else(|| PyValueError::new_err(format!("no instrument {kind}")))?;
@@ -775,6 +839,7 @@ impl Engine {
         let slot = py.allow_threads(|| InstSlot::new(c, sr)).map_err(PyRuntimeError::new_err)?;
         mirror(&mut self.inner.ctl.lock().unwrap(), t).inst = Some(slot.cfg.clone());
         self.cmd(Cmd::Instrument(t, Some(slot)));
+        self.reroute(); // a VST instrument can delay its notes
         Ok(())
     }
 
@@ -915,6 +980,7 @@ impl Engine {
         rack.insert(pos, slot.cfg.clone());
         drop(c);
         self.cmd(Cmd::RackInsert(t, pos, slot));
+        self.reroute(); // a plugin can delay the sound
         Ok(pos)
     }
 
@@ -978,9 +1044,9 @@ impl Engine {
             let ids: Vec<(Target, usize, u64)> = {
                 let mut c = self.inner.ctl.lock().unwrap();
                 let mut out = Vec::new();
-                for (side, n) in [(0, MAX_LOCAL), (1, MAX_REMOTE), (2, MAX_TRACKS)] {
+                for (side, n) in [(0, MAX_LOCAL), (1, MAX_REMOTE), (2, MAX_TRACKS), (3, 1)] {
                     for i in 0..n {
-                        let t = match side { 0 => Target::Local(i), 1 => Target::Remote(i), _ => Target::Track(i) };
+                        let t = match side { 0 => Target::Local(i), 1 => Target::Remote(i), 2 => Target::Track(i), _ => Target::Master };
                         let m = mirror(&mut c, t);
                         for (pos, s) in m.rack.iter().enumerate() {
                             if let Some(v) = &s.vst {
@@ -1012,6 +1078,7 @@ impl Engine {
                 }
             }
         }
+        let sr = self.samplerate();
         let c = self.inner.ctl.lock().unwrap();
         let strip = |m: &StripMirror| -> PyResult<Bound<'py, PyDict>> {
             let d = PyDict::new(py);
@@ -1031,6 +1098,9 @@ impl Engine {
                 e.set_item("on", slot.on)?;
                 for (i, name) in FX[slot.kind].params.iter().enumerate() {
                     e.set_item(*name, slot.p[i])?;
+                }
+                if slot.kind == fx::COMP {
+                    e.set_item("key", slot.key)?;
                 }
                 if slot.kind == fx::NAM {
                     e.set_item("model", slot.model.clone())?;
@@ -1053,6 +1123,7 @@ impl Engine {
                 Ok(e)
             }).collect::<PyResult<Vec<_>>>()?;
             d.set_item("rack", rack)?;
+            d.set_item("latency", fx::rack_latency(&m.rack, sr))?;
             let inst = match &m.inst {
                 None => None,
                 Some(i) => {
@@ -1086,6 +1157,7 @@ impl Engine {
         d.set_item("remote", c.remote.iter().map(strip).collect::<PyResult<Vec<_>>>()?)?;
         d.set_item("tracks", c.tracks.iter().map(strip).collect::<PyResult<Vec<_>>>()?)?;
         d.set_item("master", c.master)?;
+        d.set_item("master_strip", strip(&c.master_strip)?)?;
         Ok(d)
     }
 
@@ -1204,8 +1276,15 @@ impl Engine {
             takes.push((src, key, std::path::PathBuf::from(path), rx));
         }
         let sh = &self.inner.shared;
-        let comp = (sh.lat_in_us.load(Relaxed) + sh.lat_out_us.load(Relaxed)) as f64 / 1e6
+        let cards = (sh.lat_in_us.load(Relaxed) + sh.lat_out_us.load(Relaxed)) as f64 / 1e6
             + sh.cushion_frames.load(Relaxed) as f64 / sr as f64;
+        // you play along to the song as it leaves the master rack, and each
+        // strip is recorded after its own effects: both delay the take
+        let comp: Vec<(usize, f64)> = {
+            let c = self.inner.ctl.lock().unwrap();
+            let master = fx::rack_latency(&c.master_strip.rack, sr as f32);
+            takes.iter().map(|(src, ..)| (*src, cards + (master + fx::rack_latency(&c.local[*src].rack, sr as f32)) as f64 / sr as f64)).collect()
+        };
         let writer = std::thread::Builder::new()
             .name("duet-takes".into())
             .spawn(move || daw::write_takes(takes, sr))
@@ -1250,12 +1329,12 @@ impl Engine {
             d.set_item("frames", o.samples.len())?;
             d.set_item("sr", sess.sr)?;
             d.set_item("first", first)?;
-            d.set_item("comp", sess.comp)?;
+            d.set_item("comp", sess.comp.iter().find(|(s, _)| *s == o.src).map_or(0.0, |(_, c)| *c))?;
             d.set_item("peaks", PyBytes::new(py, &daw::peaks(&o.samples)))?;
             d.set_item("dropped", dropped)?;
             d.set_item("error", o.error.clone())?;
             if o.error.is_none() {
-                self.inner.daw.lock().unwrap().cache.insert(&o.key, daw::AudioData { sr: sess.sr, samples: o.samples });
+                self.inner.daw.lock().unwrap().cache.insert(&o.key, daw::AudioData::mono(sess.sr, o.samples));
             }
             res.push(d);
         }
@@ -1295,13 +1374,35 @@ impl Engine {
         self.cmd(Cmd::Click { on, bpm, beats });
     }
 
+    /// Where each song track's sound goes: routes[slot] = (bus slot, or -1 for
+    /// the master; [(bus slot, send level)]). Loops and sends to itself are
+    /// left out; at most four sends each.
+    fn daw_routing(&self, routes: Vec<(i64, Vec<(i64, f32)>)>) {
+        {
+            let mut c = self.inner.ctl.lock().unwrap();
+            let ok = |x: i64| (x >= 0 && (x as usize) < MAX_TRACKS).then_some(x as usize);
+            for (i, r) in c.routes.iter_mut().enumerate() {
+                *r = match routes.get(i) {
+                    Some((out, sends)) => Route {
+                        out: ok(*out).filter(|&o| o != i),
+                        sends: sends.iter().filter_map(|&(b, v)| ok(b).filter(|&b| b != i).map(|b| (b, v.clamp(0.0, 4.0))))
+                            .take(mix::MAX_SENDS).collect(),
+                    },
+                    None => Route::default(),
+                };
+            }
+        }
+        self.reroute();
+    }
+
     /// Render the song (seconds start..end) to WAV files in the background:
     /// the mix to `mix` (if given) and stems = [(track slot, path)]. Uses the
     /// song tracks' current faders, pans, mute/solo and effects.
     #[pyo3(signature = (mix, stems, start, end))]
     fn daw_export(&self, mix: Option<String>, stems: Vec<(usize, String)>, start: f64, end: f64) -> PyResult<()> {
         let sr = self.samplerate() as u32;
-        let (tracks, master) = {
+        self.reroute();
+        let (tracks, master, master_rack, wiring) = {
             let c = self.inner.ctl.lock().unwrap();
             let tracks: Vec<daw::TrackMix> = c
                 .tracks
@@ -1316,7 +1417,13 @@ impl Engine {
                     stem: stems.iter().find(|(s, _)| *s == slot).map(|(_, p)| p.into()),
                 })
                 .collect();
-            (tracks, c.master)
+            let k = c.wired.clone().expect("rerouted above");
+            // its own wiring (delay lines and all), built the same way as playback's
+            let wiring = Wiring::build(&WireDesc {
+                active: k.active, routes: &c.routes, rack_lat: k.rack_lat, inst_lat: k.inst_lat,
+                keys: k.keys, master_lat: k.master_lat, max_pad: 2 * sr as usize,
+            });
+            (tracks, c.master, c.master_strip.rack.clone(), wiring)
         };
         let mut d = self.inner.daw.lock().unwrap();
         if d.export.as_ref().is_some_and(|j| !j.worker.is_finished()) {
@@ -1333,7 +1440,7 @@ impl Engine {
         let mix = mix.map(std::path::PathBuf::from);
         let worker = std::thread::Builder::new()
             .name("duet-export".into())
-            .spawn(move || daw::render(&tl, tracks, master, sr, a, b, mix, &done2))
+            .spawn(move || daw::render(&tl, tracks, wiring, master_rack, master, sr, a, b, mix, &done2))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         d.export = Some(ExportJob { done, total: (b - a) as u64, worker });
         Ok(())
@@ -1468,6 +1575,8 @@ impl Engine {
         d.set_item("daw_pos", s.daw_pos.load(Relaxed) as f64 / sr)?;
         d.set_item("daw_playing", s.daw_playing.load(Relaxed))?;
         d.set_item("daw_recording", s.rec_on.load(Relaxed))?;
+        let master_lat = fx::rack_latency(&i.ctl.lock().unwrap().master_strip.rack, sr as f32);
+        d.set_item("master_latency_ms", master_lat as f64 * 1000.0 / sr)?;
         d.set_item("rec_dropped", s.rec_dropped.load(Relaxed))?;
         d.set_item("midi_events", s.midi_events.load(Relaxed))?;
         d.set_item("track_levels", s.track_levels.iter().map(|l| l.get()).collect::<Vec<_>>())?;
@@ -1510,6 +1619,66 @@ impl Engine {
         }
     }
 
+    /// Bring the audio thread's wiring of the song up to date: who goes where,
+    /// in what order, and the delay compensation (which follows every rack's
+    /// latency). Cheap when nothing it depends on changed; only send levels
+    /// changed: just those.
+    fn reroute(&self) {
+        let sr = self.samplerate();
+        let mut c = self.inner.ctl.lock().unwrap();
+        let mut active = [false; MAX_TRACKS];
+        let mut rack_lat = [0u32; MAX_TRACKS];
+        let mut inst_lat = [0u32; MAX_TRACKS];
+        let mut keys = Vec::new();
+        for (i, t) in c.tracks.iter().enumerate() {
+            active[i] = t.s.active;
+            rack_lat[i] = fx::rack_latency(&t.rack, sr);
+            inst_lat[i] = t.inst.as_ref().and_then(|x| x.vst.as_ref()).filter(|_| t.s.active).map_or(0, |v| v.latency);
+            for slot in t.rack.iter().filter(|s| s.on) {
+                if let Some(k) = slot.key {
+                    keys.push((i, k));
+                }
+            }
+        }
+        let key = WireKey {
+            active,
+            shape: c.routes.iter().map(|r| (r.out, r.sends.iter().map(|x| x.0).collect())).collect(),
+            levels: c.routes.iter().map(|r| r.sends.iter().map(|x| x.1).collect()).collect(),
+            rack_lat,
+            inst_lat,
+            keys,
+            master_lat: fx::rack_latency(&c.master_strip.rack, sr),
+            sr: sr as u32,
+        };
+        match &c.wired {
+            Some(old) if *old == key => return,
+            Some(old) if old.same_but_levels(&key) => {
+                for (t, r) in c.routes.iter().enumerate() {
+                    for (k, &(bus, level)) in r.sends.iter().enumerate() {
+                        if old.levels[t].get(k) != Some(&level) {
+                            self.inner.cmd(Cmd::SendLevel(t, bus, level));
+                        }
+                    }
+                }
+            }
+            _ => {
+                let w = Wiring::build(&WireDesc {
+                    active: key.active, routes: &c.routes, rack_lat: key.rack_lat, inst_lat: key.inst_lat,
+                    keys: key.keys.clone(), master_lat: key.master_lat, max_pad: 2 * sr as usize,
+                });
+                self.inner.cmd(Cmd::Wiring(w));
+            }
+        }
+        c.wired = Some(key);
+        drop(c);
+        if !self.inner.shared.streaming.load(Relaxed) {
+            if let Ok(mut d) = self.dsp.try_lock() {
+                d.apply_pending();
+            }
+            self.inner.free_retired();
+        }
+    }
+
     fn load_rack(&self, t: Target, slots: Vec<SlotCfg>) {
         let sr = self.samplerate();
         let mut c = self.inner.ctl.lock().unwrap();
@@ -1519,17 +1688,9 @@ impl Engine {
         }
         rack.clear();
         for (i, s) in slots.into_iter().take(MAX_SLOTS).enumerate() {
-            let slot = match Slot::new(s.clone(), sr) {
-                Ok(slot) => slot,
-                Err(e) => {
-                    let mut empty = s.clone();
-                    empty.model = None;
-                    let mut slot = Slot::new(empty, sr).expect("plain slot");
-                    slot.cfg.model = s.model.clone(); // remembered, so it can be retried
-                    slot.cfg.error = Some(e);
-                    slot
-                }
-            };
+            // one that can't be built (a plugin that isn't here, a model file
+            // that's gone) lets the sound through and keeps its settings
+            let slot = Slot::new(s.clone(), sr).unwrap_or_else(|e| Slot::placeholder(s, e));
             rack.push(slot.cfg.clone());
             self.cmd(Cmd::RackInsert(t, i, slot));
         }
@@ -1541,6 +1702,7 @@ fn encode_target(t: Target) -> u64 {
         Target::Local(i) => i as u64,
         Target::Remote(i) => 0x100 | i as u64,
         Target::Track(i) => 0x200 | i as u64,
+        Target::Master => 0x300,
     }
 }
 
@@ -1550,12 +1712,16 @@ fn decode_target(v: u64) -> Option<Target> {
         0 if i < MAX_LOCAL => Some(Target::Local(i)),
         1 if i < MAX_REMOTE => Some(Target::Remote(i)),
         2 if i < MAX_TRACKS => Some(Target::Track(i)),
+        3 => Some(Target::Master),
         _ => None,
     }
 }
 
 fn parse_target(s: &str) -> PyResult<Target> {
-    let bad = || PyValueError::new_err(format!("strip {s:?}: use L0-L{}, R0-R{} or T0-T{}", MAX_LOCAL - 1, MAX_REMOTE - 1, MAX_TRACKS - 1));
+    if s == "M" {
+        return Ok(Target::Master);
+    }
+    let bad = || PyValueError::new_err(format!("strip {s:?}: use L0-L{}, R0-R{}, T0-T{} or M", MAX_LOCAL - 1, MAX_REMOTE - 1, MAX_TRACKS - 1));
     let (side, n) = s.split_at(1.min(s.len()));
     let i: usize = n.parse().map_err(|_| bad())?;
     match side {
@@ -1577,6 +1743,7 @@ fn mirror(c: &mut Ctl, t: Target) -> &mut StripMirror {
         Target::Local(i) => &mut c.local[i],
         Target::Remote(i) => &mut c.remote[i],
         Target::Track(i) => &mut c.tracks[i],
+        Target::Master => &mut c.master_strip,
     }
 }
 

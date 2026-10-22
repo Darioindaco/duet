@@ -70,8 +70,8 @@ impl InstCfg {
 
 pub trait Instrument: Send {
     fn note(&mut self, ev: NoteEv);
-    /// Write one block (replaces what's in `out`).
-    fn process(&mut self, p: &[f32; N_PARAMS], out: &mut [f32]);
+    /// Write one stereo block (replaces what's in `l` and `r`).
+    fn process(&mut self, p: &[f32; N_PARAMS], l: &mut [f32], r: &mut [f32]);
     /// Instruments that can follow a sample-rate change in place say so; the
     /// rest are rebuilt.
     fn set_sample_rate(&mut self, _sr: f32) -> bool {
@@ -141,7 +141,7 @@ impl DrumKit {
         let samples = (0..PADS.len())
             .map(|i| match own.get(i).cloned().flatten() {
                 Some(path) => match crate::daw::read_wav(std::path::Path::new(&path)) {
-                    Ok(a) => crate::daw::resample(&a.samples, a.sr, sr as u32),
+                    Ok(a) => crate::daw::resample(&a.to_mono(), a.sr, sr as u32),
                     Err(e) => {
                         err = Some(format!("{}: {e}", PADS[i].1));
                         drum_sound(i, sr)
@@ -181,7 +181,7 @@ impl Instrument for DrumKit {
         self.voices.push(Voice { pad, pos: 0, gain: g * g, choke: 1.0 });
     }
 
-    fn process(&mut self, p: &[f32; N_PARAMS], out: &mut [f32]) {
+    fn process(&mut self, p: &[f32; N_PARAMS], out: &mut [f32], r: &mut [f32]) {
         out.fill(0.0);
         let level = p[0] * p[0] * 1.6;
         // tune: ±6 semitones by stepping through the sample faster or slower
@@ -212,6 +212,7 @@ impl Instrument for DrumKit {
             }
         }
         self.voices.retain(|v| v.gain > 0.0);
+        r.copy_from_slice(out); // the kit sits in the middle
     }
 }
 
@@ -382,8 +383,8 @@ struct SVoice {
     ph: [f32; 2], // two oscillators, the second detuned
     env: f32,
     age: u64,
-    ic1: f32,     // filter state
-    ic2: f32,
+    ic1: [f32; 2], // filter state, per side
+    ic2: [f32; 2],
 }
 
 pub struct Synth {
@@ -416,7 +417,7 @@ impl Instrument for Synth {
         match ev {
             NoteEv::On(key, vel) => {
                 self.clock += 1;
-                let v = SVoice { key, on: true, held: false, vel: vel as f32 / 127.0, ph: [0.0, 0.0], env: 0.0, age: self.clock, ic1: 0.0, ic2: 0.0 };
+                let v = SVoice { key, on: true, held: false, vel: vel as f32 / 127.0, ph: [0.0, 0.0], env: 0.0, age: self.clock, ic1: [0.0; 2], ic2: [0.0; 2] };
                 // same key again, a free voice, or steal the oldest
                 let slot = self.voices.iter().position(|x| x.is_some_and(|x| x.key == key))
                     .or_else(|| self.voices.iter().position(|x| x.is_none()))
@@ -448,8 +449,10 @@ impl Instrument for Synth {
         }
     }
 
-    fn process(&mut self, p: &[f32; N_PARAMS], out: &mut [f32]) {
+    /// The two oscillators lean left and right, so detune makes it wide.
+    fn process(&mut self, p: &[f32; N_PARAMS], out: &mut [f32], out_r: &mut [f32]) {
         out.fill(0.0);
+        out_r.fill(0.0);
         let sr = self.sr;
         let wave = p[0];
         let cutoff = 60.0 * 2f32.powf(p[1] * 8.4); // 60 Hz .. ~20 kHz
@@ -467,24 +470,28 @@ impl Instrument for Synth {
             let g = (PI * fc / sr).tan();
             let (a1, a2) = (1.0 / (1.0 + g * (g + k)), g / (1.0 + g * (g + k)));
             let a3 = g * a2;
-            for o in out.iter_mut() {
-                let mut x = 0.0;
-                for (ph, dt) in v.ph.iter_mut().zip(dts) {
+            for (o, o_r) in out.iter_mut().zip(out_r.iter_mut()) {
+                let mut osc = [0.0f32; 2];
+                for (i, (ph, dt)) in v.ph.iter_mut().zip(dts).enumerate() {
                     // a falling saw: its fundamental is in phase with the square's,
                     // so blending the two never cancels the note itself
                     let saw = 1.0 - 2.0 * *ph + poly_blep(*ph, dt);
                     let sq = (if *ph < 0.5 { 1.0 } else { -1.0 }) + poly_blep(*ph, dt) - poly_blep((*ph + 0.5).fract(), dt);
-                    x += saw * (1.0 - wave) + sq * wave;
+                    osc[i] = saw * (1.0 - wave) + sq * wave;
                     *ph = (*ph + dt).fract();
                 }
-                // trapezoidal state-variable low-pass
-                let v3 = x * 0.5 - v.ic2;
-                let v1 = a1 * v.ic1 + a2 * v3;
-                let v2 = v.ic2 + a2 * v.ic1 + a3 * v3;
-                v.ic1 = 2.0 * v1 - v.ic1;
-                v.ic2 = 2.0 * v2 - v.ic2;
+                let sides = [0.7 * osc[0] + 0.3 * osc[1], 0.3 * osc[0] + 0.7 * osc[1]];
                 v.env = if v.on { (v.env + a_step).min(1.0) } else { v.env * r_mul };
-                *o += v2 * v.env * v.vel * 0.6;
+                let g = v.env * v.vel * 0.6;
+                for (side, (xs, dst)) in sides.into_iter().zip([&mut *o, &mut *o_r]).enumerate() {
+                    // trapezoidal state-variable low-pass
+                    let v3 = xs - v.ic2[side];
+                    let v1 = a1 * v.ic1[side] + a2 * v3;
+                    let v2 = v.ic2[side] + a2 * v.ic1[side] + a3 * v3;
+                    v.ic1[side] = 2.0 * v1 - v.ic1[side];
+                    v.ic2[side] = 2.0 * v2 - v.ic2[side];
+                    *dst += v2 * g;
+                }
             }
             if !v.on && v.env < 1e-4 {
                 *slot = None;
@@ -560,16 +567,17 @@ impl Instrument for VstInst {
         true
     }
 
-    fn process(&mut self, _p: &[f32; N_PARAMS], out: &mut [f32]) {
+    fn process(&mut self, _p: &[f32; N_PARAMS], l: &mut [f32], r: &mut [f32]) {
         for i in 0..self.n_pending {
             if let Some((on, k, v)) = self.pending[i].take() {
                 self.proc.note(on, k, v, 0);
             }
         }
         self.n_pending = 0;
-        out.fill(0.0);
+        l.fill(0.0);
+        r.fill(0.0);
         let tempo = f64::from_bits(crate::fx::TEMPO_BITS.load(std::sync::atomic::Ordering::Relaxed));
-        self.proc.process(out, 1.0, tempo);
+        self.proc.process(l, r, 1.0, tempo);
     }
 }
 
@@ -578,13 +586,17 @@ mod tests {
     use super::*;
 
     fn run(inst: &mut dyn Instrument, p: &[f32; N_PARAMS], blocks: usize) -> Vec<f32> {
-        let mut all = Vec::new();
-        let mut buf = [0f32; 128];
+        run2(inst, p, blocks).0
+    }
+    fn run2(inst: &mut dyn Instrument, p: &[f32; N_PARAMS], blocks: usize) -> (Vec<f32>, Vec<f32>) {
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        let (mut bl, mut br) = ([0f32; 128], [0f32; 128]);
         for _ in 0..blocks {
-            inst.process(p, &mut buf);
-            all.extend_from_slice(&buf);
+            inst.process(p, &mut bl, &mut br);
+            l.extend_from_slice(&bl);
+            r.extend_from_slice(&br);
         }
-        all
+        (l, r)
     }
     fn peak(x: &[f32]) -> f32 {
         x.iter().fold(0f32, |a, v| a.max(v.abs()))
@@ -636,5 +648,19 @@ mod tests {
             s.note(NoteEv::On(k, 90));
         }
         assert!(run(&mut s, &p, 20).iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn the_synth_is_wide_when_detuned_and_centred_when_not() {
+        let mut p = DEFAULTS[SYNTH];
+        for (detune, wide) in [(0.0, false), (1.0, true)] {
+            p[5] = detune;
+            let mut s = Synth::new(48000.0);
+            s.note(NoteEv::On(57, 100));
+            let (l, r) = run2(&mut s, &p, 200);
+            let diff = l.iter().zip(&r).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+            assert_eq!(diff > 0.01, wide, "detune {detune}: {diff}");
+            assert!(peak(&r) > 0.05);
+        }
     }
 }

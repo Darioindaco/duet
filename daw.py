@@ -42,11 +42,14 @@ from pathlib import Path
 
 KINDS = ("meta", "track", "clip", "file", "pattern", "note")
 MAX_TRACKS = 32
-META_DEFAULTS = {"name": "Untitled", "bpm": 120.0, "beats": 4, "loop": False, "loop_start": 0.0, "loop_end": 16.0}
+META_DEFAULTS = {"name": "Untitled", "bpm": 120.0, "beats": 4, "loop": False, "loop_start": 0.0, "loop_end": 16.0,
+                 "master_rack": []}
 # per field, what the UI may set (anything else in an edit is ignored)
 FIELDS = {
-    "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end"},
-    "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "inst", "seq", "del"},
+    "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end", "master_rack"},
+    # bus: a mixer track others feed (no clips); out: the bus it goes to (else
+    # the master); sends: {bus: level}
+    "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "inst", "seq", "bus", "out", "sends", "del"},
     "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out", "del"},
     "file": {"frames", "sr", "owner", "del"},
     "pattern": {"name", "len", "color", "del"},
@@ -57,14 +60,16 @@ FIELDS = {
 # what a field reads as when it was never set (to undo setting it)
 FIELD_DEFAULTS = {
     "meta": META_DEFAULTS,
-    "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None, "del": False},
+    "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None,
+              "bus": False, "out": None, "sends": {}, "del": False},
     "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "del": False},
     "file": {"del": False},
     "pattern": {"del": False},
     "note": {"vel": 100, "del": False},
 }
 # controls you turn rather than click: a run of turns is one undo step
-CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel"}
+CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel", "sends", "master_rack"}
+MAX_SENDS = 4
 UNDO_DEPTH = 200
 
 # ids and file names end up in paths: only plain names, whatever the partner sends
@@ -216,6 +221,8 @@ class Daw:
         self.sent_desc = None
         self.sent_notes = None
         self.sent_keys = None
+        self.sent_routes = None
+        self.sent_mrack: list = []
         self.pattern_mode: str | None = None  # playing just this pattern, looped (local)
         self.sent_loop = None
         self.sent_click = None
@@ -407,19 +414,52 @@ class Daw:
             tid = next((t for t, s in self.slots.items() if s == slot), None)
             if tid is None:
                 return
-            rack = [clean_slot(x) for x in self.e.mixer()["tracks"][slot]["rack"]]
-            self.sent_rack[slot] = rack
+            rack = self._song_rack(self.e.mixer()["tracks"][slot]["rack"])
+            self.sent_rack[slot] = self._engine_rack(rack)
             self._do([["track", tid, {"rack": rack}]])
 
-    def sync_rack_states(self, tracks: list):
+    def master_rack_changed(self):
+        """The same for the master's effects (part of the song too)."""
+        with self.lock:
+            rack = self._song_rack(self.e.mixer()["master_strip"]["rack"])
+            self.sent_mrack = self._engine_rack(rack)
+            self._do([["meta", "meta", {"master_rack": rack}]])
+
+    def _song_rack(self, rack: list) -> list:
+        """A rack as the engine reports it, as the song keeps it: a sidechain
+        names the track it listens to (slots differ per side)."""
+        byslot = {s: t for t, s in self.slots.items()}
+        out = []
+        for x in rack:
+            x = clean_slot(x)
+            if "key" in x:
+                x["key"] = byslot.get(x["key"]) if isinstance(x["key"], int) else None
+            out.append(x)
+        return out
+
+    def _engine_rack(self, rack: list) -> list:
+        out = []
+        for x in rack:
+            x = json.loads(json.dumps(x))
+            if "key" in x:
+                x["key"] = self.slots.get(x["key"], -1) if x["key"] else -1
+            out.append(x)
+        return out
+
+    def sync_rack_states(self, mixer: dict):
         """Plugin settings changed in a plugin's own window don't pass through
         Duet: with the freshly read mixer, put any that changed into the song."""
         with self.lock:
             changes = []
+            tracks = mixer["tracks"]
+            rack = self._song_rack(mixer["master_strip"]["rack"])
+            if any(x.get("vst") for x in rack) and rack != self.p.meta().get("master_rack"):
+                self.sent_mrack = self._engine_rack(rack)
+                changes.append(["meta", "meta", {"master_rack": rack}])
             for tid, slot in self.slots.items():
-                rack = [clean_slot(x) for x in tracks[slot]["rack"]]
+                rack = self._song_rack(tracks[slot]["rack"])
                 if any(x.get("vst") for x in rack) and rack != self.p.live("track").get(tid, {}).get("rack"):
-                    self.sent_rack[slot] = rack
+                    self.sent_rack[slot] = self._engine_rack(rack)
                     changes.append(["track", tid, {"rack": rack}])
                 inst = clean_inst(tracks[slot].get("inst"))
                 if inst and inst.get("vst") and inst != self.p.live("track").get(tid, {}).get("inst"):
@@ -551,7 +591,9 @@ class Daw:
         """Notes played on armed channels while recording become a new pattern
         per channel, placed where the recording started."""
         spb, beats = self._spb(), int(self.p.meta()["beats"])
-        lat = (self.e.state().get("lat_out_ms") or 0.0) / 1000.0  # you played to what you heard
+        st = self.e.state()
+        # you played to what you heard: after the sound card and the master rack
+        lat = ((st.get("lat_out_ms") or 0.0) + (st.get("master_latency_ms") or 0.0)) / 1000.0
         punch = rec["punch"] / spb
         tracks = self.p.live("track")
         changes = []
@@ -683,14 +725,30 @@ class Daw:
                 if self.sent_strip.get((slot, k)) != v:
                     e.strip_set(f"T{slot}", k, v)
                     self.sent_strip[(slot, k)] = v
-            rack = t.get("rack") or []
+            rack = self._engine_rack(t.get("rack") or [])
             if self.sent_rack.get(slot) != rack:
-                self._apply_rack(slot, self.sent_rack.get(slot) or [], rack)
-                self.sent_rack[slot] = json.loads(json.dumps(rack))
+                self._apply_rack(f"T{slot}", self.sent_rack.get(slot) or [], rack)
+                self.sent_rack[slot] = rack
             inst = t.get("inst") or None
             if self.sent_inst.get(slot) != inst:
                 self._apply_inst(slot, self.sent_inst.get(slot), inst)
                 self.sent_inst[slot] = json.loads(json.dumps(inst))
+        # where each track goes: a bus (or the master), and its sends
+        routes = [(-1, []) for _ in range(MAX_TRACKS)]
+        for tid, slot in self.slots.items():
+            t = byid[tid]
+            bus = lambda b: b != tid and b in self.slots and bool(byid.get(b, {}).get("bus"))
+            out = self.slots[t["out"]] if bus(t.get("out")) else -1
+            sends = [(self.slots[b], float(v)) for b, v in sorted((t.get("sends") or {}).items())
+                     if bus(b) and isinstance(v, (int, float)) and v > 0][:MAX_SENDS]
+            routes[slot] = (out, sends)
+        if routes != self.sent_routes:
+            e.daw_routing(routes)
+            self.sent_routes = routes
+        mrack = self._engine_rack(p.meta().get("master_rack") or [])
+        if mrack != self.sent_mrack:
+            self._apply_rack("M", self.sent_mrack, mrack)
+            self.sent_mrack = mrack
         spb = self._spb()
         if self.pattern_mode and self.pattern_mode not in p.live("pattern"):
             self.pattern_mode = None
@@ -805,17 +863,21 @@ class Daw:
             self.e.daw_play(0.0)
             self.version += 1
 
-    def _apply_rack(self, slot: int, old: list, new: list):
-        t = f"T{slot}"
+    def _apply_rack(self, t: str, old: list, new: list):
         same_shape = len(old) == len(new) and all(
             a.get("kind") == b.get("kind") and a.get("model") == b.get("model")
             and (a.get("vst") or {}).get("cid") == (b.get("vst") or {}).get("cid")
             for a, b in zip(old, new))
         if not same_shape:
-            try:
-                self.e.rack_load(t, new)
-            except Exception as exc:  # a plugin the other side has and we don't
-                self.notices.append(f"Couldn't load an effect on a track: {exc}")
+            self.e.rack_load(t, new)
+            # a plugin the other side has and we don't: its slot lets the sound
+            # through, and says so
+            rack = self.e.mixer()["master_strip" if t == "M" else "tracks"]
+            rack = rack["rack"] if t == "M" else rack[int(t[1:])]["rack"]
+            for x in rack:
+                if x.get("error"):
+                    name = (x.get("vst") or {}).get("name") or x.get("model") or x["kind"]
+                    self.notices.append(f"{name} isn't on this computer: that effect is skipped here.")
             return
         for pos, (a, b) in enumerate(zip(old, new)):
             for k, v in b.items():
@@ -1054,11 +1116,13 @@ class Daw:
                 t["mine"] = t.get("owner") == self.me
                 t["mute"] = bool(p.local["mute"].get(t["id"]))
                 t["solo"] = bool(p.local["solo"].get(t["id"]))
+                t["bus"] = bool(t.get("bus"))
             files = {}
             for name, f in p.live("file").items():
                 files[name] = {**f, "here": name in self.loaded, "mine": f.get("owner") == self.me}
             return {
-                "pid": p.pid, "meta": p.meta(), "tracks": tracks,
+                "pid": p.pid, "meta": p.meta(), "tracks": [t for t in tracks if not t["bus"]],
+                "buses": [t for t in tracks if t["bus"]],
                 "clips": [{"id": i, **c} for i, c in p.live("clip").items()],
                 "files": files, "me": self.me, "partner": self.partner,
                 "local": {"click": p.local.get("click"), "countin": p.local.get("countin")},

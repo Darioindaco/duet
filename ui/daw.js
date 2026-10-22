@@ -58,7 +58,9 @@ function applyLocal(changes) {
   const v = song.view;
   for (const [kind, id, f] of changes) {
     if (kind === "meta") Object.assign(v.meta, f);
-    const list = { track: v.tracks, clip: v.clips, pattern: (v.patterns ||= []), note: (v.notes ||= []) }[kind];
+    // a bus is a track too, kept apart from the playlist's
+    const bus = kind === "track" && (f.bus || (v.buses || []).some((b) => b.id === id));
+    const list = { track: bus ? (v.buses ||= []) : v.tracks, clip: v.clips, pattern: (v.patterns ||= []), note: (v.notes ||= []) }[kind];
     if (!list) continue;
     const o = list.find((x) => x.id === id);
     if (o) Object.assign(o, f);
@@ -78,14 +80,16 @@ function setSongView(v) {
   const before = song.view;
   song.view = v;
   for (const id of [...song.sel]) if (!v.clips.some((c) => c.id === id)) song.sel.delete(id);
-  if (ui.sel[0] === "T" && !v.tracks.some((t) => "T" + t.slot === ui.sel)) { ui.sel = "L0"; renderRack(); }
+  if (ui.sel[0] === "T" && !trackBySlot(+ui.sel.slice(1))) { ui.sel = "L0"; renderRack(); }
   // track strips in the mixer follow the song's tracks (names, owners, slots),
   // and their racks when those changed elsewhere (the partner, an undo); a knob
   // you're turning yourself already matches, so it isn't redrawn under you
-  const sig = JSON.stringify(v.tracks.map((t) => [t.id, t.slot, t.name, t.mine]));
+  // (not the sends: a send knob being turned would be rebuilt under the pointer)
+  const sig = JSON.stringify([...v.tracks, ...(v.buses || [])].map((t) => [t.id, t.slot, t.name, t.mine, t.out]));
   const rs = (r) => JSON.stringify((r || []).map((x) => [x.kind, !!x.on, x.model || null, x.vst?.cid || null,
     ...(FXMETA[x.kind]?.knobs || []).map(([k]) => Math.round((x[k] ?? 0) * 1000))]));
-  const racksMoved = ui.mixer?.tracks && v.tracks.some((t) => t.slot != null && rs(t.rack) !== rs(ui.mixer.tracks[t.slot].rack));
+  const racksMoved = ui.mixer?.tracks && ([...v.tracks, ...(v.buses || [])].some((t) => t.slot != null && rs(t.rack) !== rs(ui.mixer.tracks[t.slot].rack))
+    || rs(v.meta.master_rack) !== rs(ui.mixer.master_strip?.rack));
   if (!before || sig !== song.trackSig || racksMoved) {
     song.trackSig = sig;
     api.mixer().then((m) => { ui.mixer = m; renderStrips(); if (ui.sel[0] === "T") renderRack(); });
@@ -416,7 +420,7 @@ function deleteTrack(t) {
 }
 
 function trackBySlot(slot) {
-  return song.view ? song.view.tracks.find((t) => t.slot === slot) : null;
+  return song.view ? [...song.view.tracks, ...(song.view.buses || [])].find((t) => t.slot === slot) : null;
 }
 
 function openTrackFx(t) {
@@ -1229,13 +1233,17 @@ function demoSong() {
   };
   const pk = { "take-g1.wav": peaks(16, 0.3), "take-v1.wav": peaks(12, 1.7) };
   const view = {
-    pid: "pdemo", meta: { name: "Summer jam", bpm: 96, beats: 4, loop: true, loop_start: 8, loop_end: 24 },
+    pid: "pdemo", meta: { name: "Summer jam", bpm: 96, beats: 4, loop: true, loop_start: 8, loop_end: 24,
+      master_rack: [{ kind: "eq", on: true, ...FX_DEFAULTS.eq, low: 0.56, high: 0.6, lowcut: 0.12 }, { kind: "limiter", on: true, ...FX_DEFAULTS.limiter, gain: 0.15 }] },
     tracks: [
       { id: "t1", name: "Guitar", order: 1, owner: me, src: 0, arm: true, vol: 0.8, pan: 0, rack: [{ kind: "reverb" }], slot: 0, mine: true, mute: false, solo: false },
       { id: "t4", name: "Drums", order: 0.5, owner: me, src: 0, arm: false, vol: 0.8, pan: 0, rack: [], slot: 3, mine: true, mute: false, solo: false, inst: { kind: "drums", level: 0.8, tune: 0.5, decay: 0.5 } },
       { id: "t5", name: "Bass synth", order: 0.7, owner: partner, src: 0, arm: false, vol: 0.7, pan: 0, rack: [], slot: 4, mine: false, mute: false, solo: false, inst: { kind: "synth", wave: 0.3, cutoff: 0.4, resonance: 0.3, attack: 0.02, release: 0.2, detune: 0.2 } },
-      { id: "t2", name: "Vocals", order: 2, owner: partner, src: 0, arm: true, vol: 0.75, pan: 0, rack: [], slot: 1, mine: false, mute: false, solo: false },
-      { id: "t3", name: "Keys", order: 3, owner: partner, src: 1, arm: false, vol: 0.7, pan: 0, rack: [], slot: 2, mine: false, mute: false, solo: false },
+      { id: "t2", name: "Vocals", order: 2, owner: partner, src: 0, arm: true, vol: 0.75, pan: 0, rack: [], slot: 1, mine: false, mute: false, solo: false, sends: { b1: 0.6 } },
+      { id: "t3", name: "Keys", order: 3, owner: partner, src: 1, arm: false, vol: 0.7, pan: 0, rack: [], slot: 2, mine: false, mute: false, solo: false, sends: { b1: 0.4 } },
+    ],
+    buses: [
+      { id: "b1", name: "Reverb", order: 1001, owner: me, bus: true, vol: 0.8, pan: 0, rack: [{ kind: "reverb", size: 0.75, mix: 0.5, dry: 0 }], slot: 5, mine: true, mute: false, solo: false },
     ],
     clips: [
       { id: "c1", track: "t1", file: "take-g1.wav", start: 0, offset: 0, len: 15, gain: 1 },
@@ -1262,11 +1270,15 @@ function demoSong() {
     daw_edit: async (changes) => {
       for (const [kind, id, f] of changes) {
         if (kind === "meta") Object.assign(view.meta, f);
-        const list = { track: view.tracks, clip: view.clips, pattern: view.patterns, note: view.notes }[kind];
+        const bus = kind === "track" && (f.bus || view.buses.some((b) => b.id === id));
+        const list = { track: bus ? view.buses : view.tracks, clip: view.clips, pattern: view.patterns, note: view.notes }[kind];
         if (!list) continue;
         const o = list.find((x) => x.id === id);
         if (f.del) { if (o) list.splice(list.indexOf(o), 1); continue; }
-        if (o) Object.assign(o, f); else list.push({ id, ...f, mine: f.owner === me, slot: list.length });
+        const used = new Set([...view.tracks, ...view.buses].map((t) => t.slot));
+        let free = 0;
+        while (used.has(free)) free++;
+        if (o) Object.assign(o, f); else list.push({ id, ...f, mine: f.owner === me, slot: free });
       }
       v++; return copy();
     },

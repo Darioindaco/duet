@@ -187,12 +187,13 @@ input[type=text] { font-family: var(--mono); letter-spacing: 0.04em; user-select
 .strip .knob .kl { display: none; }
 
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips[hidden] { display: none; }
 .chip { border: 1px solid var(--line-2); background: var(--bg); border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--muted); }
 .chip:hover { color: var(--text); border-color: var(--muted); }
 .chip.on { color: var(--text); border-color: var(--me); background: color-mix(in srgb, var(--me) 14%, var(--bg)); }
 .rack-card { display: flex; flex-direction: column; min-height: 0; }
 .rack-head .who { color: var(--c, var(--me)); text-transform: none; letter-spacing: 0; font-size: 13px; }
-.rack { display: flex; gap: 14px; overflow-x: auto; overflow-y: hidden; padding: 2px 2px 10px; align-items: flex-start; min-height: 0; flex: 1; }
+.rack { display: flex; gap: 14px; overflow-x: auto; overflow-y: auto; padding: 2px 2px 10px; align-items: flex-start; min-height: 0; flex: 1; }
 .rack .pedal { width: 214px; flex: none; }
 .pedal .tools { display: flex; gap: 2px; margin-left: auto; opacity: 0.55; transition: opacity 0.15s; }
 .pedal:hover .tools { opacity: 1; }
@@ -221,7 +222,7 @@ input[type=text] { font-family: var(--mono); letter-spacing: 0.04em; user-select
 .pedal .sub { font-size: 10.5px; color: color-mix(in srgb, var(--c) 40%, var(--muted)); text-transform: uppercase; letter-spacing: 0.08em; }
 .led { width: 10px; height: 10px; border-radius: 50%; margin-left: auto; background: #2a0d0d; border: 1px solid #000; }
 .pedal:not(.off) .led { background: var(--c); box-shadow: 0 0 8px var(--c), 0 0 2px #fff inset; }
-.knobs { display: flex; justify-content: center; gap: 8px; width: 100%; }
+.knobs { display: flex; justify-content: center; gap: 8px; width: 100%; flex-wrap: wrap; row-gap: 6px; }
 .foot {
   margin-top: 2px; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; border: 0;
   background: radial-gradient(circle at 35% 30%, #f3f3f6, #9b9aa3 45%, #4b4a52 75%, #2b2a30);
@@ -617,38 +618,56 @@ footer { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items:
 <script src="instr.js"></script>
 <script src="seq.js"></script>
 <script src="presence.js"></script>
+<script src="mixer.js"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
 
 // ---------- effect metadata (ranges match effects.py) ----------
 const pct = (v) => Math.round(v * 100) + "%";
+const fmtMs = (ms) => (ms < 10 ? ms.toFixed(1) : Math.round(ms)) + " ms";
+const fmtHz = (hz) => (hz >= 1000 ? (hz / 1000).toFixed(hz >= 10000 ? 0 : 1) + " kHz" : Math.round(hz) + " Hz");
+const fmtGain = (v) => { const db = -15 + 30 * v; return (Math.abs(db) < 0.05 ? "0" : (db > 0 ? "+" : "") + db.toFixed(1)) + " dB"; };
+// the order of the "+ Add effect" menu
 const FX = [
+  { id: "eq", name: "EQ", sub: "tone shaping", color: "#6fd3ff", knobs: [
+    ["lowcut", "Lo cut", (v) => (v < 0.005 ? "off" : fmtHz(20 * 40 ** v))],
+    ["low", "Low", fmtGain], ["lowfreq", "Low Hz", (v) => fmtHz(30 * 20 ** v)],
+    ["mid", "Mid", fmtGain], ["midfreq", "Mid Hz", (v) => fmtHz(100 * 100 ** v)], ["q", "Q", (v) => (0.3 * 33.3 ** v).toFixed(1)],
+    ["high", "High", fmtGain], ["highfreq", "High Hz", (v) => fmtHz(1500 * 10 ** v)],
+    ["highcut", "Hi cut", (v) => (v >= 0.995 ? "off" : fmtHz(1000 * 20 ** v))]] },
   { id: "comp", name: "Compressor", sub: "evens out", color: "#8b95ff", knobs: [
     ["threshold", "Thresh", (v) => Math.round(-40 + 36 * v) + " dB"],
     ["ratio", "Ratio", (v) => (1 + 11 * v).toFixed(1) + ":1"],
-    ["makeup", "Gain", (v) => "+" + Math.round(18 * v) + " dB"]] },
+    ["makeup", "Gain", (v) => "+" + Math.round(18 * v) + " dB"],
+    ["attack", "Attack", (v) => fmtMs(0.1 * 1000 ** v)], ["release", "Release", (v) => fmtMs(10 * 100 ** v)]] },
+  { id: "limiter", name: "Limiter", sub: "no clipping", color: "#ff7aa8", knobs: [
+    ["gain", "Gain", (v) => "+" + (24 * v).toFixed(1) + " dB"], ["ceiling", "Ceiling", (v) => (-12 + 12 * v).toFixed(1) + " dB"],
+    ["release", "Release", (v) => fmtMs(10 * 100 ** v)]] },
   { id: "drive", name: "Overdrive", sub: "warm grit", color: "#ff5f4d", knobs: [
     ["drive", "Drive", pct], ["tone", "Tone", pct], ["level", "Level", pct]] },
   { id: "chorus", name: "Chorus", sub: "shimmer", color: "#4ec2f5", knobs: [
     ["rate", "Rate", (v) => (0.1 + 3 * v).toFixed(1) + " Hz"], ["depth", "Depth", pct], ["mix", "Mix", pct]] },
   { id: "tremolo", name: "Tremolo", sub: "pulse", color: "#c48dff", knobs: [
-    ["rate", "Rate", (v) => (0.5 + 11.5 * v).toFixed(1) + " Hz"], ["depth", "Depth", pct]] },
+    ["rate", "Rate", (v) => (0.5 + 11.5 * v).toFixed(1) + " Hz"], ["depth", "Depth", pct], ["stereo", "Stereo", pct]] },
   { id: "delay", name: "Delay", sub: "echo", color: "#5fdc94", knobs: [
-    ["time", "Time", (v) => Math.round(60 + 1100 * v) + " ms"], ["feedback", "Repeats", pct], ["mix", "Mix", pct]] },
+    ["time", "Time", (v) => Math.round(60 + 1100 * v) + " ms"], ["feedback", "Repeats", pct], ["mix", "Mix", pct],
+    ["pingpong", "Ping-pong", pct], ["dry", "Dry", pct]] },
   { id: "reverb", name: "Reverb", sub: "space", color: "#ffc857", knobs: [
-    ["size", "Size", pct], ["damp", "Damp", pct], ["mix", "Mix", pct]] },
+    ["size", "Size", pct], ["damp", "Damp", pct], ["mix", "Mix", pct], ["width", "Width", pct], ["dry", "Dry", pct]] },
   { id: "nam", name: "NAM Amp", sub: "neural amp model", color: "#e7dccb", knobs: [
     ["input", "Input", (v) => fmtTrim(v)], ["output", "Output", (v) => fmtTrim(v)]] },
   { id: "vst", name: "VST3", sub: "plugin", color: "#9fb4ff", knobs: [["mix", "Mix", pct]] },
 ];
 function fmtTrim(v) { const db = -12 + 24 * v; return (db > 0.05 ? "+" : "") + db.toFixed(1) + " dB"; }
 const FX_DEFAULTS = {
-  comp: { threshold: 0.5, ratio: 0.5, makeup: 0.3 }, drive: { drive: 0.4, tone: 0.5, level: 0.5 },
-  chorus: { rate: 0.3, depth: 0.5, mix: 0.5 }, tremolo: { rate: 0.4, depth: 0.6 },
-  delay: { time: 0.35, feedback: 0.4, mix: 0.35 }, reverb: { size: 0.6, damp: 0.4, mix: 0.3 },
+  comp: { threshold: 0.5, ratio: 0.5, makeup: 0.3, attack: 0.566, release: 0.588 }, drive: { drive: 0.4, tone: 0.5, level: 0.5 },
+  chorus: { rate: 0.3, depth: 0.5, mix: 0.5 }, tremolo: { rate: 0.4, depth: 0.6, stereo: 0 },
+  delay: { time: 0.35, feedback: 0.4, mix: 0.35, pingpong: 0, dry: 1 }, reverb: { size: 0.6, damp: 0.4, mix: 0.3, width: 1, dry: 1 },
   nam: { input: 0.5, output: 0.5 },
   vst: { mix: 1 },
+  eq: { lowcut: 0, low: 0.5, lowfreq: 0.402, mid: 0.5, midfreq: 0.5, q: 0.343, high: 0.5, highfreq: 0.727, highcut: 1 },
+  limiter: { gain: 0, ceiling: 0.992, release: 0.4 },
 };
 
 // ---------- persistence (per machine, best effort) ----------
@@ -973,7 +992,7 @@ const fmtDb = (g) => (g < 0.0005 ? "-∞" : (20 * Math.log10(g) >= 0 ? "+" : "")
 const fmtPan = (v) => (Math.abs(v) < 0.02 ? "C" : (v < 0 ? "L" : "R") + Math.round(Math.abs(v) * 100));
 
 function stripCfg(t) {
-  if (t === "M") return null;
+  if (t === "M") return ui.mixer.master_strip || { rack: [] };
   return ui.mixer[t[0] === "L" ? "local" : t[0] === "T" ? "tracks" : "remote"][+t.slice(1)];
 }
 
@@ -1073,18 +1092,25 @@ function stripEl(t) {
   const cfg = stripCfg(t);
   const el = document.createElement("div");
   const track = t[0] === "T" ? trackBySlot(+t.slice(1)) : null;
-  el.className = "strip" + (t[0] === "R" || (track && !track.mine) ? " remote" : t === "M" ? " master" : "") + (track ? " trk" : "") + (ui.sel === t ? " sel" : "");
+  el.className = "strip" + (track?.bus ? " bus" : t[0] === "R" || (track && !track.mine) ? " remote" : t === "M" ? " master" : "")
+    + (track ? " trk" : "") + (ui.sel === t ? " sel" : "");
   el.dataset.t = t;
-  if (t !== "M") el.onclick = () => selectStrip(t);
+  el.onclick = () => selectStrip(t);
 
   // name
   if (track) {
     const nm = document.createElement("input");
-    nm.className = "nm"; nm.value = stripName(t); nm.spellcheck = false; nm.title = "Rename this track";
+    nm.className = "nm"; nm.value = stripName(t); nm.spellcheck = false; nm.title = track.bus ? "Rename this bus" : "Rename this track";
     nm.onclick = (e) => e.stopPropagation();
     nm.onchange = () => nm.value.trim() && songEdit([["track", track.id, { name: nm.value.trim() }]]);
     nm.onkeydown = (e) => e.key === "Enter" && nm.blur();
     el.append(nm);
+    if (track.bus) {
+      const x = document.createElement("button");
+      x.className = "x"; x.textContent = "✕"; x.title = "Delete this bus";
+      x.onclick = (e) => { e.stopPropagation(); deleteBus(track); };
+      el.append(x);
+    }
   } else if (t[0] === "L") {
     const nm = document.createElement("input");
     nm.className = "nm"; nm.value = stripName(t); nm.spellcheck = false; nm.title = "Rename";
@@ -1115,10 +1141,15 @@ function stripEl(t) {
   } else {
     const l = document.createElement("div");
     const theirs = t[0] === "R" ? ui.partnerFx[+t.slice(1)] || [] : [];
-    l.className = "srclbl" + (theirs.length ? " theirs" : "");
-    l.textContent = t === "M" ? "out" : track ? (track.inst ? "channel · " + instLabel(track.inst) : track.mine ? "song · you" : "song · partner")
+    const outBus = track && !track.bus && track.out ? trackById(track.out) : null;
+    l.className = "srclbl" + (theirs.length ? " theirs" : "") + (outBus ? " routed" : "");
+    l.textContent = t === "M" ? "all → out"
+      : track?.bus ? `bus · ${feedersOf(track).length} in`
+      : outBus ? "→ " + (outBus.name || "Bus")
+      : track ? (track.inst ? "channel · " + instLabel(track.inst) : track.mine ? "song · you" : "song · partner")
       : theirs.length ? "theirs: " + theirs.join(", ") : "from partner";
     if (theirs.length) l.title = `Effects on their side, already in what you hear: ${theirs.join(" → ")}`;
+    if (outBus) l.title = `Goes to the bus "${outBus.name}" (Routing, in its FX rack)`;
     el.append(l);
   }
 
@@ -1138,7 +1169,7 @@ function stripEl(t) {
   el.append(fl);
 
   // pan
-  if (cfg) el.append(knob({ label: "Pan", value: cfg.pan, def: 0, min: -1, max: 1, fmt: fmtPan, color: "var(--c)", size: 34,
+  if (cfg && t !== "M") el.append(knob({ label: "Pan", value: cfg.pan, def: 0, min: -1, max: 1, fmt: fmtPan, color: "var(--c)", size: 34,
     onChange: (v) => setStrip(t, "pan", v) }));
 
   // meter + fader
@@ -1154,7 +1185,7 @@ function stripEl(t) {
   ui.meters[t] = meter.firstChild;
 
   // buttons, in a column beside the fader
-  if (cfg) {
+  if (cfg && t !== "M") {
     const b = document.createElement("div");
     b.className = "btns";
     fs.append(b);
@@ -1190,6 +1221,18 @@ function renderStrips() {
   if (tracks.length) {
     box.insertAdjacentHTML("beforeend", `<div class="seplbl">Song</div>`);
     for (const tr of tracks) box.append(stripEl("T" + tr.slot));
+    box.insertAdjacentHTML("beforeend", `<div class="sep"></div>`);
+  }
+  // buses: mixer tracks other tracks feed (a shared reverb, a drum bus)
+  if (song.view && ui.mixer.tracks) {
+    const buses = busesOf().filter((b) => b.slot != null);
+    if (buses.length) box.insertAdjacentHTML("beforeend", `<div class="seplbl">Buses</div>`);
+    for (const b of buses) box.append(stripEl("T" + b.slot));
+    const add = document.createElement("button");
+    add.className = "addstrip bus"; add.innerHTML = "<span><b>+</b>Bus</span>";
+    add.title = "A bus: a reverb or delay several tracks send to, or a group (all drums through one compressor)";
+    add.onclick = addBusMenu;
+    box.append(add);
     box.insertAdjacentHTML("beforeend", `<div class="sep"></div>`);
   }
   box.append(stripEl("M"));
@@ -1428,13 +1471,21 @@ function renderRack() {
   rack.innerHTML = "";
   if (!cfg) return;
   const track = t[0] === "T" ? trackBySlot(+t.slice(1)) : null;
-  const color = t[0] === "L" || (track && track.mine) ? "var(--me)" : "var(--partner)";
-  $("rackTitle").innerHTML = `FX rack <span class="who" style="--c:${color}">· ${esc(stripName(t))}${track ? " (song track)" : ""}</span>`;
+  const color = track?.bus ? BUS_COLOR : t === "M" ? "#d9d3e3" : t[0] === "L" || (track && track.mine) ? "var(--me)" : "var(--partner)";
+  // what this rack delays the sound by: compensated in the song, not for live playing
+  const lat = cfg.latency ? (cfg.latency / ui.rate * 1000).toFixed(1) : null;
+  const latNote = !lat ? "" : t[0] === "T" || t === "M" ? ` <span class="latn" title="The song is read early to make up for it, so everything stays in time">· ${lat} ms delay, compensated</span>`
+    : ` <span class="latn" title="Plugins that look ahead delay what you play live">· adds ${lat} ms</span>`;
+  $("rackTitle").innerHTML = `${t === "M" ? "Master FX" : "FX rack"} <span class="who" style="--c:${color}">· ${esc(stripName(t))}${track?.bus ? " (bus)" : track ? " (song track)" : t === "M" ? " (part of the song)" : ""}</span>${latNote}`;
   for (const c of $("presets").children) c.classList.remove("on");
+  $("presets").hidden = t === "M";
   if ((t[0] === "L" || t[0] === "T") && cfg.inst) rack.append(instPanel(t, cfg.inst));
+  if (track) rack.append(routingCard(track));
   if (!cfg.rack.length) {
-    rack.insertAdjacentHTML("beforeend", `<div class="empty-rack"><b>No effects on this channel yet.</b><br>Add one with the menu on the right, or start from a preset.
-      ${track ? "Effects on a song track are part of the song: you both hear them."
+    rack.insertAdjacentHTML("beforeend", `<div class="empty-rack"><b>No effects on this ${t === "M" ? "master" : track?.bus ? "bus" : "channel"} yet.</b><br>Add one with the menu on the right${t === "M" ? "" : ", or start from a preset"}.
+      ${t === "M" ? "The master's effects shape the whole song, live channels included: an EQ and a limiter at the end make it fuller and louder. You both hear them, and they're in the export."
+        : track?.bus ? "A bus plays what tracks send it, through these effects: a reverb here (Dry at 0) is one shared room for every track that sends to it."
+        : track ? "Effects on a song track are part of the song: you both hear them."
         : t[0] === "L" ? "Your partner hears these effects; turn on MON to hear them yourself."
         : (ui.partnerFx[+t.slice(1)] || []).length
           ? `Their own effects (${esc(ui.partnerFx[+t.slice(1)].join(", "))}) are already in what you hear. Effects you add here only change your own mix.`
@@ -1477,10 +1528,21 @@ function renderRack() {
       row.append(open, knobs);
       if (slot.error) row.insertAdjacentHTML("beforebegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
     }
-    for (const [key, label, fmt] of meta.knobs) {
-      knobs.append(knob({ label, value: slot[key], def: FX_DEFAULTS[slot.kind][key], fmt, color: meta.color,
-        onChange: (v) => { slot[key] = v; api.rack_set(t, pos, key, v); saveMixer(); } }));
+    let curve = null;
+    if (slot.kind === "eq") {
+      p.classList.add("eqp");
+      curve = eqCurve(slot, meta.color);
+      knobs.before(curve);
+    } else if (meta.knobs.length > 3 && slot.kind !== "nam" && slot.kind !== "vst") {
+      p.style.width = meta.knobs.length * 62 + 20 + "px"; // one row of knobs
     }
+    for (const [key, label, fmt] of meta.knobs) {
+      knobs.append(knob({ label, value: slot[key] ?? FX_DEFAULTS[slot.kind][key], def: FX_DEFAULTS[slot.kind][key], fmt, color: meta.color,
+        size: slot.kind === "eq" ? 40 : 46,
+        onChange: (v) => { slot[key] = v; curve?.redraw(); api.rack_set(t, pos, key, v); saveMixer(); } }));
+    }
+    if (slot.kind === "comp" && (t[0] === "T" || t === "M")) knobs.after(keySelect(t, pos, slot));
+    if (slot.error && slot.kind !== "vst" && slot.kind !== "nam") knobs.insertAdjacentHTML("beforebegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
     const foot = document.createElement("button");
     foot.className = "foot"; foot.title = "On / off"; foot.setAttribute("aria-label", `${meta.name} on/off`);
     foot.onclick = async () => { slot.on = !slot.on; p.classList.toggle("off", !slot.on); await api.rack_set(t, pos, "on", slot.on ? 1 : 0); renderStrips(); saveMixer(); };
@@ -1894,13 +1956,16 @@ function demoApi() {
             strip(1, true, { pan: -0.3, fader: 0.8, rack: [slot("comp", { threshold: 0.35 }), slot("reverb", { mix: 0.25 })] }),
             strip(2, false), strip(3, false)],
     remote: Array.from({ length: 8 }, (_, i) => strip(0, true, { send: false, mon: true, pan: i === 1 ? 0.35 : 0, rack: i === 0 ? [slot("reverb", { mix: 0.2 })] : [] })),
-    tracks: Array.from({ length: 32 }, (_, i) => strip(0, i < 5, { send: false, mon: true, fader: 0.8, rack: i === 0 ? [slot("reverb", { mix: 0.25 })] : [],
+    tracks: Array.from({ length: 32 }, (_, i) => strip(0, i < 6, { send: false, mon: true, fader: 0.8, rack: i === 0 ? [slot("reverb", { mix: 0.25 })] : [],
       inst: i === 3 ? { kind: "drums", level: 0.8, tune: 0.5, decay: 0.5, pads: Array(16).fill(null), pad_names: [[36, "Kick"], [37, "Rim"], [38, "Snare"], [39, "Clap"], [40, "Snare 2"], [41, "Floor tom"], [42, "Closed hat"], [43, "Low tom"], [44, "Pedal hat"], [45, "Mid tom"], [46, "Open hat"], [47, "Tom"], [48, "High tom"], [49, "Crash"], [50, "Top tom"], [51, "Ride"]] }
         : i === 4 ? { kind: "synth", wave: 0.3, cutoff: 0.4, resonance: 0.3, attack: 0.02, release: 0.2, detune: 0.2 } : null })),
     master: 1,
+    master_strip: strip(0, true, { rack: [slot("eq", { low: 0.56, high: 0.6, lowcut: 0.12 }), slot("limiter", { gain: 0.15 })], latency: 72 }),
   };
+  mixer.tracks[5].rack = [slot("reverb", { size: 0.75, mix: 0.5, dry: 0 })];
+  mixer.tracks[0].rack.unshift(slot("comp", { key: 3 }));
   const songDemo = demoSong();
-  const target = (t) => mixer[t[0] === "L" ? "local" : t[0] === "T" ? "tracks" : "remote"][+t.slice(1)];
+  const target = (t) => (t === "M" ? mixer.master_strip : mixer[t[0] === "L" ? "local" : t[0] === "T" ? "tracks" : "remote"][+t.slice(1)]);
   const copy = () => JSON.parse(JSON.stringify(mixer));
   let t = 0, connected = false, calling = false, code = "";
   setTimeout(() => (code = "KJFXZ-4HCOP-AKRMW-I4JZQ"), 700);

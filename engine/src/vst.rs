@@ -751,7 +751,7 @@ pub struct VstProc {
     out_ptrs: Vec<Vec<*mut f32>>,
     in_bus: Vec<AudioBusBuffers>,
     out_bus: Vec<AudioBusBuffers>,
-    dry: Vec<f32>,
+    dry: [Vec<f32>; 2],
     context: ProcessContext,
     pub id: u64,
     sr: f64,
@@ -812,7 +812,7 @@ impl VstProc {
             out_ptrs: vec![],
             in_bus: vec![],
             out_bus: vec![],
-            dry: vec![0.0; MAX_BLOCK],
+            dry: [vec![0.0; MAX_BLOCK], vec![0.0; MAX_BLOCK]],
             // plain C struct; all-zero is a valid "nothing known yet"
             context: unsafe { std::mem::zeroed() },
             id,
@@ -866,10 +866,11 @@ impl VstProc {
         unsafe { self.events.push(e) };
     }
 
-    /// One block, in place on a mono buffer. `mix` blends dry/wet. `tempo` from
-    /// the metronome, for tempo-synced plugins.
-    pub fn process(&mut self, buf: &mut [f32], mix: f32, tempo: f64) {
-        let n = buf.len().min(MAX_BLOCK);
+    /// One stereo block, in place. `mix` blends dry/wet. `tempo` from the
+    /// metronome, for tempo-synced plugins. A mono plugin gets the sum and
+    /// plays on both sides.
+    pub fn process(&mut self, l: &mut [f32], r: &mut [f32], mix: f32, tempo: f64) {
+        let n = l.len().min(r.len()).min(MAX_BLOCK);
         unsafe {
             self.changes.clear();
             self.out_changes.clear();
@@ -877,14 +878,25 @@ impl VstProc {
                 self.changes.set(id, v);
             }
             for (b, chans) in self.in_bufs.iter_mut().enumerate() {
-                for ch in chans.iter_mut() {
-                    if b == 0 { ch[..n].copy_from_slice(&buf[..n]); } else { ch[..n].fill(0.0); }
+                let count = chans.len();
+                for (c, ch) in chans.iter_mut().enumerate() {
+                    match (b, count, c) {
+                        (0, 1, _) => {
+                            for k in 0..n {
+                                ch[k] = 0.5 * (l[k] + r[k]);
+                            }
+                        }
+                        (0, _, 0) => ch[..n].copy_from_slice(&l[..n]),
+                        (0, _, 1) => ch[..n].copy_from_slice(&r[..n]),
+                        _ => ch[..n].fill(0.0),
+                    }
                 }
             }
             for bus in self.in_bus.iter_mut().chain(self.out_bus.iter_mut()) {
                 bus.silenceFlags = 0;
             }
-            self.dry[..n].copy_from_slice(&buf[..n]);
+            self.dry[0][..n].copy_from_slice(&l[..n]);
+            self.dry[1][..n].copy_from_slice(&r[..n]);
             self.context.tempo = tempo;
             self.context.state = (ProcessContext_::StatesAndFlags_::kTempoValid) as uint32;
             let mut data = ProcessData {
@@ -907,16 +919,19 @@ impl VstProc {
             let Some(main) = self.out_bufs.first() else { return };
             match main.len() {
                 0 => {}
-                1 => buf[..n].copy_from_slice(&main[0][..n]),
+                1 => {
+                    l[..n].copy_from_slice(&main[0][..n]);
+                    r[..n].copy_from_slice(&main[0][..n]);
+                }
                 _ => {
-                    for k in 0..n {
-                        buf[k] = 0.5 * (main[0][k] + main[1][k]);
-                    }
+                    l[..n].copy_from_slice(&main[0][..n]);
+                    r[..n].copy_from_slice(&main[1][..n]);
                 }
             }
             if mix < 0.999 {
                 for k in 0..n {
-                    buf[k] = self.dry[k] * (1.0 - mix) + buf[k] * mix;
+                    l[k] = self.dry[0][k] * (1.0 - mix) + l[k] * mix;
+                    r[k] = self.dry[1][k] * (1.0 - mix) + r[k] * mix;
                 }
             }
         }
@@ -1015,8 +1030,8 @@ unsafe fn build(
     if n_out == 0 {
         return Err("the plugin has no audio output".into());
     }
-    // current arrangements, then ask for mono main buses (our strips are mono),
-    // falling back to stereo
+    // current arrangements, then ask for stereo main buses (our strips are
+    // stereo), falling back to mono
     let arr = |dir, i| {
         let mut a: SpeakerArrangement = 0;
         processor.getBusArrangement(dir, i as int32, &mut a);
@@ -1032,8 +1047,8 @@ unsafe fn build(
             outs.as_mut_ptr(), outs.len() as int32,
         ) == kResultTrue
     };
-    if !try_set(&mut ins, &mut outs, SpeakerArr::kMono) {
-        try_set(&mut ins, &mut outs, SpeakerArr::kStereo);
+    if !try_set(&mut ins, &mut outs, SpeakerArr::kStereo) {
+        try_set(&mut ins, &mut outs, SpeakerArr::kMono);
     }
     let in_ch: Vec<usize> = (0..n_in).map(|i| speaker_channels(arr(dir_in, i))).collect();
     let out_ch: Vec<usize> = (0..n_out).map(|i| speaker_channels(arr(dir_out, i))).collect();
