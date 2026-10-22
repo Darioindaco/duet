@@ -80,7 +80,12 @@ pub enum Cmd {
     Wiring(Box<Wiring>),
     /// A send's level: (track, bus, level).
     SendLevel(usize, usize, f32),
+    /// What a live strip (yours or the partner's) sends to the song's buses.
+    LiveSends(Target, LiveSends),
 }
+
+/// A live strip's sends: (bus track slot, level), after its fader.
+pub type LiveSends = [Option<(u8, f32)>; crate::mix::MAX_SENDS];
 
 /// One ring per local strip to record (None = not recorded).
 pub struct RecRings(pub [Option<rtrb::Producer<f32>>; MAX_LOCAL]);
@@ -353,6 +358,8 @@ pub struct Dsp {
     metro: Metro,
     /// partner's block number minus ours, learned from what the jitter buffer plays
     remote_offset: Option<i64>,
+    /// the live strips' sends to the song's buses: yours, then the partner's
+    live_sends: [LiveSends; MAX_LOCAL + MAX_REMOTE],
 }
 
 #[inline]
@@ -414,6 +421,7 @@ impl Dsp {
             master_level: 0.0,
             metro: Metro::new(),
             remote_offset: None,
+            live_sends: [[None; crate::mix::MAX_SENDS]; MAX_LOCAL + MAX_REMOTE],
         }
     }
 
@@ -664,6 +672,11 @@ impl Dsp {
                         w.set_send(t, bus, level);
                     }
                 }
+                Cmd::LiveSends(t, sends) => match t {
+                    Target::Local(i) if i < MAX_LOCAL => self.live_sends[i] = sends,
+                    Target::Remote(i) if i < MAX_REMOTE => self.live_sends[MAX_LOCAL + i] = sends,
+                    _ => {}
+                },
             }
         }
     }
@@ -768,9 +781,10 @@ impl Dsp {
         let audible = |s: &StripSettings| !s.mute && (!any_solo || s.solo);
         self.mix_l[..n].fill(0.0);
         self.mix_r[..n].fill(0.0);
+        self.bufs.clear_live();
 
         // --- my strips ---
-        for strip in self.local.iter_mut() {
+        for (i, strip) in self.local.iter_mut().enumerate() {
             if !strip.s.active {
                 continue;
             }
@@ -793,12 +807,19 @@ impl Dsp {
             }
             strip.rack.process(&mut strip.l[..n], &mut strip.r[..n], &no_keys);
             strip.meter(n);
+            let (gl, gr) = pan_gains(strip.s.pan);
+            let f = strip.s.fader;
             if strip.s.mon && audible(&strip.s) {
-                let (gl, gr) = pan_gains(strip.s.pan);
-                let f = strip.s.fader;
                 for k in 0..n {
                     self.mix_l[k] += strip.l[k] * f * gl;
                     self.mix_r[k] += strip.r[k] * f * gr;
+                }
+            }
+            // its sends to the song's buses (also without MON: a reverb on what
+            // your interface already lets you hear dry)
+            if audible(&strip.s) {
+                for &(bus, level) in self.live_sends[i].iter().flatten() {
+                    self.bufs.live_into(bus as usize, &strip.l[..n], &strip.r[..n], f * gl * level, f * gr * level);
                 }
             }
         }
@@ -850,7 +871,7 @@ impl Dsp {
                 }
             }
         }
-        for strip in self.remote.iter_mut().take(self.remote_count) {
+        for (i, strip) in self.remote.iter_mut().enumerate().take(self.remote_count) {
             let g = strip.s.gain;
             for k in 0..n {
                 strip.l[k] *= g;
@@ -864,6 +885,9 @@ impl Dsp {
                 for k in 0..n {
                     self.mix_l[k] += strip.l[k] * f * gl;
                     self.mix_r[k] += strip.r[k] * f * gr;
+                }
+                for &(bus, level) in self.live_sends[MAX_LOCAL + i].iter().flatten() {
+                    self.bufs.live_into(bus as usize, &strip.l[..n], &strip.r[..n], f * gl * level, f * gr * level);
                 }
             }
         }

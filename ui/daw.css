@@ -5,7 +5,8 @@ input[type=number] { background: var(--bg); border: 1px solid var(--line-2); col
 input[type=number]:focus { border-color: var(--me); }
 
 /* ---------- the workspace: windows (wm.js) ---------- */
-.desk { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+/* (isolated: the windows' stacking stays below menus, dialogs and effect windows) */
+.desk { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; isolation: isolate; }
 .win { position: absolute; display: flex; flex-direction: column; min-width: 0; background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,0.38); overflow: hidden; }
 .win[hidden] { display: none; }
 .win.focus { border-color: color-mix(in srgb, var(--muted) 55%, var(--line-2)); }
@@ -39,8 +40,71 @@ input[type=number]:focus { border-color: var(--me); }
 /* window inner layouts */
 .card.rollcard { display: flex; flex-direction: column; gap: 8px; }
 .card.mixcard { display: flex; flex-direction: column; }
-.mixcard .strips { flex: 1; min-height: 0; }
-.mixcard .sect-head { margin-bottom: 8px; }
+.wbar-extra { display: flex; align-items: center; cursor: default; font-weight: 500; }
+.wbar-extra .stepper { gap: 3px; font-size: 11px; }
+.wbar-extra .stepper button { width: 20px; height: 18px; border-radius: 5px; font-size: 12px; }
+.wbar-extra .stepper button.auto { width: auto; height: 18px; font-size: 10px; padding: 0 6px; }
+.wbar-extra .stepper .v { min-width: 0; display: flex; align-items: baseline; gap: 4px; font-size: 11.5px; }
+.wbar-extra .stepper .v small { display: inline; font-size: 10px; }
+
+/* ---------- the mixer, like Logic's or FL's ---------- */
+.mixcard .strips { flex: 1; min-height: 0; overflow: auto; position: relative; gap: 3px; padding: 0 2px 30px; align-items: stretch; }
+.strip { width: 78px; min-height: 380px; padding: 0 0 4px; gap: 4px; border-radius: 6px; background: linear-gradient(180deg, #1c1a23, #131117); border: 1px solid #26222f; }
+.strip.sel { box-shadow: 0 0 0 1px var(--c) inset; }
+.strip .shead { width: 100%; position: relative; padding: 2px; border-radius: 5px 5px 0 0; background: color-mix(in srgb, var(--c) 20%, #1d1a25); border-bottom: 2px solid var(--c); }
+.strip .shead .nm { color: var(--text); font-size: 11px; padding: 2px 3px; }
+.strip .shead .x { top: 4px; right: 2px; }
+.strip .src { width: calc(100% - 8px); font-size: 10px; padding: 2px 16px 2px 5px; }
+.strip .srclbl { width: calc(100% - 8px); height: 20px; font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; text-align: center; line-height: 20px; }
+.slots { width: calc(100% - 8px); display: flex; flex-direction: column; gap: 2px; }
+.slot { --fxc: var(--muted); display: flex; align-items: center; gap: 4px; height: 17px; padding: 0 4px; border: 1px solid #08070a; border-radius: 3px; background: #25222d; color: var(--text); font-size: 10px; font-weight: 600; cursor: pointer; text-align: left; min-width: 0; }
+.slot span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.slot i { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--fxc); box-shadow: 0 0 4px var(--fxc); }
+.slot.off { color: var(--faint); }
+.slot.off i { background: #3a3542; box-shadow: none; }
+.slot:hover { border-color: var(--fxc); }
+.slot.inst { background: color-mix(in srgb, var(--fxc) 24%, #1d1a25); font-weight: 750; }
+.slot.add { justify-content: center; color: var(--faint); background: none; border: 1px dashed var(--line-2); font-size: 12px; }
+.slot.add:hover { color: var(--text); border-color: var(--muted); }
+.sout { width: calc(100% - 8px); height: 18px; padding: 0 4px; border: 1px solid var(--line-2); border-radius: 4px; background: var(--bg); color: var(--muted); font-size: 10px; font-weight: 650; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sout:hover { color: var(--text); }
+.sout.routed { color: var(--bus); border-color: color-mix(in srgb, var(--bus) 50%, var(--line-2)); }
+.strip .knob { width: 52px; }
+.strip .knob .kv { font-size: 9.5px; height: 12px; }
+.strip .fadersec { flex: 1; min-height: 90px; height: auto; gap: 4px; }
+.strip .vmeter { width: 7px; }
+.strip .db { font-size: 10px; height: 12px; }
+.strip .btns { flex-direction: row; width: calc(100% - 8px); gap: 3px; }
+.strip .btns .tb { flex: 1; height: 18px; font-size: 9px; border-radius: 4px; }
+/* the foot: the arrow that routes the selected channel here */
+.rfoot { width: 100%; min-height: 18px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 1px; }
+.rfoot .knob { width: 46px; }
+.rfoot .knob .kl { display: none; }
+.rarrow { width: 24px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: var(--line-2); color: var(--muted); cursor: pointer; display: grid; place-items: center; }
+.rarrow:hover:not(:disabled) { color: var(--text); background: var(--faint); }
+.rarrow.send { background: var(--bus); color: #1a1024; }
+.rarrow.out { background: var(--me); color: #1a0e08; }
+.rarrow:disabled { opacity: 0.3; cursor: not-allowed; }
+svg.cables { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; z-index: 2; }
+.cable { fill: none; stroke-width: 3; stroke-linecap: round; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
+.cable.out { stroke: var(--me); }
+.cable.send { stroke: var(--bus); stroke-dasharray: 7 4; }
+.cable.other { stroke-width: 1.6; }
+.cable-end.out { fill: var(--me); }
+.cable-end.send { fill: var(--bus); }
+
+/* ---------- an effect's own window (mixer.js) ---------- */
+.fxlayer { position: fixed; inset: 0; z-index: 30; pointer-events: none; isolation: isolate; }
+.fxwin { --fxc: var(--muted); position: absolute; pointer-events: auto; background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 18px 50px rgba(0,0,0,0.6); overflow: hidden; }
+.fxbar { height: 28px; display: flex; align-items: center; gap: 7px; padding: 0 4px 0 9px; background: var(--panel-2); border-bottom: 1px solid var(--line); cursor: grab; font-size: 12px; font-weight: 700; }
+.fxbar:active { cursor: grabbing; }
+.fxt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 380px; }
+.fxled { flex: none; width: 12px; height: 12px; padding: 0; border-radius: 50%; border: 1px solid #000; background: #2a0d0d; cursor: pointer; }
+.fxled.on { background: var(--fxc); box-shadow: 0 0 8px var(--fxc); }
+.fxled[hidden] { display: none; }
+.fxbody.rack { display: block; overflow: visible; padding: 10px; flex: none; }
+.fxbody .pedal { width: 214px; }
+.fxbody .pedal.instp { box-shadow: none; }
 /* header: window toggles (on = open, front = in front) */
 .views button { padding: 6px 10px; font-weight: 650; display: inline-flex; align-items: center; gap: 6px; }
 .views button svg { flex: none; }

@@ -538,8 +538,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 
       <div class="win" id="win-mixer" data-w="mixer" data-title="Mixer">
         <section class="card mixcard">
-          <div class="sect-head">
-            <div class="spacer"></div>
+          <div class="wbar-extra">
             <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Auto finds the smallest one without crackles; − / + set it yourself.">
               Safety buffer
               <button class="auto" id="bufAuto" aria-pressed="true">Auto</button>
@@ -552,16 +551,6 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
         </section>
       </div>
 
-      <div class="win" id="win-fx" data-w="fx" data-title="FX rack" data-title-id="rackTitle">
-        <section class="card rack-card">
-          <div class="sect-head rack-head">
-            <div class="chips" id="presets"></div>
-            <div class="spacer"></div>
-            <select class="addfx" id="addFx" aria-label="Add an effect"></select>
-          </div>
-          <div class="rack" id="rack"></div>
-        </section>
-      </div>
       <div class="snapghost" id="snapGhost" hidden></div>
     </div>
   </main>
@@ -576,6 +565,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
   </footer>
 </div>
+<div class="fxlayer" id="fxLayer"></div>
 <div class="video" id="video" hidden>
   <div class="vbar" id="vbar">
     <span>Video</span>
@@ -1128,6 +1118,10 @@ function toggleBtn(label, cls, on, title, onClick) {
   return b;
 }
 
+// A channel strip, like Logic's or FL's: name, input, the instrument and the
+// effects as slots (click one: its window opens), the output, pan, a tall fader
+// with its meter, mute/solo, and at the foot the arrow that routes the
+// selected channel here (mixer.js).
 function stripEl(t) {
   const cfg = stripCfg(t);
   const el = document.createElement("div");
@@ -1138,31 +1132,27 @@ function stripEl(t) {
   el.onclick = () => selectStrip(t);
 
   // name
-  if (track) {
+  const head = document.createElement("div");
+  head.className = "shead";
+  if (track || t[0] === "L") {
     const nm = document.createElement("input");
-    nm.className = "nm"; nm.value = stripName(t); nm.spellcheck = false; nm.title = track.bus ? "Rename this bus" : "Rename this track";
+    nm.className = "nm"; nm.value = stripName(t); nm.spellcheck = false;
+    nm.title = track?.bus ? "Rename this bus" : track ? "Rename this track" : "Rename";
     nm.onclick = (e) => e.stopPropagation();
-    nm.onchange = () => nm.value.trim() && songEdit([["track", track.id, { name: nm.value.trim() }]]);
+    nm.onchange = track ? () => nm.value.trim() && songEdit([["track", track.id, { name: nm.value.trim() }]])
+      : () => { ui.names[t] = nm.value.trim() || undefined; saveMixer(); sendNames(); fxRefresh(); };
     nm.onkeydown = (e) => e.key === "Enter" && nm.blur();
-    el.append(nm);
-    if (track.bus) {
-      const x = document.createElement("button");
-      x.className = "x"; x.textContent = "✕"; x.title = "Delete this bus";
-      x.onclick = (e) => { e.stopPropagation(); deleteBus(track); };
-      el.append(x);
-    }
-  } else if (t[0] === "L") {
-    const nm = document.createElement("input");
-    nm.className = "nm"; nm.value = stripName(t); nm.spellcheck = false; nm.title = "Rename";
-    nm.onclick = (e) => e.stopPropagation();
-    nm.onchange = () => { ui.names[t] = nm.value.trim() || undefined; saveMixer(); sendNames(); renderRack(); };
-    nm.onkeydown = (e) => e.key === "Enter" && nm.blur();
-    el.append(nm);
+    head.append(nm);
   } else {
-    const nm = document.createElement("div");
-    nm.className = "nm"; nm.textContent = stripName(t);
-    el.append(nm);
+    head.insertAdjacentHTML("beforeend", `<div class="nm">${esc(stripName(t))}</div>`);
   }
+  if (track?.bus || (t[0] === "L" && t !== "L0")) {
+    const x = document.createElement("button");
+    x.className = "x"; x.textContent = "✕"; x.title = track ? "Delete this bus" : "Remove this strip";
+    x.onclick = (e) => { e.stopPropagation(); track ? deleteBus(track) : removeStrip(t); };
+    head.append(x);
+  }
+  el.append(head);
 
   // source
   if (t[0] === "L") {
@@ -1172,44 +1162,57 @@ function stripEl(t) {
     src.onclick = (e) => e.stopPropagation();
     src.onchange = () => stripSourceChanged(t, src.value);
     el.append(src);
-    if (t !== "L0") {
-      const x = document.createElement("button");
-      x.className = "x"; x.textContent = "✕"; x.title = "Remove this strip";
-      x.onclick = (e) => { e.stopPropagation(); removeStrip(t); };
-      el.append(x);
-    }
   } else {
-    const l = document.createElement("div");
     const theirs = t[0] === "R" ? ui.partnerFx[+t.slice(1)] || [] : [];
-    const outBus = track && !track.bus && track.out ? trackById(track.out) : null;
-    l.className = "srclbl" + (theirs.length ? " theirs" : "") + (outBus ? " routed" : "");
-    l.textContent = t === "M" ? "all → out"
-      : track?.bus ? `bus · ${feedersOf(track).length} in`
-      : outBus ? "→ " + (outBus.name || "Bus")
-      : track ? (track.inst ? "channel · " + instLabel(track.inst) : track.mine ? "song · you" : "song · partner")
-      : theirs.length ? "theirs: " + theirs.join(", ") : "from partner";
+    const l = document.createElement("div");
+    l.className = "srclbl" + (theirs.length ? " theirs" : "");
+    l.textContent = t === "M" ? "the song + live" : track?.bus ? `bus · ${feedersOf(track).length} in`
+      : track ? (track.inst ? "channel" : track.mine ? "song · you" : "song · partner")
+      : theirs.length ? "theirs: " + theirs.join(", ") : "partner, live";
     if (theirs.length) l.title = `Effects on their side, already in what you hear: ${theirs.join(" → ")}`;
-    if (outBus) l.title = `Goes to the bus "${outBus.name}" (Routing, in its FX rack)`;
     el.append(l);
   }
 
-  // effects at a glance
-  const fl = document.createElement("div");
-  fl.className = "fxlist";
-  if (cfg) {
-    const shown = cfg.rack.slice(0, 2);
-    for (const s of shown) {
-      const meta = FXMETA[s.kind];
-      const label = s.kind === "nam" && s.model_name ? s.model_name : s.kind === "vst" ? (s.vst?.name || "Plugin") : meta.name;
-      fl.insertAdjacentHTML("beforeend", `<div class="fx${s.on ? "" : " off"}" style="--fxc:${meta.color}" title="${esc(label)}"><i></i>${esc(label)}</div>`);
-    }
-    if (cfg.rack.length > 2) fl.insertAdjacentHTML("beforeend", `<div class="none">+${cfg.rack.length - 2} more</div>`);
-    if (!cfg.rack.length) fl.insertAdjacentHTML("beforeend", `<div class="none">no effects</div>`);
+  // the instrument and the effects, as slots
+  const slots = document.createElement("div");
+  slots.className = "slots";
+  if (cfg.inst) {
+    const b = document.createElement("button");
+    b.className = "slot inst"; b.style.setProperty("--fxc", INST[cfg.inst.kind]?.color || "#9fb4ff");
+    b.innerHTML = `<span>♪ ${esc(instLabel(cfg.inst))}</span>`;
+    b.title = "The instrument: its knobs and pads";
+    b.onclick = (e) => { e.stopPropagation(); selectStrip(t); openFx(t, "inst", b); };
+    slots.append(b);
   }
-  el.append(fl);
+  cfg.rack.forEach((s, pos) => {
+    const meta = FXMETA[s.kind];
+    const label = s.kind === "nam" && s.model_name ? s.model_name : s.kind === "vst" ? (s.vst?.name || "Plugin") : meta.name;
+    const b = document.createElement("button");
+    b.className = "slot" + (s.on ? "" : " off");
+    b.style.setProperty("--fxc", meta.color);
+    b.innerHTML = `<i title="On / off"></i><span>${esc(label)}</span>`;
+    b.title = `${label}: click to open it, right-click for more`;
+    b.onclick = (e) => {
+      e.stopPropagation();
+      if (e.target.tagName === "I") { fxToggle(t, pos); return; }
+      selectStrip(t); openFx(t, pos, b);
+    };
+    b.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); slotMenu(t, pos, e.clientX, e.clientY); };
+    slots.append(b);
+  });
+  if (cfg.rack.length < 8) {
+    const add = document.createElement("button");
+    add.className = "slot add"; add.innerHTML = "<span>+</span>"; add.title = "Add an effect";
+    add.onclick = (e) => { e.stopPropagation(); const r = add.getBoundingClientRect(); addFxMenu(t, r.left, r.bottom + 2); };
+    slots.append(add);
+  }
+  el.append(slots);
+
+  // where it goes (song tracks and buses): the master or a bus
+  if (track) el.append(outButton(track));
 
   // pan
-  if (cfg && t !== "M") el.append(knob({ label: "Pan", value: cfg.pan, def: 0, min: -1, max: 1, fmt: fmtPan, color: "var(--c)", size: 34,
+  if (cfg && t !== "M") el.append(knob({ label: "Pan", value: cfg.pan, def: 0, min: -1, max: 1, fmt: fmtPan, color: "var(--c)", size: 30,
     onChange: (v) => setStrip(t, "pan", v) }));
 
   // meter + fader
@@ -1220,27 +1223,33 @@ function stripEl(t) {
   const value = t === "M" ? ui.mixer.master : cfg.fader;
   const db = document.createElement("div");
   db.className = "db"; db.textContent = fmtDb(value);
-  fs.append(meter, fader({ value, onChange: (g) => { db.textContent = fmtDb(g); setStrip(t, "fader", g); } }));
+  fs.append(fader({ value, onChange: (g) => { db.textContent = fmtDb(g); setStrip(t, "fader", g); } }), meter);
   el.append(fs, db);
   ui.meters[t] = meter.firstChild;
 
-  // buttons, in a column beside the fader
+  // mute / solo, and for your inputs: send to the partner, hear it yourself
   if (cfg && t !== "M") {
     const b = document.createElement("div");
     b.className = "btns";
-    fs.append(b);
     b.append(toggleBtn("M", "m", cfg.mute, "Mute", (v) => setStrip(t, "mute", v)));
     b.append(toggleBtn("S", "s", cfg.solo, "Solo", (v) => setStrip(t, "solo", v)));
+    el.append(b);
     if (t[0] === "L") {
-      b.append(toggleBtn("SEND", "send", cfg.send, "Send this channel to your partner", (v) => { setStrip(t, "send", v); sendNames(); }));
-      b.append(toggleBtn("MON", "mon", cfg.mon, "Hear this channel yourself (turn off your interface's direct monitoring)", (v) => setStrip(t, "mon", v)));
+      const b2 = document.createElement("div");
+      b2.className = "btns";
+      b2.append(toggleBtn("SEND", "send", cfg.send, "Send this channel to your partner", (v) => { setStrip(t, "send", v); sendNames(); }));
+      b2.append(toggleBtn("MON", "mon", cfg.mon, "Hear this channel yourself (turn off your interface's direct monitoring)", (v) => setStrip(t, "mon", v)));
+      el.append(b2);
     }
   }
+  el.append(routeFoot(t));
   return el;
 }
 
 function renderStrips() {
   const box = $("strips");
+  const sx = box.scrollLeft, sy = box.scrollTop;
+  requestAnimationFrame(() => { box.scrollLeft = sx; box.scrollTop = sy; drawCables(); });
   box.innerHTML = "";
   ui.meters = {};
   const local = ui.mixer.local;
@@ -1312,7 +1321,7 @@ async function removeStrip(t) {
 function selectStrip(t) {
   ui.sel = t;
   for (const el of $("strips").querySelectorAll(".strip")) el.classList.toggle("sel", el.dataset.t === t);
-  renderRack();
+  refreshRouting();
   syncMidiTarget();
 }
 
@@ -1357,8 +1366,7 @@ async function refreshLibrary() {
 }
 
 async function loadModel(t, pos, path) {
-  const pedal = $("rack").children[pos];
-  const nm = pedal && pedal.querySelector(".mname");
+  const nm = fxBody(t, pos)?.querySelector(".mname");
   if (nm) { nm.textContent = "Loading…"; nm.classList.add("none"); }
   const res = await api.set_model(t, pos, path);
   if (res && res.error) { toast("Couldn't load that model: " + res.error, true); renderRack(); return; }
@@ -1434,7 +1442,7 @@ function vstRender(res) {
     $("vstm").hidden = true;
     if (res2 && res2.error) { toast(`Couldn't load ${p.name}: ${res2.error}`, true); return; }
     await rackChanged(res2);
-    $("rack").scrollLeft = $("rack").scrollWidth;
+    openFx(ui.sel, stripCfg(ui.sel).rack.length - 1);
   };
 }
 
@@ -1504,115 +1512,93 @@ function t3kRender(st) {
   };
 }
 
-function renderRack() {
-  const t = ui.sel, cfg = stripCfg(t);
-  const rack = $("rack");
-  rack.innerHTML = "";
-  if (!cfg) return;
-  const track = t[0] === "T" ? trackBySlot(+t.slice(1)) : null;
-  const color = track?.bus ? BUS_COLOR : t === "M" ? "#d9d3e3" : t[0] === "L" || (track && track.mine) ? "var(--me)" : "var(--partner)";
-  // what this rack delays the sound by: compensated in the song, not for live playing
-  const lat = cfg.latency ? (cfg.latency / ui.rate * 1000).toFixed(1) : null;
-  const latNote = !lat ? "" : t[0] === "T" || t === "M" ? ` <span class="latn" title="The song is read early to make up for it, so everything stays in time">· ${lat} ms delay, compensated</span>`
-    : ` <span class="latn" title="Plugins that look ahead delay what you play live">· adds ${lat} ms</span>`;
-  $("rackTitle").innerHTML = `${t === "M" ? "Master FX" : "FX rack"} <span class="who" style="--c:${color}">· ${esc(stripName(t))}${track?.bus ? " (bus)" : track ? " (song track)" : t === "M" ? " (part of the song)" : ""}</span>${latNote}`;
-  for (const c of $("presets").children) c.classList.remove("on");
-  $("presets").hidden = t === "M";
-  if ((t[0] === "L" || t[0] === "T") && cfg.inst) rack.append(instPanel(t, cfg.inst));
-  if (track) rack.append(routingCard(track));
-  if (!cfg.rack.length) {
-    rack.insertAdjacentHTML("beforeend", `<div class="empty-rack"><b>No effects on this ${t === "M" ? "master" : track?.bus ? "bus" : "channel"} yet.</b><br>Add one with the menu on the right${t === "M" ? "" : ", or start from a preset"}.
-      ${t === "M" ? "The master's effects shape the whole song, live channels included: an EQ and a limiter at the end make it fuller and louder. You both hear them, and they're in the export."
-        : track?.bus ? "A bus plays what tracks send it, through these effects: a reverb here (Dry at 0) is one shared room for every track that sends to it."
-        : track ? "Effects on a song track are part of the song: you both hear them."
-        : t[0] === "L" ? "Your partner hears these effects; turn on MON to hear them yourself."
-        : (ui.partnerFx[+t.slice(1)] || []).length
-          ? `Their own effects (${esc(ui.partnerFx[+t.slice(1)].join(", "))}) are already in what you hear. Effects you add here only change your own mix.`
-          : "Effects you add here only change what you hear."}</div>`);
+// the effects open in windows of their own (mixer.js): this keeps the open ones up to date
+function renderRack() { fxRefresh(); }
+
+// one effect: its knobs, on/off and remove, shown in its own small window
+function pedalEl(t, pos, slot) {
+  const meta = FXMETA[slot.kind];
+  const p = document.createElement("div");
+  p.className = "pedal" + (slot.on ? "" : " off") + (slot.kind === "nam" ? " nam" : "");
+  p.style.setProperty("--c", meta.color);
+  const sub = slot.kind === "nam" && slot.model_name
+    ? (slot.includes_cab === true ? "amp + cab" : slot.includes_cab === false ? "amp only, no cab" : meta.sub)
+    : slot.kind === "vst" ? "VST3" + (slot.vst?.latency ? ` · ${(slot.vst.latency / ui.rate * 1000).toFixed(1)} ms latency` : "") : meta.sub;
+  const title = slot.kind === "vst" ? (slot.vst?.name || "Plugin") : meta.name;
+  if (slot.kind === "vst") p.classList.add("vstp");
+  p.innerHTML = `<div class="top"><div class="ttl"><div class="name" title="${esc(title)}">${esc(title)}</div><div class="sub">${esc(sub)}</div></div>
+    <span class="led"></span></div><div class="knobs"></div>`;
+  const knobs = p.querySelector(".knobs");
+  if (slot.kind === "nam") {
+    // model panel and knobs side by side, so it's no taller than the other pedals
+    const row = document.createElement("div");
+    row.className = "namrow";
+    knobs.replaceWith(row);
+    row.append(namSection(t, pos, slot), knobs);
   }
-  cfg.rack.forEach((slot, pos) => {
-    const meta = FXMETA[slot.kind];
-    const p = document.createElement("div");
-    p.className = "pedal" + (slot.on ? "" : " off") + (slot.kind === "nam" ? " nam" : "");
-    p.style.setProperty("--c", meta.color);
-    const sub = slot.kind === "nam" && slot.model_name
-      ? (slot.includes_cab === true ? "amp + cab" : slot.includes_cab === false ? "amp only, no cab" : meta.sub)
-      : slot.kind === "vst" ? "VST3" + (slot.vst?.latency ? ` · ${(slot.vst.latency / ui.rate * 1000).toFixed(1)} ms latency` : "") : meta.sub;
-    const title = slot.kind === "vst" ? (slot.vst?.name || "Plugin") : meta.name;
-    if (slot.kind === "vst") p.classList.add("vstp");
-    p.innerHTML = `<div class="top"><div class="ttl"><div class="name" title="${esc(title)}">${esc(title)}</div><div class="sub">${esc(sub)}</div></div>
-      <div class="tools"><button class="l" title="Move left" aria-label="Move left">◀</button><button class="r" title="Move right" aria-label="Move right">▶</button><button class="del" title="Remove" aria-label="Remove">✕</button></div>
-      <span class="led"></span></div><div class="knobs"></div>`;
-    const knobs = p.querySelector(".knobs");
-    if (slot.kind === "nam") {
-      // model panel and knobs side by side, so it's no taller than the other pedals
-      const row = document.createElement("div");
-      row.className = "namrow";
-      knobs.replaceWith(row);
-      row.append(namSection(t, pos, slot), knobs);
-    }
-    if (slot.kind === "vst") {
-      const row = document.createElement("div");
-      row.className = "namrow";
-      knobs.replaceWith(row);
-      const open = document.createElement("button");
-      open.className = "openwin";
-      open.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/></svg>Open window`;
-      open.title = slot.vst?.has_editor ? "Show the plugin's own controls" : "This plugin has no window of its own";
-      open.disabled = !slot.vst?.has_editor;
-      open.onclick = async () => {
-        const res = await api.vst_open(t, pos);
-        if (res && res.error) toast(res.error, true);
-      };
-      row.append(open, knobs);
-      if (slot.error) row.insertAdjacentHTML("beforebegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
-    }
-    let curve = null;
-    if (slot.kind === "eq") {
-      p.classList.add("eqp");
-      curve = eqCurve(slot, meta.color);
-      knobs.before(curve);
-    } else if (meta.knobs.length > 3 && slot.kind !== "nam" && slot.kind !== "vst") {
-      p.style.width = meta.knobs.length * 62 + 20 + "px"; // one row of knobs
-    }
-    for (const [key, label, fmt] of meta.knobs) {
-      knobs.append(knob({ label, value: slot[key] ?? FX_DEFAULTS[slot.kind][key], def: FX_DEFAULTS[slot.kind][key], fmt, color: meta.color,
-        size: slot.kind === "eq" ? 40 : 46,
-        onChange: (v) => { slot[key] = v; curve?.redraw(); api.rack_set(t, pos, key, v); saveMixer(); } }));
-    }
-    if (slot.kind === "comp" && (t[0] === "T" || t === "M")) knobs.after(keySelect(t, pos, slot));
-    if (slot.error && slot.kind !== "vst" && slot.kind !== "nam") knobs.insertAdjacentHTML("beforebegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
-    const foot = document.createElement("button");
-    foot.className = "foot"; foot.title = "On / off"; foot.setAttribute("aria-label", `${meta.name} on/off`);
-    foot.onclick = async () => { slot.on = !slot.on; p.classList.toggle("off", !slot.on); await api.rack_set(t, pos, "on", slot.on ? 1 : 0); renderStrips(); saveMixer(); };
-    p.append(foot);
-    p.querySelector(".l").onclick = async () => pos > 0 && rackChanged(await api.rack_move(t, pos, pos - 1));
-    p.querySelector(".r").onclick = async () => pos < cfg.rack.length - 1 && rackChanged(await api.rack_move(t, pos, pos + 1));
-    p.querySelector(".del").onclick = async () => rackChanged(await api.rack_remove(t, pos));
-    rack.append(p);
-  });
+  if (slot.kind === "vst") {
+    const row = document.createElement("div");
+    row.className = "namrow";
+    knobs.replaceWith(row);
+    const open = document.createElement("button");
+    open.className = "openwin";
+    open.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18"/></svg>Open window`;
+    open.title = slot.vst?.has_editor ? "Show the plugin's own controls" : "This plugin has no window of its own";
+    open.disabled = !slot.vst?.has_editor;
+    open.onclick = async () => {
+      const res = await api.vst_open(t, pos);
+      if (res && res.error) toast(res.error, true);
+    };
+    row.append(open, knobs);
+    if (slot.error) row.insertAdjacentHTML("beforebegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
+  }
+  let curve = null;
+  if (slot.kind === "eq") {
+    p.classList.add("eqp");
+    curve = eqCurve(slot, meta.color);
+    knobs.before(curve);
+  } else if (meta.knobs.length > 3 && slot.kind !== "nam" && slot.kind !== "vst") {
+    p.style.width = meta.knobs.length * 62 + 20 + "px"; // one row of knobs
+  }
+  for (const [key, label, fmt] of meta.knobs) {
+    knobs.append(knob({ label, value: slot[key] ?? FX_DEFAULTS[slot.kind][key], def: FX_DEFAULTS[slot.kind][key], fmt, color: meta.color,
+      size: slot.kind === "eq" ? 40 : 46,
+      onChange: (v) => { slot[key] = v; curve?.redraw(); api.rack_set(t, pos, key, v); saveMixer(); } }));
+  }
+  if (slot.kind === "comp" && (t[0] === "T" || t === "M")) knobs.after(keySelect(t, pos, slot));
+  if (slot.error && slot.kind !== "vst" && slot.kind !== "nam") knobs.insertAdjacentHTML("beforebegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
+  const foot = document.createElement("button");
+  foot.className = "foot"; foot.title = "On / off"; foot.setAttribute("aria-label", `${meta.name} on/off`);
+  foot.onclick = () => fxToggle(t, pos);
+  p.append(foot);
+  return p;
 }
 
-function buildRackControls() {
-  const add = $("addFx");
-  add.append(new Option("+ Add effect", ""));
-  for (const f of FX) if (f.id !== "vst") add.append(new Option(f.name, f.id));
-  add.append(new Option("VST3 plugin…", "vst"));
-  add.onchange = async () => {
-    const kind = add.value;
-    add.value = "";
-    if (!kind) return;
-    if (kind === "vst") { openVstBrowser(); return; }
-    if (stripCfg(ui.sel).rack.length >= 8) { toast("A channel holds up to 8 effects."); return; }
-    await rackChanged(await api.rack_add(ui.sel, kind));
-    $("rack").scrollLeft = $("rack").scrollWidth;
-  };
-  for (const name of init.presets) {
-    const c = document.createElement("button");
-    c.className = "chip"; c.textContent = name;
-    c.onclick = async () => { await rackChanged(await api.rack_preset(ui.sel, name)); c.classList.add("on"); };
-    $("presets").append(c);
-  }
+// switch an effect on or off (the footswitch, the strip's slot, the window's title)
+async function fxToggle(t, pos) {
+  const slot = stripCfg(t).rack[pos];
+  if (!slot) return;
+  slot.on = !slot.on;
+  await api.rack_set(t, pos, "on", slot.on ? 1 : 0);
+  renderStrips(); fxRefresh(); saveMixer();
+}
+
+// "+" on a strip: an effect, a VST, or a preset for the whole rack
+function addFxMenu(t, x, y) {
+  const items = FX.filter((f) => f.id !== "vst").map((f) => [f.name, "", () => addFx(t, f.id)]);
+  items.push(["VST3 plugin…", "", () => { ui.sel = t; selectStrip(t); openVstBrowser(); }]);
+  if (t !== "M") for (const name of init.presets) items.push(["Preset: " + name, "", async () => {
+    if (stripCfg(t).rack.length && !confirm(`Replace the effects on ${stripName(t)} with the "${name}" preset?`)) return;
+    fxCloseStrip(t);
+    await rackChanged(await api.rack_preset(t, name));
+  }]);
+  showCtx(items, x, y);
+}
+
+async function addFx(t, kind) {
+  if (stripCfg(t).rack.length >= 8) { toast("A channel holds up to 8 effects."); return; }
+  await rackChanged(await api.rack_add(t, kind));
+  openFx(t, stripCfg(t).rack.length - 1);
 }
 
 function buildSafety() {
@@ -1779,7 +1765,6 @@ async function boot(a) {
   };
   buildSafety();
   buildMetronome();
-  buildRackControls();
   vSetup();
   // restore last session's mixer (strips, racks incl. plugins, faders) and names;
   // older versions kept it in browser storage

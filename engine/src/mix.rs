@@ -259,13 +259,41 @@ pub struct TrackBufs {
     pub post_r: Vec<Vec<f32>>,
     tmp_l: Vec<f32>,
     tmp_r: Vec<f32>,
+    /// what the live strips sent each bus this block (only playback has these)
+    live_l: Vec<Vec<f32>>,
+    live_r: Vec<Vec<f32>>,
+    live_on: [bool; MAX_TRACKS],
 }
 
 impl TrackBufs {
     pub fn new() -> Self {
         let v = || (0..MAX_TRACKS).map(|_| vec![0f32; MAX_FRAME]).collect::<Vec<_>>();
         TrackBufs { in_l: v(), in_r: v(), key_l: v(), key_r: v(), post_l: v(), post_r: v(),
-                    tmp_l: vec![0.0; MAX_FRAME], tmp_r: vec![0.0; MAX_FRAME] }
+                    tmp_l: vec![0.0; MAX_FRAME], tmp_r: vec![0.0; MAX_FRAME],
+                    live_l: v(), live_r: v(), live_on: [false; MAX_TRACKS] }
+    }
+
+    /// A new block: no live sends yet.
+    pub fn clear_live(&mut self) {
+        self.live_on = [false; MAX_TRACKS];
+    }
+
+    /// A live strip (yours or the partner's) sends `l`/`r` to a bus, times
+    /// `gl`/`gr` (its fader, pan and send level). Realtime-safe.
+    pub fn live_into(&mut self, bus: usize, l: &[f32], r: &[f32], gl: f32, gr: f32) {
+        if bus >= MAX_TRACKS {
+            return;
+        }
+        let n = l.len();
+        if !self.live_on[bus] {
+            self.live_on[bus] = true;
+            self.live_l[bus][..n].fill(0.0);
+            self.live_r[bus][..n].fill(0.0);
+        }
+        for k in 0..n {
+            self.live_l[bus][k] += l[k] * gl;
+            self.live_r[bus][k] += r[k] * gr;
+        }
     }
 
     /// A track's sound for a sidechain (before its fader).
@@ -322,8 +350,15 @@ fn read_segs(play: &Play, ahead: i64, out: &mut [(usize, i64, usize); 6]) -> usi
 pub fn render_tracks(tracks: &mut [Strip], w: &mut Wiring, b: &mut TrackBufs, tl: Option<&Timeline>,
                      play: Option<&Play>, n: usize, mix_l: &mut [f32], mix_r: &mut [f32]) {
     for s in 0..MAX_TRACKS {
-        b.in_l[s][..n].fill(0.0);
-        b.in_r[s][..n].fill(0.0);
+        // a bus starts with what the live strips sent it (playing live: never in an export)
+        if b.live_on[s] {
+            let TrackBufs { in_l, in_r, live_l, live_r, .. } = &mut *b;
+            in_l[s][..n].copy_from_slice(&live_l[s][..n]);
+            in_r[s][..n].copy_from_slice(&live_r[s][..n]);
+        } else {
+            b.in_l[s][..n].fill(0.0);
+            b.in_r[s][..n].fill(0.0);
+        }
     }
     let solo = tracks.iter().any(|t| t.s.active && t.s.solo);
     let mut segs = [(0usize, 0i64, 0usize); 6];
@@ -387,11 +422,12 @@ pub fn render_tracks(tracks: &mut [Strip], w: &mut Wiring, b: &mut TrackBufs, tl
         b.key_l[i][..n].copy_from_slice(l);
         b.key_r[i][..n].copy_from_slice(r);
         strip.meter(n);
-        // fader and pan
-        let audible = !strip.s.mute && (!solo || strip.s.solo || w.fed[i]);
+        // fader and pan (a bus is fed by tracks, or by the live strips' sends)
+        let fed = w.fed[i] || b.live_on[i];
+        let audible = !strip.s.mute && (!solo || strip.s.solo || fed);
         // a track's own sound gets the pan law (-3 dB each side in the middle);
         // a bus passes on what's already panned: its pan is a balance, unity in the middle
-        let (gl, gr) = if w.fed[i] { balance(strip.s.pan) } else { pan_gains(strip.s.pan) };
+        let (gl, gr) = if fed { balance(strip.s.pan) } else { pan_gains(strip.s.pan) };
         let f = strip.s.fader;
         for k in 0..n {
             b.post_l[i][k] = strip.l[k] * f * gl;
@@ -489,6 +525,29 @@ mod tests {
         let open = Play { segs: [(0, 900, 128), (0, 0, 0)], nseg: 1, looping: None };
         let m = read_segs(&open, 50, &mut out);
         assert_eq!(&out[..m], &[(0, 950, 128)]);
+    }
+
+    #[test]
+    fn live_sends_feed_a_bus_for_one_block() {
+        // bus 5 (fader 1, centre) gets a live strip's signal; nothing else plays
+        let mut tracks: Vec<Strip> = (0..MAX_TRACKS).map(|_| Strip::new(crate::dsp::StripSettings::track())).collect();
+        tracks[5].s.active = true;
+        tracks[5].s.fader = 1.0;
+        let routes = vec![Route::default(); MAX_TRACKS];
+        let mut w = Wiring::build(&desc(&routes, [0; MAX_TRACKS]));
+        let mut b = TrackBufs::new();
+        let n = 64;
+        let (mut ml, mut mr) = (vec![0.0; n], vec![0.0; n]);
+        b.clear_live();
+        b.live_into(5, &vec![0.5; n], &vec![0.25; n], 1.0, 1.0);
+        b.live_into(5, &vec![0.5; n], &vec![0.25; n], 1.0, 1.0); // a second strip adds up
+        render_tracks(&mut tracks, &mut w, &mut b, None, None, n, &mut ml, &mut mr);
+        assert!((ml[10] - 1.0).abs() < 1e-6 && (mr[10] - 0.5).abs() < 1e-6, "got {} / {}", ml[10], mr[10]);
+        // the next block, without sends: silence (no leftovers)
+        b.clear_live();
+        let (mut ml, mut mr) = (vec![0.0; n], vec![0.0; n]);
+        render_tracks(&mut tracks, &mut w, &mut b, None, None, n, &mut ml, &mut mr);
+        assert!(ml.iter().chain(&mr).all(|&v| v == 0.0));
     }
 
     #[test]

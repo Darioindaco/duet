@@ -1395,6 +1395,23 @@ impl Engine {
         self.reroute();
     }
 
+    /// What a live strip ("L0".., yours, or "R0".., the partner's) sends to the
+    /// song's buses, after its fader: [(bus track slot, level)], at most four.
+    /// Only for your own ears: the partner hears you dry, as you send it.
+    fn live_sends(&self, target: &str, sends: Vec<(i64, f32)>) -> PyResult<()> {
+        let t = parse_target(target)?;
+        if !matches!(t, Target::Local(_) | Target::Remote(_)) {
+            return Err(PyValueError::new_err("only your own and your partner's live strips have live sends"));
+        }
+        let mut a: dsp::LiveSends = [None; mix::MAX_SENDS];
+        let ok = sends.iter().filter(|&&(b, v)| b >= 0 && (b as usize) < MAX_TRACKS && v > 0.0);
+        for (k, &(b, v)) in ok.take(mix::MAX_SENDS).enumerate() {
+            a[k] = Some((b as u8, v.clamp(0.0, 4.0)));
+        }
+        self.cmd(Cmd::LiveSends(t, a));
+        Ok(())
+    }
+
     /// Render the song (seconds start..end) to WAV files in the background:
     /// the mix to `mix` (if given) and stems = [(track slot, path)]. Uses the
     /// song tracks' current faders, pans, mute/solo and effects.

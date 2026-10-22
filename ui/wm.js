@@ -8,7 +8,7 @@
 //
 // Loaded before the main script; boot() calls wmSetup() before anything draws.
 
-const WINS = ["song", "rack", "roll", "mixer", "fx"];
+const WINS = ["song", "rack", "roll", "mixer"];
 const WM_MIN = { w: 260, h: 130 };
 const WM_STICK = 10;  // px: edges closer than this stick together
 const WM_EDGE = 8;    // px from the desk's edge: let go to fill a half or a quarter
@@ -17,12 +17,12 @@ const WM_EDGE = 8;    // px from the desk's edge: let go to fill a half or a qua
 const LAYOUTS = {
   Compose: { song: [0, 0, 1, 0.56], rack: [0, 0.56, 0.42, 0.44], roll: [0.42, 0.56, 0.58, 0.44] },
   Arrange: { song: [0, 0, 1, 1] },
-  Mix: { song: [0, 0, 1, 0.42], mixer: [0, 0.42, 0.6, 0.58], fx: [0.6, 0.42, 0.4, 0.58] },
-  "Mixer on the right": { song: [0, 0, 0.62, 0.56], rack: [0, 0.56, 0.62, 0.44], mixer: [0.62, 0, 0.38, 0.62], fx: [0.62, 0.62, 0.38, 0.38] },
+  Mix: { song: [0, 0, 1, 0.38], mixer: [0, 0.38, 1, 0.62] },
+  "Mixer on the right": { song: [0, 0, 0.64, 0.56], rack: [0, 0.56, 0.64, 0.44], mixer: [0.64, 0, 0.36, 1] },
   "Piano roll big": { song: [0, 0, 1, 0.3], roll: [0, 0.3, 1, 0.7] },
 };
 // where a window opens when the layout doesn't place it
-const WM_HOME = { song: [0, 0, 1, 0.56], rack: [0.04, 0.3, 0.5, 0.42], roll: [0.3, 0.32, 0.66, 0.6], mixer: [0.2, 0.2, 0.75, 0.55], fx: [0.25, 0.45, 0.72, 0.5] };
+const WM_HOME = { song: [0, 0, 1, 0.56], rack: [0.04, 0.3, 0.5, 0.42], roll: [0.3, 0.32, 0.66, 0.6], mixer: [0.1, 0.3, 0.85, 0.66] };
 
 const wm = { st: {}, z: 10, focus: null };
 
@@ -38,14 +38,17 @@ function wmSetup() {
       <button class="wb max" title="Fill the workspace / back (double-click the title)" aria-label="Maximize"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg></button>
       <button class="wb x" title="Close" aria-label="Close"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>`;
     el.append(bar, body);
+    // controls that belong in the title bar (the mixer's safety buffer)
+    const extra = body.querySelector(".wbar-extra");
+    if (extra) bar.querySelector(".spacer").after(extra);
     for (const d of ["n", "s", "e", "w", "ne", "nw", "se", "sw"]) {
       const h = document.createElement("div");
       h.className = "wr " + d;
       h.onpointerdown = (e) => wmResize(e, k, d);
       el.append(h);
     }
-    bar.onpointerdown = (e) => { if (!e.target.closest("button")) wmDrag(e, k); };
-    bar.ondblclick = (e) => { if (!e.target.closest("button")) wmMax(k); };
+    bar.onpointerdown = (e) => { if (!e.target.closest("button, .wbar-extra")) wmDrag(e, k); };
+    bar.ondblclick = (e) => { if (!e.target.closest("button, .wbar-extra")) wmMax(k); };
     bar.querySelector(".max").onclick = () => wmMax(k);
     bar.querySelector(".x").onclick = () => wmClose(k);
     el.addEventListener("pointerdown", () => wmFocus(k), true);
@@ -58,10 +61,6 @@ function wmSetup() {
   document.addEventListener("keydown", (e) => {
     const k = { F5: "song", F6: "rack", F7: "roll", F9: "mixer" }[e.key];
     if (k && !e.ctrlKey && !e.altKey) { e.preventDefault(); wmToggle(k); }
-  });
-  // clicking a strip's empty space in the mixer shows its effects
-  $("strips").addEventListener("click", (e) => {
-    if (e.target.closest(".strip") && !e.target.closest("button, select, input, .knob, .fader, .fdr, .hs")) wmOpen("fx", false);
   });
 }
 
@@ -123,7 +122,7 @@ function wmFocus(k) {
   $("win-" + k).style.zIndex = wm.z;
   for (const el of document.querySelectorAll(".win")) el.classList.toggle("focus", el.dataset.w === k);
   // the rest of the app thinks in three places: the playlist, the sequencer, the mixer
-  ui.view = { song: "song", rack: "seq", roll: "seq", mixer: "mixer", fx: "mixer" }[k];
+  ui.view = { song: "song", rack: "seq", roll: "seq", mixer: "mixer" }[k];
   if (typeof syncMidiTarget === "function") syncMidiTarget();
   wmSave();
 }

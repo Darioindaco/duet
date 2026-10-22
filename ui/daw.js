@@ -94,6 +94,10 @@ function setSongView(v) {
     song.trackSig = sig;
     api.mixer().then((m) => { ui.mixer = m; renderStrips(); if (ui.sel[0] === "T") renderRack(); });
   }
+  // which sends there are (not how loud: a send knob being turned stays put)
+  const routeSig = JSON.stringify([[...v.tracks, ...(v.buses || [])].map((t) => [t.id, Object.keys(t.sends || {}).sort()]),
+    Object.entries(v.local?.livesends || {}).map(([k, s]) => [k, Object.keys(s).sort()])]);
+  if (routeSig !== song.routeSig) { song.routeSig = routeSig; if (ui.mixer) refreshRouting(); }
   songRender();
   seqRender();
   paintConflict();
@@ -513,7 +517,10 @@ function openTrackFx(t) {
   if (t.slot == null) { toast("This song has more tracks than the mixer can hold (32)."); return; }
   setMainView("mixer");
   selectStrip("T" + t.slot);
-  wmOpen("fx");
+  const el = document.querySelector(`#strips .strip[data-t="T${t.slot}"]`);
+  el?.scrollIntoView({ inline: "center", block: "nearest" });
+  // a channel's "Sound": its instrument's window
+  if (t.inst && el) openFx("T" + t.slot, "inst", el.querySelector(".slot.inst"));
 }
 
 // ---------- drawing ----------
@@ -1380,7 +1387,8 @@ function demoSong() {
       v++; return copy();
     },
     daw_local: async (k, val, tid) => {
-      if (tid) view.tracks.find((t) => t.id === tid)[k] = val; else view.local[k] = val;
+      if (k === "livesends") view.local.livesends = { ...(view.local.livesends || {}), [tid]: val };
+      else if (tid) view.tracks.find((t) => t.id === tid)[k] = val; else view.local[k] = val;
       v++; return copy();
     },
     daw_play: async () => { pos = now(); playing = true; t0 = performance.now(); view.patternMode = null; },

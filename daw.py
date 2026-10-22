@@ -99,8 +99,9 @@ class Project:
         self.objs: dict[str, dict[str, dict]] = {k: {} for k in KINDS}
         self.stamps: dict[str, dict[str, dict]] = {k: {} for k in KINDS}
         self.clock = 0
-        # this machine only: mute/solo per track, click, count-in
-        self.local = {"mute": {}, "solo": {}, "click": True, "countin": True}
+        # this machine only: mute/solo per track, click, count-in, and what the
+        # live strips ("L0", the partner's "R0"...) send to the song's buses
+        self.local = {"mute": {}, "solo": {}, "click": True, "countin": True, "livesends": {}}
 
     @property
     def audio_dir(self) -> Path:
@@ -222,6 +223,7 @@ class Daw:
         self.sent_notes = None
         self.sent_keys = None
         self.sent_routes = None
+        self.sent_live: dict[str, list] = {}
         self.sent_mrack: list = []
         self.pattern_mode: str | None = None  # playing just this pattern, looped (local)
         self.sent_loop = None
@@ -399,12 +401,16 @@ class Daw:
             return self.view()
 
     def set_local(self, key: str, value, track: str | None = None):
-        """This machine only: mute/solo of a track, click, count-in."""
+        """This machine only: mute/solo of a track, click, count-in, a live
+        strip's sends to buses (track = "L0".."L3" or "R0".."R7", value = {bus id: level})."""
         with self.lock:
             if key in ("mute", "solo") and track:
                 self.p.local[key][track] = bool(value)
             elif key in ("click", "countin"):
                 self.p.local[key] = bool(value)
+            elif key == "livesends" and isinstance(track, str) and re.fullmatch(r"[LR]\d", track) and isinstance(value, dict):
+                sends = {str(b): float(v) for b, v in value.items() if isinstance(v, (int, float)) and v > 0}
+                self.p.local.setdefault("livesends", {})[track] = sends
             self._changed()
 
     def track_rack_changed(self, slot: int):
@@ -745,6 +751,15 @@ class Daw:
         if routes != self.sent_routes:
             e.daw_routing(routes)
             self.sent_routes = routes
+        # what the live strips send to the buses (this machine only)
+        live = {strip: [(self.slots[b], float(v)) for b, v in sorted(sends.items())
+                        if b in self.slots and byid.get(b, {}).get("bus") and v > 0][:MAX_SENDS]
+                for strip, sends in (p.local.get("livesends") or {}).items()}
+        for strip in set(live) | set(self.sent_live):
+            want = live.get(strip, [])
+            if self.sent_live.get(strip, []) != want:
+                e.live_sends(strip, want)
+                self.sent_live[strip] = want
         mrack = self._engine_rack(p.meta().get("master_rack") or [])
         if mrack != self.sent_mrack:
             self._apply_rack("M", self.sent_mrack, mrack)
@@ -1125,7 +1140,8 @@ class Daw:
                 "buses": [t for t in tracks if t["bus"]],
                 "clips": [{"id": i, **c} for i, c in p.live("clip").items()],
                 "files": files, "me": self.me, "partner": self.partner,
-                "local": {"click": p.local.get("click"), "countin": p.local.get("countin")},
+                "local": {"click": p.local.get("click"), "countin": p.local.get("countin"),
+                          "livesends": p.local.get("livesends") or {}},
                 "patterns": sorted(({"id": i, **x} for i, x in p.live("pattern").items()), key=lambda x: str(x.get("name", ""))),
                 "notes": [{"id": i, **n} for i, n in p.live("note").items()],
                 "patternMode": self.pattern_mode,
