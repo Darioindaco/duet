@@ -82,6 +82,8 @@ pub enum Cmd {
     SendLevel(usize, usize, f32),
     /// What a live strip (yours or the partner's) sends to the song's buses.
     LiveSends(Target, LiveSends),
+    /// Hear a sample from the library (None: stop). Only you hear it.
+    Preview(Option<std::sync::Arc<crate::daw::AudioData>>),
 }
 
 /// A live strip's sends: (bus track slot, level), after its fader.
@@ -98,6 +100,7 @@ pub enum Garbage {
     Rings(Box<RecRings>),
     Inst(Box<InstSlot>),
     Wiring(Box<Wiring>),
+    Preview(std::sync::Arc<crate::daw::AudioData>),
 }
 
 /// One received audio packet, from the network thread to the audio thread.
@@ -162,6 +165,9 @@ pub struct Shared {
     pub ring_empty: AtomicU64,
     /// the largest input callback (samples), and input dropped for clock drift
     pub in_chunk: AtomicU64,
+    /// the library's preview: where it is and how long it is (frames)
+    pub preview_pos: AtomicU64,
+    pub preview_len: AtomicU64,
     pub in_dropped: AtomicU64,
     pub cushion_frames: AtomicU64,
     pub test_signal_loss: AtomicF32,
@@ -335,6 +341,7 @@ pub struct Dsp {
     wiring: Option<Box<Wiring>>,
     bufs: TrackBufs,
     timeline: Option<Box<Timeline>>,
+    preview: Option<(std::sync::Arc<crate::daw::AudioData>, usize)>,
     tp: Transport,
     click: Metro,
     rec: [Option<rtrb::Producer<f32>>; MAX_LOCAL],
@@ -399,6 +406,7 @@ impl Dsp {
             wiring: Some(Wiring::plain()),
             bufs: TrackBufs::new(),
             timeline: Some(Box::new(Timeline::empty())),
+            preview: None,
             tp: Transport { playing: false, pos: 0, loop_on: false, loop_start: 0, loop_end: 0, click_on: false,
                             click_until: i64::MIN, recording: false, rec_started: false },
             click: Metro { negative: true, ..Metro::new() },
@@ -669,6 +677,14 @@ impl Dsp {
                     if let Some(old) = self.wiring.replace(w) {
                         self.discard(Garbage::Wiring(old));
                     }
+                }
+                Cmd::Preview(data) => {
+                    if let Some((old, _)) = self.preview.take() {
+                        self.discard(Garbage::Preview(old));
+                    }
+                    self.shared.preview_len.store(data.as_ref().map_or(0, |d| d.samples.len() as u64), Relaxed);
+                    self.shared.preview_pos.store(0, Relaxed);
+                    self.preview = data.map(|d| (d, 0));
                 }
                 Cmd::SendLevel(t, bus, level) => {
                     if let Some(w) = self.wiring.as_mut() {
@@ -965,6 +981,24 @@ impl Dsp {
             for k in 0..n {
                 out[2 * k] += ml[k];
                 out[2 * k + 1] += mr[k];
+            }
+        }
+        // the library's preview: local only, after everything, like the click
+        let mut done = false;
+        if let Some((d, pos)) = self.preview.as_mut() {
+            let right = d.right.as_ref().unwrap_or(&d.samples);
+            let m = (d.samples.len() - (*pos).min(d.samples.len())).min(n);
+            for k in 0..m {
+                out[2 * k] += d.samples[*pos + k] * 0.8;
+                out[2 * k + 1] += right[*pos + k] * 0.8;
+            }
+            *pos += m;
+            self.shared.preview_pos.store(*pos as u64, Relaxed);
+            done = *pos >= d.samples.len();
+        }
+        if done {
+            if let Some((d, _)) = self.preview.take() {
+                self.discard(Garbage::Preview(d));
             }
         }
         self.shared.seq.store(self.seq as u64, Relaxed);

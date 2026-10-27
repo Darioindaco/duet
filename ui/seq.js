@@ -406,6 +406,7 @@ function renderRackRows() {
     for (const key of rows) {
       const row = document.createElement("div");
       row.className = "srow";
+      row.dataset.key = key;
       row.innerHTML = `<span class="rname" title="Click to hear it">${esc(drums ? PAD_NAMES[key] || noteName(key) : "Steps (" + noteName(key) + ")")}</span>`;
       row.firstChild.onpointerdown = (e) => { e.preventDefault(); audition(t, key); };
       const cells = document.createElement("div");
@@ -444,6 +445,21 @@ function audition(t, key, vel = 100) {
   setTimeout(() => api.note("T" + t.slot, false, key), 220);
 }
 
+// A note held while you drag (like FL): when the pitch under the mouse
+// changes, the old note stops and the new one plays; it stops when you let go.
+const held = { slot: null, key: null };
+function holdNote(t, key, vel = 100) {
+  if (!t || t.slot == null || key < 0 || key > 127) return;
+  if (held.slot === t.slot && held.key === key) return;
+  releaseHeld();
+  api.note("T" + t.slot, true, key, vel);
+  held.slot = t.slot; held.key = key;
+}
+function releaseHeld() {
+  if (held.slot != null) api.note("T" + held.slot, false, held.key);
+  held.slot = held.key = null;
+}
+
 // ---------- the piano roll ----------
 function prChannel() { return channels().find((t) => t.id === seq.channel) || null; }
 
@@ -467,9 +483,18 @@ function prRender() {
     d.style.height = seq.rowH + "px";
     d.dataset.k = k;
     d.textContent = t && isDrums(t) ? PAD_NAMES[k] || "" : k % 12 === 0 ? noteName(k) : "";
-    d.onpointerdown = (e) => { e.preventDefault(); if (t) audition(t, k); };
     keys.append(d);
   }
+  // the keyboard: press a key to hear it, keep the button down and slide to play along the keys
+  keys.onpointerdown = (e) => {
+    if (!t || e.button !== 0) return;
+    e.preventDefault();
+    keys.setPointerCapture(e.pointerId);
+    const keyAt = (ev) => prKeyAt(ev.clientY - keys.getBoundingClientRect().top);
+    holdNote(t, keyAt(e));
+    keys.onpointermove = (ev) => holdNote(t, keyAt(ev));
+    keys.onpointerup = keys.onpointercancel = () => { keys.onpointermove = keys.onpointerup = keys.onpointercancel = null; releaseHeld(); };
+  };
   hereMarks();
   $("prSize").style.height = (hi - lo + 1) * seq.rowH + "px";
   $("prSize").style.width = Math.max(patLen(p) + bpb(), 8) * seq.ppb + "px";
@@ -662,7 +687,7 @@ function prDown(e) {
     const start = Math.max(0, Math.floor(pt.beat / (seq.snap || STEP)) * (seq.snap || STEP));
     const len = seq.lastLen || (drums ? STEP : 1);
     d = { mode: "new", ghost: { id: "ghost", pattern: p.id, track: t.id, start, len, key: pt.key, vel: 100 }, moved: true, res: {} };
-    audition(t, pt.key);
+    holdNote(t, pt.key);
     seq.sel.clear();
   } else {
     const copy = (e.ctrlKey || e.metaKey) && h.zone === "body";
@@ -670,7 +695,7 @@ function prDown(e) {
     if (!seq.sel.has(h.n.id)) { seq.sel.clear(); seq.sel.add(h.n.id); }
     const sel = patNotes(p.id, t.id).filter((n) => seq.sel.has(n.id));
     d = { mode: h.zone === "end" ? "len" : "move", copy, anchor: h.n, grab: pt.beat - h.n.start, key0: pt.key, sel, moved: false, res: {}, x0: e.clientX, y0: e.clientY };
-    if (d.mode === "move") audition(t, h.n.key, h.n.vel);
+    if (d.mode === "move") holdNote(t, h.n.key, h.n.vel);
   }
   seq.drag = d;
   const move = (ev) => {
@@ -681,8 +706,11 @@ function prDown(e) {
       seq.sel = new Set(d.keep);
       for (const n of patNotes(p.id, t.id)) if (n.key >= k0 && n.key <= k1 && n.start < b1 && n.start + n.len > b0) seq.sel.add(n.id);
     } else if (d.mode === "new") {
+      // sideways: longer; up and down: another pitch, which you hear
       d.ghost.len = Math.max(seq.snap || STEP, prSnap(q.beat, ev.altKey) - d.ghost.start) || d.ghost.len;
       if (q.beat <= d.ghost.start + (seq.snap || STEP)) d.ghost.len = seq.lastLen || (drums ? STEP : 1);
+      d.ghost.key = Math.max(0, Math.min(127, q.key));
+      holdNote(t, d.ghost.key);
     } else {
       if (!d.moved && Math.hypot(ev.clientX - d.x0, ev.clientY - d.y0) < 3) return;
       d.moved = true;
@@ -693,6 +721,7 @@ function prDown(e) {
         const db = Math.max(-Math.min(...d.sel.map((n) => n.start)), prSnap(q.beat - d.grab, ev.altKey || free) - d.anchor.start);
         const dk = q.key - d.key0;
         for (const n of d.sel) d.res[n.id] = { start: n.start + db, key: Math.max(0, Math.min(127, n.key + dk)) };
+        holdNote(t, d.res[d.anchor.id].key, d.anchor.vel); // hear the pitch it's moving to
       }
     }
     prDraw();
@@ -700,6 +729,7 @@ function prDown(e) {
   const up = () => {
     lanes.removeEventListener("pointermove", move);
     lanes.removeEventListener("pointerup", up);
+    releaseHeld();
     seq.drag = null;
     if (d.mode === "box") { /* the selection is already made */ }
     else if (d.mode === "new") {

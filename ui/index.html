@@ -443,12 +443,30 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
     <aside class="sidebar" id="sidebar">
       <div class="sb-inner card">
         <div class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="browser" title="Your sounds: drag them into the song">Browser</button>
           <button class="tab" role="tab" data-tab="connect"><span class="tabdot" id="connDot"></span>Connect</button>
           <button class="tab" role="tab" data-tab="sound"><span class="tabdot" id="soundDot"></span>Sound</button>
           <button class="sb-close" id="sbClose" title="Hide panel" aria-label="Hide panel">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
           </button>
         </div>
+
+        <section class="pane brpane" id="pane-browser" role="tabpanel" hidden>
+          <div class="brbar">
+            <input type="search" id="brSearch" placeholder="Search your sounds" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="brbar btns">
+            <button class="chip" id="brNewBin" title="A bin: your own collection of sounds from anywhere (bins can hold bins)">+ Bin</button>
+            <button class="chip" id="brImport" title="Copy sounds from your computer into My samples (or the folder you clicked)">Import…</button>
+            <button class="chip" id="brAddFolder" title="Show a folder from your computer here (your sample packs, where they are)">+ Folder on disk</button>
+          </div>
+          <div class="brtree" id="brTree"></div>
+          <div class="brsel" id="brSel" hidden>
+            <div class="brselt"><b id="brSelName"></b><span id="brSelMeta"></span></div>
+            <canvas id="brWave"></canvas>
+            <div class="brhint">Drag it into the playlist, onto a channel or a pad, or into the channel rack for a new channel. Right-click for more.</div>
+          </div>
+        </section>
 
         <section class="pane" id="pane-connect" role="tabpanel">
           <div class="status" id="connStatus"><span class="sdot"></span><div><b>Not connected</b><span>Swap codes with your partner below.</span></div></div>
@@ -649,6 +667,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="seq.js"></script>
 <script src="presence.js"></script>
 <script src="mixer.js"></script>
+<script src="browser.js"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -952,6 +971,7 @@ function setSidebar(open) {
 function setTab(tab) {
   ui.tab = tab;
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("on", t.dataset.tab === tab);
+  $("pane-browser").hidden = tab !== "browser";
   $("pane-connect").hidden = tab !== "connect";
   $("pane-sound").hidden = tab !== "sound";
   store.set("tab", tab);
@@ -1783,6 +1803,7 @@ async function boot(a) {
   songSetup();
   instSetup();
   seqSetup();
+  browserSetup();
   hereSetup();
   $("vstX").onclick = () => ($("vstm").hidden = true);
   $("vstm").onclick = (e) => e.target === $("vstm") && ($("vstm").hidden = true);

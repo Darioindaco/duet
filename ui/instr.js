@@ -16,8 +16,13 @@ const INST = {
       ["resonance", "Reso", (v) => Math.round(v * 100) + "%"], ["attack", "Attack", (v) => fmtSecs(0.001 * 2000 ** v)],
       ["release", "Release", (v) => fmtSecs(0.01 * 400 ** v)], ["detune", "Detune", (v) => Math.round(v * 12) + " ct"]] },
   vst: { name: "VST instrument", sub: "VST3", color: "#9fb4ff", knobs: [] },
+  sampler: { name: "Sampler", sub: "one sound, every pitch", color: "#ffb347",
+    knobs: [["level", "Level", (v) => Math.round(v * 100) + "%"], ["tune", "Tune", (v) => { const s = Math.round((v - 0.5) * 24); return (s > 0 ? "+" : "") + s + " st"; }],
+      ["attack", "Attack", (v) => fmtSecs(0.0005 + 0.5 * v * v)], ["release", "Release", (v) => fmtSecs(0.005 + 3 * v * v)],
+      ["root", "Root", (v) => noteName(60 + Math.round((v - 0.5) * 72))], ["oneshot", "One-shot", (v) => (v >= 0.5 ? "on" : "off")]] },
 };
-const INST_DEFAULTS = { drums: { level: 0.8, tune: 0.5, decay: 0.5 }, synth: { wave: 0.3, cutoff: 0.55, resonance: 0.25, attack: 0.05, release: 0.3, detune: 0.2 } };
+const INST_DEFAULTS = { drums: { level: 0.8, tune: 0.5, decay: 0.5 }, synth: { wave: 0.3, cutoff: 0.55, resonance: 0.25, attack: 0.05, release: 0.3, detune: 0.2 },
+  sampler: { level: 0.8, tune: 0.5, attack: 0, release: 0.15, root: 0.5, oneshot: 0 } };
 function fmtSecs(s) { return s < 1 ? Math.round(s * 1000) + " ms" : s.toFixed(1) + " s"; }
 
 // computer keyboard: one row of white keys (A S D F G H J K L ;), the black
@@ -205,6 +210,7 @@ function instPanel(t, inst) {
   p.append(body);
   if (inst.error) body.insertAdjacentHTML("beforeend", `<div class="mnote bad">${esc(inst.error)}</div>`);
   if (inst.kind === "drums") body.append(padGrid(t, inst));
+  if (inst.kind === "sampler") body.append(samplerBox(t, inst));
   if (inst.kind === "vst") {
     const open = document.createElement("button");
     open.className = "openwin";
@@ -231,6 +237,23 @@ function instPanel(t, inst) {
   return p;
 }
 
+// the sampler's sound: its name, a button to load one; drop one from the browser here
+function samplerBox(t, inst) {
+  const own = inst.pads?.[0];
+  const box = document.createElement("div");
+  box.className = "smpbox";
+  box.dataset.t = t;
+  box.innerHTML = `<b>${own ? esc(own.split(/[\\/]/).pop().replace(/\.wav$/i, "").replace(/^s-[0-9a-f]+$/, "Sample")) : "No sound yet"}</b>
+    <span>${own ? "Drag another one here from the browser" : "Drag one here from the browser, or"}</span><button class="mb">Load a sample…</button>`;
+  box.querySelector("button").onclick = async () => {
+    const path = await api.inst_pad_open();
+    if (!path) return;
+    const res = await api.inst_pad(t, 0, path);
+    if (res && res.error) toast(res.error, true); else await rackChanged(res);
+  };
+  return box;
+}
+
 function padGrid(t, inst) {
   const grid = document.createElement("div");
   grid.className = "pads";
@@ -238,6 +261,7 @@ function padGrid(t, inst) {
     const own = inst.pads?.[i];
     const pad = document.createElement("button");
     pad.className = "pad" + (own ? " own" : "");
+    pad.dataset.t = t; pad.dataset.pad = i; // (a sound from the browser can be dropped on it)
     pad.innerHTML = `<b>${esc(own ? own.split(/[\\/]/).pop().replace(/\.wav$/i, "") : name)}</b><span>${note}</span><i class="pmenu" title="Your own sound for this pad">⋯</i>`;
     pad.title = (own ? `${name} (note ${note}): ${own}` : `${name} (note ${note})`) + ". The higher you click, the harder it hits.";
     pad.onpointerdown = (e) => {

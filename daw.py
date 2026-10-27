@@ -51,7 +51,7 @@ FIELDS = {
     # the master); sends: {bus: level}
     "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "inst", "seq", "bus", "out", "sends", "del"},
     "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out", "del"},
-    "file": {"frames", "sr", "owner", "del"},
+    "file": {"frames", "sr", "owner", "name", "del"},
     "pattern": {"name", "len", "color", "del"},
     "note": {"pattern", "track", "start", "len", "key", "vel", "del"},
 }
@@ -467,9 +467,9 @@ class Daw:
                 if any(x.get("vst") for x in rack) and rack != self.p.live("track").get(tid, {}).get("rack"):
                     self.sent_rack[slot] = self._engine_rack(rack)
                     changes.append(["track", tid, {"rack": rack}])
-                inst = clean_inst(tracks[slot].get("inst"))
+                inst = self._song_inst(clean_inst(tracks[slot].get("inst")))
                 if inst and inst.get("vst") and inst != self.p.live("track").get(tid, {}).get("inst"):
-                    self.sent_inst[slot] = json.loads(json.dumps(inst))
+                    self.sent_inst[slot] = self._engine_inst(inst)
                     changes.append(["track", tid, {"inst": inst}])
             self._do(changes, undoable=False)
 
@@ -740,10 +740,10 @@ class Daw:
             if self.sent_rack.get(slot) != rack:
                 self._apply_rack(f"T{slot}", self.sent_rack.get(slot) or [], rack)
                 self.sent_rack[slot] = rack
-            inst = t.get("inst") or None
+            inst = self._engine_inst(t.get("inst"))
             if self.sent_inst.get(slot) != inst:
                 self._apply_inst(slot, self.sent_inst.get(slot), inst)
-                self.sent_inst[slot] = json.loads(json.dumps(inst))
+                self.sent_inst[slot] = inst
         # where each track goes: a bus (or the master), and its sends
         routes = [(-1, []) for _ in range(MAX_TRACKS)]
         for tid, slot in self.slots.items():
@@ -866,9 +866,139 @@ class Daw:
             tid = next((t for t, s in self.slots.items() if s == slot), None)
             if tid is None:
                 return
-            inst = clean_inst(self.e.mixer()["tracks"][slot]["inst"])
-            self.sent_inst[slot] = json.loads(json.dumps(inst))
+            inst = self._song_inst(clean_inst(self.e.mixer()["tracks"][slot]["inst"]))
+            self.sent_inst[slot] = self._engine_inst(inst)
             self._do([["track", tid, {"inst": inst}]])
+
+    # --- samples from the library in the song ----------------------------------------
+    # A sample is copied into the project like a take (named after what's in
+    # it, so the same sound twice is one file) and goes to the partner the same
+    # way. Drum pads and samplers point at it as "file:<name>".
+
+    def import_sample(self, path: str) -> str:
+        """The project's file for this WAV (copied in the first time); its key."""
+        src = Path(path)
+        h = hashlib.sha1()
+        with open(src, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        key = f"s-{h.hexdigest()[:14]}.wav"
+        with self.lock:
+            dst = self.p.audio_dir / key
+            if not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            if key not in self.loaded:
+                self._load(key, dst)
+            if key not in self.p.live("file"):
+                frames, sr, _ch, _peaks = type(self.e).wav_info(str(dst))
+                self._do([["file", key, {"frames": frames, "sr": sr, "owner": self.me, "name": src.stem[:80]}]], undoable=False)
+        return key
+
+    def sample_clip(self, path: str, track: str | None, start: float) -> dict:
+        """A library sample into the playlist as a clip at `start` (beats), on
+        `track`, or on a new track named after it."""
+        try:
+            key = self.import_sample(path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {"error": f"Couldn't use that sample: {exc}"}
+        with self.lock:
+            f = self.p.live("file")[key]
+            changes = []
+            tracks = self.p.live("track")
+            if not safe(track) or track not in tracks:
+                track = new_id("t")
+                order = max([float(t.get("order", 0)) for t in tracks.values() if not t.get("bus")] or [0]) + 1
+                changes.append(["track", track, {"name": Path(path).stem[:40], "order": order, "owner": self.me, "src": 0,
+                                                 "arm": False, "vol": 0.8, "pan": 0.0, "rack": []}])
+            changes.append(["clip", new_id("c"), {"track": track, "file": key, "start": max(0.0, float(start)), "offset": 0.0,
+                                                  "len": f["frames"] / f["sr"], "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}])
+            self._do(changes)
+            return {"ok": True, "track": track}
+
+    def sample_pad(self, track: str, pad: int, path: str | None) -> dict:
+        """A library sample onto a drum pad of a song channel (pad 0 of a
+        sampler: its sample). None: the built-in sound again."""
+        with self.lock:
+            t = self.p.live("track").get(track)
+            inst = json.loads(json.dumps((t or {}).get("inst") or {}))
+            if inst.get("kind") not in ("drums", "sampler"):
+                return {"error": "That channel has no pads."}
+        try:
+            ref = "file:" + self.import_sample(path) if path else None
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {"error": f"Couldn't use that sample: {exc}"}
+        with self.lock:
+            pads = list(inst.get("pads") or [])
+            n = 1 if inst["kind"] == "sampler" else 16
+            pads = (pads + [None] * n)[:n]
+            if not 0 <= int(pad) < n:
+                return {"error": "No such pad."}
+            pads[int(pad)] = ref
+            inst["pads"] = pads
+            self._do([["track", track, {"inst": inst}]])
+            return {"ok": True}
+
+    def sampler_channel(self, path: str) -> dict:
+        """A new channel that plays this sample at each note's pitch (FL's sampler)."""
+        try:
+            key = self.import_sample(path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {"error": f"Couldn't use that sample: {exc}"}
+        with self.lock:
+            tracks = self.p.live("track")
+            order = max([float(t.get("order", 0)) for t in tracks.values() if not t.get("bus")] or [0]) + 1
+            tid = new_id("t")
+            f = self.p.live("file")[key]
+            # a short sound (a hit) plays out whatever the note's length
+            short = f["frames"] < 2 * f["sr"]
+            inst = {"kind": "sampler", "level": 0.8, "tune": 0.5, "attack": 0.0, "release": 0.15, "root": 0.5,
+                    "oneshot": 1.0 if short else 0.0, "pads": ["file:" + key]}
+            self._do([["track", tid, {"name": Path(path).stem[:40], "order": order, "owner": self.me, "src": 0, "arm": False,
+                                      "vol": 0.8, "pan": 0.0, "rack": [], "inst": inst}]])
+            return {"ok": True, "track": tid}
+
+    def _engine_inst(self, inst: dict | None) -> dict | None:
+        """An instrument as the engine gets it: its pads' project files as paths
+        here (None while the file is still on its way)."""
+        if not inst:
+            return None
+        out = json.loads(json.dumps(inst))
+        if isinstance(out.get("pads"), list):
+            def here(ref):
+                if isinstance(ref, str) and ref.startswith("file:"):
+                    key = ref[5:]
+                    path = self.p.audio_dir / key
+                    return str(path) if safe(key) and path.exists() else None
+                return ref if isinstance(ref, str) else None
+            out["pads"] = [here(r) for r in out["pads"]]
+        return out
+
+    def _song_inst(self, inst: dict | None) -> dict | None:
+        """And back: a pad playing one of the project's files names it."""
+        if not inst:
+            return inst
+        if isinstance(inst.get("pads"), list):
+            audio = self.p.audio_dir.resolve()
+            def ref(path):
+                if isinstance(path, str):
+                    p = Path(path)
+                    try:
+                        if p.resolve().parent == audio and safe(p.name):
+                            return "file:" + p.name
+                    except OSError:
+                        pass
+                return path
+            inst = {**inst, "pads": [ref(x) for x in inst["pads"]]}
+        return inst
+
+    def _inst_files(self) -> set:
+        out = set()
+        for t in self.p.live("track").values():
+            for r in ((t.get("inst") or {}).get("pads") or []):
+                if isinstance(r, str) and r.startswith("file:"):
+                    out.add(r[5:])
+        return out
 
     def play_pattern(self, pid: str):
         """Play one pattern on its own, looped (just here, not for the partner)."""
@@ -1079,7 +1209,7 @@ class Daw:
         if now - self.last_files < 0.5:
             return
         self.last_files = now
-        needed = {c.get("file") for c in self.p.live("clip").values()}
+        needed = {c.get("file") for c in self.p.live("clip").values()} | self._inst_files()
         for name in sorted(n for n in needed if safe(n)):
             path = self.p.audio_dir / name
             if not path.exists() and (self.incoming / name).exists():

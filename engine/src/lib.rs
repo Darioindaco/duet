@@ -864,6 +864,7 @@ impl Engine {
             let mut c = self.inner.ctl.lock().unwrap();
             match mirror(&mut c, t).inst.as_ref() {
                 Some(i) if i.kind == instr::DRUMS && pad < i.pads.len() => i.clone(),
+                Some(i) if i.kind == instr::SAMPLER && pad == 0 => i.clone(), // the sampler's sample
                 _ => return Err(PyValueError::new_err("not a drum pad")),
             }
         };
@@ -876,6 +877,60 @@ impl Engine {
         mirror(&mut self.inner.ctl.lock().unwrap(), t).inst = Some(slot.cfg.clone());
         self.cmd(Cmd::Instrument(t, Some(slot)));
         Ok(())
+    }
+
+    /// Hear a sample (a WAV) from the library, just you, after the mix; None stops it.
+    #[pyo3(signature = (path=None))]
+    fn preview(&self, py: Python<'_>, path: Option<String>) -> PyResult<()> {
+        let sr = self.samplerate() as u32;
+        let data = match path {
+            None => None,
+            Some(p) => {
+                let a = py.allow_threads(|| daw::read_wav(std::path::Path::new(&p))).map_err(PyRuntimeError::new_err)?;
+                let right = a.right.as_ref().map(|r| daw::resample(r, a.sr, sr));
+                Some(Arc::new(daw::AudioData { sr, samples: daw::resample(&a.samples, a.sr, sr), right }))
+            }
+        };
+        self.cmd(Cmd::Preview(data));
+        Ok(())
+    }
+
+    /// (frames played, frames in all) of the preview; (0, 0) when none plays.
+    #[getter]
+    fn preview_state(&self) -> (u64, u64) {
+        let s = &self.inner.shared;
+        let (pos, len) = (s.preview_pos.load(Relaxed), s.preview_len.load(Relaxed));
+        if pos >= len { (0, 0) } else { (pos, len) }
+    }
+
+    /// What's in a WAV: (frames, sample rate, channels, waveform peaks: a signed
+    /// min/max byte pair per 512 frames).
+    #[staticmethod]
+    fn wav_info<'py>(py: Python<'py>, path: String) -> PyResult<(usize, u32, u8, Bound<'py, PyBytes>)> {
+        let a = py.allow_threads(|| daw::read_wav(std::path::Path::new(&path))).map_err(PyRuntimeError::new_err)?;
+        let peaks = daw::peaks(&a.to_mono());
+        Ok((a.samples.len(), a.sr, if a.right.is_some() { 2 } else { 1 }, PyBytes::new(py, &peaks)))
+    }
+
+    /// The built-in drum kit's sound for pad `pad` (0..15), as a 24-bit WAV.
+    #[staticmethod]
+    fn drum_sound_wav(pad: usize, path: String) -> PyResult<()> {
+        if pad >= instr::PADS.len() {
+            return Err(PyValueError::new_err("no such pad"));
+        }
+        let x = instr::drum_sound(pad, 48000.0);
+        let spec = hound::WavSpec { channels: 1, sample_rate: 48000, bits_per_sample: 24, sample_format: hound::SampleFormat::Int };
+        let mut w = hound::WavWriter::create(&path, spec).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        for v in x {
+            w.write_sample((v.clamp(-1.0, 1.0) * 8_388_607.0) as i32).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        }
+        w.finalize().map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// The built-in pads: [(GM note, name)].
+    #[staticmethod]
+    fn drum_pads() -> Vec<(u8, &'static str)> {
+        instr::PADS.to_vec()
     }
 
     /// Play a note on a strip's instrument (the computer keyboard, a pad click).
@@ -1131,6 +1186,9 @@ impl Engine {
                     e.set_item("kind", instr::KINDS[i.kind])?;
                     for (k, name) in instr::PARAMS[i.kind].iter().enumerate() {
                         e.set_item(*name, i.p[k])?;
+                    }
+                    if i.kind == instr::SAMPLER {
+                        e.set_item("pads", i.pads[..1].to_vec())?;
                     }
                     if i.kind == instr::DRUMS {
                         e.set_item("pads", i.pads.clone())?;

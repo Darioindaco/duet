@@ -353,3 +353,43 @@ header > .spacer { flex-shrink: 1; }
 .pedal.eqp .knob .kv { font-size: 10px; }
 .eqcv { display: block; width: 100%; height: 72px; border-radius: 8px; }
 .rack-head .latn { font-size: 11.5px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--faint); }
+
+/* the browser (browser.js): your sounds, on the left */
+.brpane:not([hidden]) { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.brbar { display: flex; flex-direction: row; gap: 6px; }
+.brbar input { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 9px; font-size: 12.5px; }
+.brbar.btns { flex-direction: row; flex-wrap: wrap; }
+.brbar.btns .chip { flex: none; white-space: nowrap; padding: 4px 10px; font-size: 11.5px; height: auto; width: auto; border-radius: 999px; }
+.brtree { flex: 1; min-height: 120px; overflow-y: auto; overflow-x: hidden; margin: 0 -6px; padding-bottom: 6px; }
+.brhead { font-size: 10.5px; font-weight: 750; text-transform: uppercase; letter-spacing: 0.1em; color: var(--faint); padding: 10px 6px 4px; }
+.britem { display: flex; align-items: center; gap: 6px; height: 24px; border-radius: 6px; font-size: 12.5px; cursor: pointer; white-space: nowrap; user-select: none; padding-right: 6px; }
+.britem span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.britem:hover { background: var(--panel-2); }
+.britem.sel { background: color-mix(in srgb, var(--me) 18%, transparent); color: #fff; }
+.britem.missing { opacity: 0.45; }
+.britem.brdrop { background: color-mix(in srgb, var(--me) 26%, transparent); box-shadow: inset 0 0 0 1px var(--me); }
+.britem .tw { width: 10px; flex: none; }
+.brfold .tw::before { content: "▸"; font-style: normal; font-size: 10px; color: var(--faint); display: inline-block; transition: transform 0.12s; }
+.brfold.open .tw::before { transform: rotate(90deg); }
+.britem .ic { width: 14px; height: 14px; flex: none; border-radius: 3px; font-style: normal; display: grid; place-items: center; font-size: 10px; }
+.britem .ic.dir::before, .britem .ic.folder::before, .britem .ic.mine::before { content: "▤"; color: #c9b37a; }
+.britem .ic.sounds::before { content: "◆"; color: var(--me); }
+.britem .ic.bin::before { content: "▣"; color: var(--bus, #c9a3ff); }
+.britem .ic.clock::before { content: "◷"; color: var(--muted); }
+.britem .ic.snd::before { content: "♪"; color: var(--partner); }
+.brfile { color: var(--text); }
+.brnone { font-size: 11.5px; color: var(--faint); padding: 2px 6px 6px 20px; line-height: 1.45; }
+.brnone b { color: var(--muted); }
+.brsel { border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.brselt { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.brselt b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brselt span { font-size: 11px; color: var(--muted); white-space: nowrap; }
+#brWave { display: block; width: 100%; height: 54px; border-radius: 8px; }
+.brhint { font-size: 11px; color: var(--faint); line-height: 1.4; }
+.brghost { position: fixed; z-index: 90; pointer-events: none; padding: 5px 10px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line-2); font-size: 12px; font-weight: 650; box-shadow: 0 8px 22px rgba(0,0,0,0.45); white-space: nowrap; }
+.brghost.ok { border-color: var(--me); }
+.brghost.ok::after { content: " → " attr(data-what); color: var(--me); }
+.pad.brdrop, .srow.brdrop, .chan.brdrop, .smpbox.brdrop, .chanrows.brdrop { box-shadow: inset 0 0 0 2px var(--me); }
+.smpbox { display: flex; flex-direction: column; gap: 4px; align-items: center; padding: 10px; border-radius: 10px; border: 1px dashed rgba(255,255,255,0.25); background: rgba(0,0,0,0.25); text-align: center; width: 100%; }
+.smpbox b { font-size: 13px; }
+.smpbox span { font-size: 11px; color: var(--muted); }

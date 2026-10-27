@@ -274,6 +274,30 @@ their side the channel glows and the keys light up in the piano roll. When you
 record, your notes end up in the song through you, so nothing is recorded twice.
 (A VST instrument needs to be installed on both computers.)
 
+## Browser: your sounds
+
+The **Browser** tab on the left (next to *Connect* and *Sound*) is your sample
+library, like FL Studio's:
+
+- **Folders:** *Duet sounds* (the built-in drum kit as WAV files), *My samples*
+  (yours: right-click to make folders, *Import…* copies sounds from your
+  computer in) and *+ Folder on disk* to show your own sample packs where they
+  are.
+- **Bins:** your own collections, as in Premiere or Avid: *+ Bin*, then drag
+  sounds onto it, from any folder. Bins can hold bins (right-click: *New bin
+  inside*). Taking a sound out of a bin leaves the file alone.
+- **Search** finds sounds in every folder by name; *Recent* has the ones you
+  used last.
+- **Click** a sound to hear it (just you) and see its waveform.
+- **Drag** it into the playlist (a clip on that track, or a new track below
+  the last one), onto a drum pad or a step row of a drum channel (that pad's
+  sound), onto a sampler channel (its sound), or onto empty space in the
+  channel rack: a new **sampler** channel that plays the sound at every pitch
+  (C4 plays it as it is; *One-shot* plays a hit to its end).
+
+A sound you use in the song is copied into the project, so your partner gets
+it too and hears the same.
+
 ## Instruments
 
 A strip of yours can play an **instrument** instead of an input: in the strip's
@@ -378,6 +402,8 @@ to it through lock-free queues and atomics.
 | `ui/seq.js`, `ui/seq.css` | The sequencer: patterns, channel rack with steps, piano roll with velocities |
 | `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |
 | `ui/presence.js` | Seeing each other work: the partner's pointer, selection, view and live notes; Follow |
+| `library.py` | The sample library: folders, bins, search, import |
+| `ui/browser.js` | The browser on the left: folders, bins, preview, drag sounds into the song |
 | `ui/mixer.js` | Buses, FL-style routing (arrows, cables, sends, live strips' sends too), effect windows, the sidechain picker, the EQ's curve |
 | `.github/workflows/build.yml` | Every push: engine tests + self-test on Linux. The Mac apps (built, tested, smoke-tested) for main, or on request: Actions → build → Run workflow |
 

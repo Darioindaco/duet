@@ -24,6 +24,7 @@ from pathlib import Path
 import webview
 
 from daw import Daw, file_name
+from library import Library
 from duet_engine import Engine
 from t3k import Tone3000
 from vstlib import VstLibrary, scan_main
@@ -51,6 +52,7 @@ class Api:
         if not settings.get("peer_id"):
             settings["peer_id"] = "u" + os.urandom(6).hex()
             save_settings(settings)
+        self._lib = Library(data_dir() / "Library", Engine)
         self._daw = Daw(engine, data_dir() / "Projects", settings["peer_id"], float(settings.get("rec_offset_ms", 0)))
         threading.Thread(target=self._discover, daemon=True).start()
 
@@ -417,13 +419,115 @@ class Api:
         self._inst_changed(target)
 
     def inst_pad(self, target, pad, path=None):
-        """Your own sample on a drum pad (None: the built-in sound again)."""
+        """Your own sample on a drum pad (None: the built-in sound again). On a
+        song channel it goes into the project, so your partner gets it too."""
+        if str(target).startswith("T"):
+            tid = next((t for t, s in self._daw.slots.items() if s == int(target[1:])), None)
+            res = self._daw.sample_pad(tid, int(pad), path) if tid else {"error": "No such track."}
+            if path and res.get("ok"):
+                self._lib.used(path)
+            return res if res.get("error") else self._engine.mixer()
         try:
             self._engine.inst_pad(target, int(pad), path)
         except Exception as exc:
             return {"error": str(exc)}
         self._inst_changed(target)
         return self._engine.mixer()
+
+    # --- the sample library (the browser) -------------------------------------------
+
+    def lib_roots(self):
+        return {"roots": self._lib.roots(), "bins": self._lib.bins(), "recent": self._lib.recent()}
+
+    def lib_list(self, path):
+        return self._lib.listing(path)
+
+    def lib_bin(self, bid):
+        return self._lib.bin_listing(bid)
+
+    def lib_search(self, query):
+        return self._lib.search(query)
+
+    def lib_add_folder(self):
+        """Pick a folder on disk (your sample packs) to show in the browser."""
+        if not self._window:
+            return None
+        picked = self._window.create_file_dialog(webview.FileDialog.FOLDER)
+        return self._lib.add_folder(picked[0]) if picked else None
+
+    def lib_remove_folder(self, path):
+        self._lib.remove_folder(path)
+        return self.lib_roots()
+
+    def lib_new_folder(self, parent, name):
+        return self._lib.new_folder(parent, name)
+
+    def lib_rename(self, path, name):
+        return self._lib.rename(path, name)
+
+    def lib_import(self, dest=None):
+        """Pick sounds on disk and copy them into My samples (or `dest`)."""
+        if not self._window:
+            return None
+        picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=True,
+                                                 file_types=("Audio (*.wav)", "All files (*.*)"))
+        return self._lib.import_files(list(picked or []), dest)
+
+    def lib_copy(self, path, dest):
+        """A sound into one of your folders (copied)."""
+        res = self._lib.import_files([str(path)], dest)
+        return res if res.get("files") else {"error": "Couldn't copy that there."}
+
+    def lib_new_bin(self, name, parent=None):
+        return self._lib.new_bin(name, parent)
+
+    def lib_rename_bin(self, bid, name):
+        self._lib.rename_bin(bid, name)
+
+    def lib_delete_bin(self, bid):
+        self._lib.delete_bin(bid)
+
+    def lib_move_bin(self, bid, parent=None):
+        self._lib.move_bin(bid, parent)
+
+    def lib_bin_add(self, bid, paths):
+        return self._lib.bin_add(bid, list(paths))
+
+    def lib_bin_remove(self, bid, path):
+        self._lib.bin_remove(bid, path)
+
+    def lib_info(self, path):
+        """Length, rate, channels and a waveform (base64 peaks) of a sound."""
+        try:
+            frames, sr, ch, peaks = Engine.wav_info(str(path))
+        except Exception as exc:
+            return {"error": str(exc)}
+        import base64
+        return {"frames": frames, "sr": sr, "channels": ch, "peaks": base64.b64encode(peaks).decode()}
+
+    def lib_preview(self, path=None):
+        try:
+            self._engine.preview(str(path) if path else None)
+            return {"ok": True}
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def lib_preview_state(self):
+        return self._engine.preview_state
+
+    def lib_to_song(self, path, track=None, start=0.0):
+        """A sound into the playlist: on `track` at `start` (beats), or a new track."""
+        res = self._daw.sample_clip(str(path), track, float(start))
+        if res.get("ok"):
+            self._lib.used(str(path))
+        return res
+
+    def lib_to_channel(self, path):
+        """A sound as a new sampler channel (plays it at each note's pitch)."""
+        res = self._daw.sampler_channel(str(path))
+        if res.get("ok"):
+            self._lib.used(str(path))
+        return res
 
     def inst_pad_open(self):
         """Native file picker for a sample; returns the path or None."""

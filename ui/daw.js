@@ -794,6 +794,15 @@ function drawOverlay() {
     ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
   }
   hereDrawSong(ctx, sx, sy, w, h);
+  // a sound being dragged in from the browser: where it would land
+  const g = song.dropGhost;
+  if (g) {
+    const x = g.beat * ppb - sx, y = g.row * ROW - sy + 2;
+    ctx.fillStyle = "rgba(255,149,72,0.18)";
+    ctx.fillRect(x, y, Math.max(40, 4 * ppb), ROW - 5);
+    ctx.fillStyle = song.colors.me;
+    ctx.fillRect(Math.round(x), y, 2, ROW - 5);
+  }
 }
 
 let lastFrameDraw = 0;
@@ -1317,6 +1326,47 @@ function demoPartner() {
   };
 }
 
+// the demo's sample library
+function demoLibrary() {
+  const pads = ["36 Kick", "37 Rim", "38 Snare", "39 Clap", "40 Snare 2", "41 Floor tom", "42 Closed hat", "43 Low tom", "44 Pedal hat", "45 Mid tom", "46 Open hat", "47 Tom", "48 High tom", "49 Crash", "50 Top tom", "51 Ride"];
+  const f = (dir, name) => ({ name, path: `${dir}/${name}.wav`, size: 90000 });
+  const dirs = {
+    "/lib/Duet sounds": { folders: [{ name: "Drum kit", path: "/lib/Duet sounds/Drum kit" }], files: [] },
+    "/lib/Duet sounds/Drum kit": { folders: [], files: pads.map((n) => f("/lib/Duet sounds/Drum kit", n)) },
+    "/lib/My samples": { folders: [{ name: "Vocal chops", path: "/lib/My samples/Vocal chops" }], files: [f("/lib/My samples", "808 long"), f("/lib/My samples", "Vinyl crackle")], writable: true },
+    "/lib/My samples/Vocal chops": { folders: [], files: ["Hey", "Oh yeah", "Chop 3"].map((n) => f("/lib/My samples/Vocal chops", n)), writable: true },
+    "/packs/Lo-fi kit": { folders: [], files: ["Kick dusty", "Snare vinyl", "Hat soft", "Rim knock"].map((n) => f("/packs/Lo-fi kit", n)), writable: true },
+  };
+  const bins = { bfav: { name: "Favourites", parent: null, items: ["/lib/Duet sounds/Drum kit/36 Kick.wav", "/packs/Lo-fi kit/Snare vinyl.wav"] },
+    bsub: { name: "Snares", parent: "bfav", items: ["/lib/Duet sounds/Drum kit/38 Snare.wav"] } };
+  let prev = null, prevAt = 0;
+  const binList = () => Object.entries(bins).map(([id, b], i) => ({ id, name: b.name, parent: b.parent, count: b.items.length, created: i }));
+  const fileOf = (p) => ({ name: p.split("/").pop().replace(/\.wav$/, ""), path: p, size: 1 });
+  return {
+    lib_roots: async () => ({ roots: [{ path: "/lib/Duet sounds", name: "Duet sounds", kind: "sounds", writable: false },
+      { path: "/lib/My samples", name: "My samples", kind: "mine", writable: true }, { path: "/packs/Lo-fi kit", name: "Lo-fi kit", kind: "folder", writable: true }],
+      bins: binList(), recent: [fileOf("/lib/My samples/808 long.wav")] }),
+    lib_list: async (p) => ({ path: p, writable: false, folders: [], files: [], ...(dirs[p] || { error: "That folder isn't there." }) }),
+    lib_bin: async (id) => ({ bin: id, name: bins[id].name, bins: binList().filter((b) => b.parent === id), files: bins[id].items.map(fileOf) }),
+    lib_search: async (q) => Object.values(dirs).flatMap((d) => d.files).filter((x) => x.name.toLowerCase().includes(q.toLowerCase())),
+    lib_info: async (p) => {
+      const n = 120, a = new Int8Array(2 * n);
+      for (let i = 0; i < n; i++) { const v = Math.round(120 * Math.exp(-i / 18) * (0.6 + 0.4 * Math.sin(i * 1.7))); a[2 * i] = -v; a[2 * i + 1] = v; }
+      let s = ""; for (const b of new Uint8Array(a.buffer)) s += String.fromCharCode(b);
+      return { frames: 48000 * 0.6, sr: 48000, channels: p.includes("808") ? 2 : 1, peaks: btoa(s) };
+    },
+    lib_preview: async (p) => { prev = p; prevAt = performance.now(); return { ok: true }; },
+    lib_preview_state: async () => { const t = (performance.now() - prevAt) / 600; return prev && t < 1 ? [t * 1000, 1000] : [0, 0]; },
+    lib_new_bin: async (name, parent) => { const id = "b" + Math.random().toString(36).slice(2, 8); bins[id] = { name, parent: parent || null, items: [] }; return { ok: true, id }; },
+    lib_bin_add: async (id, paths) => { for (const p of paths) if (!bins[id].items.includes(p)) bins[id].items.push(p); return { ok: true }; },
+    lib_bin_remove: async (id, p) => { bins[id].items = bins[id].items.filter((x) => x !== p); },
+    lib_rename_bin: async (id, n) => { bins[id].name = n; }, lib_delete_bin: async (id) => { delete bins[id]; }, lib_move_bin: async () => {},
+    lib_import: async () => null, lib_add_folder: async () => null, lib_remove_folder: async () => null,
+    lib_new_folder: async () => ({ error: "Not in the demo." }), lib_rename: async () => ({ error: "Not in the demo." }), lib_copy: async () => ({ ok: true }),
+    lib_to_song: async () => ({ ok: true }), lib_to_channel: async () => ({ ok: true }),
+  };
+}
+
 function demoSong() {
   const me = "me", partner = "partner";
   const peaks = (secs, seed, sr = 48000) => {
@@ -1408,6 +1458,7 @@ function demoSong() {
     },
     show_file: async () => {},
     daw_presence: async () => {},
+    ...demoLibrary(),
     status: () => ({ v, pos: playing ? pos + (performance.now() - t0) / 1000 / (60 / view.meta.bpm) : pos, playing, recording, recFrom,
       levels: playing ? { t1: 0.4, t2: 0.25 } : {}, xfer: { "take-k1.wav": [3_100_000, 4_600_000, "in"] }, notices: [],
       ...demoPartner() }),

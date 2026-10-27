@@ -571,6 +571,86 @@ def test_routing():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_library():
+    """The sample library: the built-in sounds as WAVs, folders you make, sounds
+    you import, search, nested bins; nothing outside its folders. And samples
+    into the song: a clip, a sampler channel, a drum pad; the partner gets the
+    files and plays the same."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+    from library import Library
+
+    root = Path(tempfile.mkdtemp(prefix="duet-lib-"))
+    try:
+        lib = Library(root / "Library", Engine)
+        kit = lib.listing(str(lib.sounds / "Drum kit"))
+        assert len(kit["files"]) == 16 and kit["files"][0]["name"] == "36 Kick", kit["files"][:2]
+        kick = kit["files"][0]["path"]
+        assert not kit["writable"], "the built-in sounds stay as they are"
+        f = lib.new_folder(str(lib.mine), "Drums/../x")
+        assert f["ok"] and Path(f["path"]).parent == lib.mine.resolve(), f
+        assert lib.new_folder(str(lib.sounds), "nope").get("error")
+        assert lib.listing(str(root)).get("error") and lib.listing("/").get("error"), "only the library's folders"
+        imp = lib.import_files([kick, kick], f["path"])
+        assert len(imp["files"]) == 2 and Path(imp["files"][1]).name == "36 Kick 2.wav", imp
+        assert [x["name"] for x in lib.search("kick")][:1] == ["36 Kick"]
+        b = lib.new_bin("Favourites")["id"]
+        sub = lib.new_bin("Snares", b)["id"]
+        lib.bin_add(sub, [kit["files"][2]["path"], "/etc/passwd"])
+        assert lib.bin_listing(b)["bins"][0]["id"] == sub and len(lib.bin_listing(sub)["files"]) == 1
+        lib.move_bin(b, sub)
+        assert lib.bins()[0]["parent"] is None, "a bin can't go into its own"
+        lib.delete_bin(b)
+        assert lib.bins() == [], "with the bins in it"
+        frames, sr, ch, peaks = Engine.wav_info(kick)
+        assert sr == 48000 and ch == 1 and frames > 10000 and len(peaks) > 10
+
+        # into the song
+        a, bb, _ = connect_pair()
+        da, db = Daw(a, root / "A", "alice"), Daw(bb, root / "B", "bob")
+        try:
+            wait_for(lambda: da.p.pid == db.p.pid and da.view()["shared"] and db.view()["shared"], what="one shared song")
+            res = da.sample_clip(kick, None, 4.0)
+            assert res["ok"], res
+            key = next(c["file"] for c in da.view()["clips"])
+            assert key.startswith("s-") and da.view()["files"][key]["name"] == "36 Kick"
+            wait_for(lambda: key in db.loaded, what="the sample on bob's side", timeout=15)
+            clip = db.view()["clips"][0]
+            assert clip["start"] == 4.0 and abs(clip["len"] - frames / sr) < 1e-6
+            assert da.import_sample(kick) == key, "the same sound twice is one file"
+            snare = kit["files"][2]["path"]
+            ch = da.sampler_channel(snare)["track"]
+            wait_for(lambda: ch in db.slots and (bb.mixer()["tracks"][db.slots[ch]]["inst"] or {}).get("pads", [None])[0],
+                     what="bob's sampler gets its sample", timeout=15)
+            got = bb.mixer()["tracks"][db.slots[ch]]["inst"]
+            assert got["kind"] == "sampler" and Path(got["pads"][0]).parent == db.p.audio_dir, got
+            assert db.view()["tracks"][-1]["inst"]["pads"][0].startswith("file:"), "the song names the file, not a path"
+            # a drum channel's pad
+            da.edit([["track", "dk", {"name": "Drums", "order": 9.0, "owner": "alice", "inst": {"kind": "drums", "level": 0.8}}]])
+            wait_for(lambda: "dk" in da.slots and "dk" in db.slots, what="the drum channel")
+            assert da.sample_pad("dk", 2, kit["files"][5]["path"])["ok"]
+            wait_for(lambda: (bb.mixer()["tracks"][db.slots["dk"]]["inst"]["pads"] or [None] * 3)[2], what="bob's pad", timeout=15)
+            # and it plays: bob's sampler, a note on its root
+            slot = db.slots[ch]
+            bb.note(f"T{slot}", True, 60, 120)
+            out = []
+            for _ in range(20):
+                out += bb.process([0.0] * N)
+            assert max(abs(v) for v in out) > 0.1, "the sampler plays its sample"
+            print("library: ok  (built-in sounds, folders, import, search, nested bins; a clip, a sampler channel and a pad "
+                  "reach the partner and play)")
+        finally:
+            da.close()
+            db.close()
+            a.close()
+            bb.close()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def hits_in(out, gap=12000):
     """Sample positions where something starts sounding (after `gap` samples of nothing new)."""
     env = np.abs(np.array(out))
@@ -1072,6 +1152,7 @@ if __name__ == "__main__":
     test_patterns()
     test_live()
     test_routing()
+    test_library()
     test_signals()
     test_mixer()
     test_partner_fx()
