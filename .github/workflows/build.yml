@@ -35,7 +35,7 @@ jobs:
         run: python selftest.py
 
   mac:
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[release]')
     strategy:
       fail-fast: false
       matrix:
@@ -87,10 +87,10 @@ jobs:
           name: Duet-mac-${{ matrix.arch }}
           path: Duet-mac-${{ matrix.arch }}.zip
 
-  # a manual run (Actions -> build -> Run workflow) or a version tag (v1.2.3)
-  # also publishes the Mac apps as a release, on the Releases page
+  # a manual run (Actions -> build -> Run workflow), a version tag (v1.2.3) or a
+  # commit with [release] in its message also publishes the Mac apps as a release, on the Releases page
   release:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[release]')
     needs: [test, mac]
     runs-on: ubuntu-latest
     permissions:
