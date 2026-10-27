@@ -327,6 +327,64 @@ fn find(id: &str) -> Option<(DeviceInfo, cpal::Device)> {
     Some((info?, dev))
 }
 
+/// Between the input callback and the output callback (separate threads on
+/// CoreAudio and WASAPI, maybe separate devices): how much input to keep in
+/// hand so every output callback finds what it needs, and when the input has
+/// really run ahead (two clocks drifting) rather than just arrived in a burst.
+///
+/// Input can come in bigger chunks than the output asks for (or the other way
+/// round): that's normal and must neither starve the output nor be thrown away
+/// as "too much". So the cushion grows a block each time the input runs dry
+/// (up to MAX_CUSHION), and input is only dropped when even the *lowest* level
+/// over about a second stayed above what's needed: real drift.
+struct Cushion {
+    block: usize,
+    /// blocks kept in hand on top of what a callback reads
+    extra: usize,
+    primed: bool,
+    /// the largest input chunk seen (samples)
+    max_in: usize,
+    win_min: usize,
+    win_n: usize,
+    win_len: usize,
+}
+
+const MAX_CUSHION: usize = 12;
+
+impl Cushion {
+    fn new(block: usize, extra: usize, win_len: usize) -> Self {
+        Cushion { block, extra, primed: false, max_in: 0, win_min: usize::MAX, win_n: 0, win_len: win_len.max(1) }
+    }
+    fn input_chunk(&mut self, n: usize) {
+        self.max_in = self.max_in.max(n);
+    }
+    /// May this callback read `need` samples, with the ring at `level`?
+    fn ready(&mut self, level: usize, need: usize) -> bool {
+        if !self.primed && level >= need + self.extra * self.block {
+            self.primed = true;
+        }
+        self.primed && level >= self.block
+    }
+    /// The input ran dry mid-callback: keep more in hand from now on.
+    fn ran_dry(&mut self) {
+        self.primed = false;
+        self.extra = (self.extra + 1).min(MAX_CUSHION);
+    }
+    /// After a callback, with the ring at `level`: how much input to drop
+    /// because it has piled up for good (0 nearly always).
+    fn trim(&mut self, level: usize, need: usize) -> usize {
+        self.win_min = self.win_min.min(level);
+        self.win_n += 1;
+        if self.win_n < self.win_len {
+            return 0;
+        }
+        let keep = (self.extra + 1) * self.block + self.max_in.max(need);
+        let low = std::mem::replace(&mut self.win_min, usize::MAX);
+        self.win_n = 0;
+        if low > keep + self.block { low - keep } else { 0 }
+    }
+}
+
 fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> {
     let (in_info, in_dev) = find(&a.input).ok_or("input device not found")?;
     // Same device for both directions (the normal ASIO case): reuse it rather
@@ -372,6 +430,7 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                 }
                 read_all(data, &mut samples);
                 shared_in.in_callbacks.fetch_add(1, Relaxed);
+                shared_in.in_chunk.fetch_max(samples.len() as u64, Relaxed);
                 let pk = samples.iter().fold(0f32, |a, v| a.max(v.abs()));
                 shared_in.raw_in_peak.set(pk.max(shared_in.raw_in_peak.get() * 0.95));
                 if ring_tx.slots() < samples.len() {
@@ -402,9 +461,11 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
     // first, so the input block is always there in time: no cushion, no added
     // delay. Elsewhere (CoreAudio, WASAPI, two devices) the callbacks run on
     // separate threads in no fixed order; one block of cushion absorbs that.
-    let cushion = if in_info.api == "ASIO" { 0 } else { 1 };
-    a.shared.cushion_frames.store((cushion * frame) as u64, Relaxed);
-    let mut primed = false;
+    let start = if in_info.api == "ASIO" { 0 } else { 1 };
+    a.shared.cushion_frames.store((start * frame) as u64, Relaxed);
+    a.shared.in_chunk.store(0, Relaxed);
+    // about a second of output callbacks per drift check
+    let mut cushion = Cushion::new(block, start, (a.samplerate as usize / frame.max(1)).max(8));
     let output = out_dev
         .build_output_stream_raw(
             &cfg(out_ch),
@@ -415,21 +476,12 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                     shared_out.lat_out_us.store(d.as_micros() as u64, Relaxed);
                 }
                 let frames = data.len() / out_channels;
-                // Separate input/output devices drift apart; never let the input
-                // ring build up more than the cushion plus one spare block.
-                let allowed = block * (1 + cushion) + frames * in_channels;
-                let spare = ring_rx.slots().saturating_sub(allowed);
-                if spare > block {
-                    let spare = spare - spare % in_channels; // stay frame-aligned
-                    if let Ok(chunk) = ring_rx.read_chunk(spare) {
-                        chunk.commit_all();
-                    }
-                }
-                if !primed && ring_rx.slots() >= block * (1 + cushion) {
-                    primed = true;
-                }
+                cushion.input_chunk(shared_out.in_chunk.load(Relaxed) as usize);
+                // what this callback reads: whole blocks, enough for its frames
+                let need = frames.saturating_sub(fifo.len()).div_ceil(frame.max(1)) * block;
+                let mut ok = cushion.ready(ring_rx.slots(), need);
                 while fifo.len() < frames {
-                    if primed && ring_rx.slots() >= block {
+                    if ok && ring_rx.slots() >= block {
                         let chunk = ring_rx.read_chunk(block).unwrap();
                         let (x, y) = chunk.as_slices();
                         in_blk[..x.len()].copy_from_slice(x);
@@ -437,10 +489,12 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                         chunk.commit_all();
                     } else {
                         in_blk.fill(0.0);
-                        if primed {
-                            // input fell behind: count it and rebuild the cushion
+                        if ok {
+                            // input fell behind: count it, keep more in hand from now on
                             shared_out.ring_empty.fetch_add(1, Relaxed);
-                            primed = false;
+                            cushion.ran_dry();
+                            shared_out.cushion_frames.store((cushion.extra * frame) as u64, Relaxed);
+                            ok = false;
                         }
                     }
                     match dsp.try_lock() {
@@ -450,6 +504,16 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                     fifo.extend(out_blk.chunks_exact(2).map(|p| (p[0], p[1])));
                 }
                 write_out(data, out_channels, fifo.drain(..frames));
+                // two devices' clocks drift apart: drop input only once it has
+                // really piled up (frame-aligned)
+                let drop = cushion.trim(ring_rx.slots(), need);
+                let drop = drop - drop % in_channels;
+                if drop > 0 {
+                    if let Ok(chunk) = ring_rx.read_chunk(drop) {
+                        chunk.commit_all();
+                        shared_out.in_dropped.fetch_add(1, Relaxed);
+                    }
+                }
             },
             move |e| {
                 eprintln!("output stream error: {e}");
@@ -468,4 +532,70 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
         in_channels: in_ch,
     };
     Ok((input, output, ok))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cushion;
+
+    /// Input and output at the same rate, in chunks of `inp` and `out` frames
+    /// (2 channels, blocks of 128): returns (times it ran dry, samples dropped).
+    fn run(inp: usize, out: usize, drift_ppm: f64, seconds: usize) -> (usize, usize) {
+        let (ch, frame) = (2, 128);
+        let block = frame * ch;
+        let mut c = Cushion::new(block, 1, 48000 / out);
+        let (mut level, mut fifo) = (0usize, 0usize);
+        let (mut dry, mut dropped) = (0, 0);
+        let total = 48000 * seconds;
+        let (mut t_in, mut t_out) = (0.0f64, 0usize);
+        let step_in = inp as f64 * (1.0 - drift_ppm * 1e-6); // its clock runs a bit fast (+) or slow (-)
+        while t_out < total {
+            // whichever callback is due next
+            if t_in <= t_out as f64 {
+                level += inp * ch;
+                c.input_chunk(inp * ch);
+                t_in += step_in;
+            } else {
+                let need = out.saturating_sub(fifo).div_ceil(frame) * block;
+                let mut ok = c.ready(level, need);
+                while fifo < out {
+                    if ok && level >= block {
+                        level -= block;
+                    } else if ok {
+                        dry += 1;
+                        c.ran_dry();
+                        ok = false;
+                    }
+                    fifo += frame;
+                }
+                fifo -= out;
+                let d = c.trim(level, need);
+                level -= d;
+                dropped += d;
+                t_out += out;
+            }
+        }
+        (dry, dropped)
+    }
+
+    #[test]
+    fn bursts_either_way_are_neither_starved_nor_thrown_away() {
+        for (inp, out) in [(128, 128), (512, 128), (128, 512), (480, 128), (128, 441)] {
+            let (dry, dropped) = run(inp, out, 0.0, 30);
+            assert!(dry <= 3, "in {inp} / out {out}: ran dry {dry} times");
+            assert_eq!(dropped, 0, "in {inp} / out {out}: nothing dropped at the same rate");
+        }
+    }
+
+    #[test]
+    fn drift_between_two_clocks_is_trimmed_rarely() {
+        // input 1000 ppm fast: 48 frames a second pile up; trimmed, but no more
+        // than what piled up (2 channels: 96 samples a second)
+        let (dry, dropped) = run(512, 128, 1000.0, 60);
+        assert!(dry <= 3, "{dry}");
+        assert!(dropped > 0 && dropped <= 96 * 60, "{dropped}");
+        // input slow: it runs dry now and then, not all the time
+        let (dry, dropped) = run(128, 128, -100.0, 60);
+        assert!(dry < 20 && dropped == 0, "{dry} {dropped}");
+    }
 }

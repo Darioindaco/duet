@@ -204,7 +204,10 @@ class Api:
             "levels": {"local": s["local_levels"], "remote": s["remote_levels"], "master": s["master_level"]},
             "remoteChannels": s["remote_channels"],
             "metro": {"beat": s["metro_beat"], "synced": s["metro_synced"]},
-            "stats": {k: s[k] for k in ("depth", "underruns", "lost", "late", "trimmed", "xruns")},
+            # glitches: the sound card's own (input overflow), the input running
+            # dry for the output, input dropped for two clocks drifting apart
+            "stats": {**{k: s[k] for k in ("depth", "underruns", "lost", "late", "trimmed")},
+                      "xruns": s["xruns"] + s["ring_empty"] + s["in_dropped"]},
             "cpu": s["cpu_us"],
             "dspLoad": s["cpu_us"] / (frame / sr * 1e6) if frame else 0.0,
             "warning": s["warning"],

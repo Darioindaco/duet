@@ -1588,6 +1588,7 @@ impl Engine {
         d.set_item("metro_synced", s.metro_synced.load(Relaxed))?;
         d.set_item("in_callbacks", s.in_callbacks.load(Relaxed))?;
         d.set_item("ring_empty", s.ring_empty.load(Relaxed))?;
+        d.set_item("in_dropped", s.in_dropped.load(Relaxed))?;
         let sr = s.samplerate.load(Relaxed).max(1) as f64;
         d.set_item("daw_pos", s.daw_pos.load(Relaxed) as f64 / sr)?;
         d.set_item("daw_playing", s.daw_playing.load(Relaxed))?;

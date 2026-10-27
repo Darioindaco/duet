@@ -160,6 +160,9 @@ pub struct Shared {
     pub raw_in_peak: AtomicF32,
     pub in_callbacks: AtomicU64,
     pub ring_empty: AtomicU64,
+    /// the largest input callback (samples), and input dropped for clock drift
+    pub in_chunk: AtomicU64,
+    pub in_dropped: AtomicU64,
     pub cushion_frames: AtomicU64,
     pub test_signal_loss: AtomicF32,
     pub streaming: std::sync::atomic::AtomicBool,
