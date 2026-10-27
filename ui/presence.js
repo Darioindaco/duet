@@ -73,8 +73,8 @@ function herePaint(them, notes) {
   hereMarks();
   seqWho();
   if (here.follow && them) goTo(them);
-  if (song.view && ui.view === "song") { drawOverlay(); drawRuler(); }
-  if (song.view && ui.view === "seq") prDraw();
+  if (song.view && winShown("song")) { drawOverlay(); drawRuler(); }
+  if (song.view && winShown("roll")) prDraw();
 }
 
 const trackName = (id) => song.view?.tracks.find((t) => t.id === id)?.name;
@@ -154,7 +154,8 @@ function goTo(t) {
 // ---------- drawing ----------
 // their pointer glides to where it is (updates come ~10 times a second)
 function hereFrame() {
-  const t = here.them, p = t && t.ptr && t.view === ui.view && (ui.view === "song" ? t.ptr.in === "song" : t.ptr.in === "roll") ? t.ptr : null;
+  // shown wherever that window is open (with windows, more than one can be)
+  const t = here.them, p = t && t.ptr && winShown(t.ptr.in === "song" ? "song" : "roll") ? t.ptr : null;
   if (!p) { if (here.disp) { here.disp = null; redrawThem(); } return; }
   const y = p.in === "song" ? trackRow(p.track) : p.key;
   const d = here.disp;
@@ -166,8 +167,8 @@ function hereFrame() {
   redrawThem();
 }
 function redrawThem() {
-  if (ui.view === "song" && !(song.st && song.st.playing)) drawOverlay(); // while playing it's drawn every frame anyway
-  if (ui.view === "seq") prDraw();
+  if (winShown("song") && !(song.st && song.st.playing)) drawOverlay(); // while playing it's drawn every frame anyway
+  if (winShown("roll")) prDraw();
 }
 
 // on the playlist overlay: their selection and their pointer

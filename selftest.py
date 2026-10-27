@@ -531,13 +531,38 @@ def test_routing():
         wait_for(lambda: (db.sent_routes or [])[db.slots["keys"]] == (-1, [(db.slots["grp"], 1.0)]), what="the send on bob's side")
         assert peak(b) > 1.6 * loud, "the dry sound plus the same again through the bus"
 
+        # a live strip sends to the bus too (just on bob's side): his synth, not
+        # monitored, is heard only through the bus while it's sent there
+        def live_peak(blocks=40):
+            out = []
+            for _ in range(blocks):
+                out += b.process(x)
+            return max(abs(v) for v in out[len(out) // 2:])
+
+        live_peak(240)  # the song's tails ring out first
+        b.strip_set("L0", "mon", 0)
+        b.inst_set("L0", "synth")
+        b.note("L0", True, 60, 110)
+        assert live_peak() < 1e-4, "not monitored, not sent: silent"
+        db.set_local("livesends", {"grp": 1.0}, "L0")
+        wait_for(lambda: db.sent_live.get("L0") == [(db.slots["grp"], 1.0)], what="the live send in bob's engine")
+        sent = live_peak()
+        assert sent > 0.02, f"bob's synth through the bus: {sent}"
+        db.set_local("livesends", {}, "L0")
+        wait_for(lambda: db.sent_live.get("L0") == [], what="the live send gone")
+        b.note("L0", False, 60)
+        assert live_peak(80) < 1e-3, "and silent again"
+        assert "L0" not in (da.view()["local"]["livesends"]), "a live send is bob's alone"
+        b.inst_set("L0", None)
+
         # the master rack: a limiter at -12 dB, 24 dB of gain into it
         da.edit([["meta", "meta", {"master_rack": [{"kind": "limiter", "on": True, "gain": 1.0, "ceiling": 0.0, "release": 0.4}]}]])
         wait_for(lambda: [s["kind"] for s in b.mixer()["master_strip"]["rack"]] == ["limiter"], what="the master rack on bob's side")
         assert b.state()["master_latency_ms"] > 1.0, "the limiter looks ahead"
         held = peak(b)
         assert 0.2 < held <= 10 ** (-12 / 20) + 1e-4, f"at the ceiling, not over: {held}"
-        print(f"routing: ok  (channel -> bus -> master, a send, the master limiter at its ceiling: {held:.3f}; all on the partner's side)")
+        print(f"routing: ok  (channel -> bus -> master, a send, a live strip's send ({sent:.2f}), "
+              f"the master limiter at its ceiling: {held:.3f}; all on the partner's side)")
     finally:
         da.close()
         db.close()

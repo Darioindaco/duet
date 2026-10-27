@@ -94,6 +94,10 @@ function setSongView(v) {
     song.trackSig = sig;
     api.mixer().then((m) => { ui.mixer = m; renderStrips(); if (ui.sel[0] === "T") renderRack(); });
   }
+  // which sends there are (not how loud: a send knob being turned stays put)
+  const routeSig = JSON.stringify([[...v.tracks, ...(v.buses || [])].map((t) => [t.id, Object.keys(t.sends || {}).sort()]),
+    Object.entries(v.local?.livesends || {}).map(([k, s]) => [k, Object.keys(s).sort()])]);
+  if (routeSig !== song.routeSig) { song.routeSig = routeSig; if (ui.mixer) refreshRouting(); }
   songRender();
   seqRender();
   paintConflict();
@@ -107,10 +111,6 @@ function songSetup() {
   song.ppb = store.get("songZoom", 22);
   song.snap = store.get("songSnap", 1);
   song.cv = $("lanesCv"); song.ov = $("lanesOv"); song.ruler = $("ruler");
-
-  // views
-  for (const b of $("viewSeg").querySelectorAll("button")) b.onclick = () => setMainView(b.dataset.v);
-  setMainView(store.get("view", "song"));
 
   // transport
   $("tpPlay").onclick = togglePlay;
@@ -128,12 +128,20 @@ function songSetup() {
     if (!m.loop && m.loop_end <= m.loop_start) Object.assign(ch, { loop_start: 0, loop_end: 4 * bpb() });
     songEdit([["meta", "meta", ch]]);
   };
-  const snapSel = $("snapSel");
-  for (const [label, v] of SNAPS) snapSel.append(new Option("Snap: " + label, v, false, v === song.snap));
-  snapSel.onchange = () => { song.snap = +snapSel.value; store.set("songSnap", song.snap); };
+  // snap: a small magnet button with a menu
+  const paintSnap = () => {
+    const label = (SNAPS.find(([, v]) => v === song.snap) || SNAPS[1])[0];
+    $("snapLbl").textContent = label;
+    $("snapBtn").title = `Snap to grid: ${label} (hold Alt to move freely)`;
+  };
+  paintSnap();
+  $("snapBtn").onclick = () => {
+    const r = $("snapBtn").getBoundingClientRect();
+    showCtx(SNAPS.map(([label, v]) => [(v === song.snap ? "✓  " : "     ") + "Snap: " + label, "", () => { song.snap = v; store.set("songSnap", v); paintSnap(); }]), r.left, r.bottom + 4);
+  };
   $("zoomIn").onclick = () => zoomBy(1.4);
   $("zoomOut").onclick = () => zoomBy(1 / 1.4);
-  $("addTrack").onclick = addTrack;
+  newTrackSetup();
 
   // lanes: scrolling, clicks, drags
   const lanes = $("lanes");
@@ -160,7 +168,6 @@ function songSetup() {
   document.addEventListener("pointerdown", (e) => { if (!e.target.closest("#ctxMenu")) hideCtx(); });
   $("undoBtn").onclick = undo;
   $("redoBtn").onclick = redo;
-  $("exportBtn").onclick = openExport;
   $("exGo").onclick = runExport;
   $("exX").onclick = () => ($("exportm").hidden = true);
   $("exportm").onclick = (e) => e.target === $("exportm") && ($("exportm").hidden = true);
@@ -181,24 +188,21 @@ function songSetup() {
   tick();
 }
 
+// the views are windows now (wm.js): open the one for v and bring it to the front
 function setMainView(v) {
-  ui.view = ["mixer", "seq"].includes(v) ? v : "song";
-  store.set("view", ui.view);
-  $("viewSong").hidden = ui.view !== "song";
-  $("viewSeq").hidden = ui.view !== "seq";
-  $("viewMixer").hidden = ui.view !== "mixer";
-  for (const b of $("viewSeg").querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === ui.view);
-  if (ui.view === "song") requestAnimationFrame(songDraw);
-  if (ui.view === "seq") requestAnimationFrame(seqRender);
-  if (typeof syncMidiTarget === "function") syncMidiTarget();
+  if (v === "seq") { wmOpen("rack", false); wmOpen("roll"); }
+  else wmOpen(v === "mixer" ? "mixer" : "song");
 }
 
 function songKeys(e) {
-  if (ui.view !== "song" || e.target.closest("input, select, textarea") || !$("vstm").hidden) return;
+  if (ui.view === "seq" || e.target.closest("input, select, textarea") || !$("vstm").hidden || !$("newTrackM").hidden) return;
   if (e.target.closest("button")) e.target.blur(); // or space would press that button too
+  // the transport is in the top bar, so it answers in the mixer too
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
   else if (e.key === "r" || e.key === "R") { e.preventDefault(); toggleRec(); }
   else if (e.key === "Home") { e.preventDefault(); api.daw_locate(0); }
+  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") { e.preventDefault(); openExport(); }
+  else if (ui.view !== "song") return;
   else if ((e.key === "Delete" || e.key === "Backspace") && song.sel.size) { e.preventDefault(); deleteSel(); }
   else if (e.key === "Escape") { hideCtx(); song.sel.clear(); songDraw(); }
   else if (e.ctrlKey || e.metaKey) {
@@ -404,12 +408,98 @@ function throttledEdit(kind, id, fields) {
 }
 const songEditThrottled = (tid, fields) => throttledEdit("track", tid, fields);
 
-function addTrack() {
+// ---------- new track: a software instrument, or a line in ----------
+// From the playlist an instrument gets a pattern right away, already in the song
+// at the playhead; from the sequencer (+ Channel) it joins the open pattern.
+const nt = { kind: null, opt: null, from: "song", named: false, arm: true };
+
+function newTrackSetup() {
+  $("addTrack").onclick = () => openNewTrack("song");
+  for (const b of document.querySelectorAll(".ntkind")) b.onclick = () => ntKind(b.dataset.k);
+  $("ntName").oninput = () => (nt.named = true);
+  $("ntArm").onclick = () => $("ntArm").classList.toggle("on", (nt.arm = !nt.arm));
+  $("ntGo").onclick = ntCreate;
+  $("ntX").onclick = () => ($("newTrackM").hidden = true);
+  $("newTrackM").onclick = (e) => e.target === $("newTrackM") && ($("newTrackM").hidden = true);
+  $("newTrackM").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && nt.opt) { e.preventDefault(); ntCreate(); }
+    if (e.key === "Escape") $("newTrackM").hidden = true;
+  });
+}
+
+function openNewTrack(from = "song", kind = null) {
+  nt.from = from; nt.named = false; nt.arm = true;
+  $("ntName").value = "";
+  $("newTrackM").hidden = false;
+  ntKind(kind);
+  if (!kind) document.querySelector(".ntkind").focus();
+}
+
+function ntKind(kind) {
+  nt.kind = kind; nt.opt = null;
+  for (const b of document.querySelectorAll(".ntkind")) b.classList.toggle("on", b.dataset.k === kind);
+  const box = $("ntOpts");
+  box.innerHTML = "";
+  $("ntFoot").hidden = !kind;
+  if (!kind) return;
+  const opts = kind === "inst"
+    ? [["drums", INST.drums.name, false], ["synth", INST.synth.name, false], ["vst", "VST instrument…", false]]
+    : audioSources();
+  for (const [val, label, partner] of opts) {
+    const b = document.createElement("button");
+    b.className = "ntopt" + (partner ? " partner" : "");
+    b.textContent = label; b.dataset.v = val;
+    b.onclick = () => ntPick(val, label);
+    b.ondblclick = ntCreate;
+    box.append(b);
+  }
+  ntPick(opts[0][0], opts[0][1]);
+  $("ntArm").hidden = kind !== "audio";
+  $("ntArm").classList.toggle("on", nt.arm);
+  $("ntGo").focus();
+}
+
+// your inputs, then your partner's channels
+function audioSources() {
+  const v = song.view, out = [];
+  for (const [i, s] of (ui.mixer?.local || []).entries()) if (s.active) out.push([`${v.me}|${i}`, `You · ${stripName("L" + i)}`, false]);
+  if (v.partner) for (const s of ui.partnerStrips || []) out.push([`${v.partner}|${s.i}`, `Partner · ${s.name}`, true]);
+  if (!out.length) out.push([`${v.me}|0`, "You · In 1", false]);
+  return out;
+}
+
+function ntPick(val, label) {
+  nt.opt = val;
+  for (const b of $("ntOpts").children) b.classList.toggle("on", b.dataset.v === val);
+  if (!nt.named) $("ntName").value = val === "vst" ? "" : uniqueTrackName(nt.kind === "audio" ? label.split(" · ").pop() : label);
+}
+
+function uniqueTrackName(base) {
+  const names = new Set(song.view.tracks.map((t) => t.name));
+  if (!names.has(base)) return base;
+  let n = 2;
+  while (names.has(`${base} ${n}`)) n++;
+  return `${base} ${n}`;
+}
+
+function ntCreate() {
+  if (!nt.opt) return;
+  const name = $("ntName").value.trim();
+  $("newTrackM").hidden = true;
+  if (nt.kind === "inst") {
+    if (nt.opt === "vst") {
+      ui.instFor = nt.from === "song" ? "new-track" : "new-channel";
+      ui.instName = name || null;
+      openVstBrowser("inst");
+      return;
+    }
+    createInstrumentTrack({ kind: nt.opt, ...(INST_DEFAULTS[nt.opt] || {}) }, name || uniqueTrackName(INST[nt.opt].name), nt.from === "song");
+    return;
+  }
   const v = song.view;
+  const [owner, s] = nt.opt.split("|");
   const order = v.tracks.reduce((a, t) => Math.max(a, t.order || 0), 0) + 1;
-  const firstInput = ui.mixer.local.findIndex((s) => s.active);
-  const n = v.tracks.length + 1;
-  songEdit([["track", newId("t"), { name: `Track ${n}`, order, owner: v.me, src: Math.max(0, firstInput), arm: false, vol: 0.8, pan: 0, rack: [] }]]);
+  songEdit([["track", newId("t"), { name: name || `Track ${v.tracks.length + 1}`, order, owner, src: +s, arm: nt.arm, vol: 0.8, pan: 0, rack: [] }]]);
   requestAnimationFrame(() => ($("lanes").scrollTop = 1e6));
 }
 
@@ -427,6 +517,10 @@ function openTrackFx(t) {
   if (t.slot == null) { toast("This song has more tracks than the mixer can hold (32)."); return; }
   setMainView("mixer");
   selectStrip("T" + t.slot);
+  const el = document.querySelector(`#strips .strip[data-t="T${t.slot}"]`);
+  el?.scrollIntoView({ inline: "center", block: "nearest" });
+  // a channel's "Sound": its instrument's window
+  if (t.inst && el) openFx("T" + t.slot, "inst", el.querySelector(".slot.inst"));
 }
 
 // ---------- drawing ----------
@@ -459,7 +553,7 @@ function gridStep() {
 }
 
 function songDraw() {
-  if (!song.view || ui.view !== "song") return;
+  if (!song.view || !winShown("song")) return;
   const lanes = $("lanes");
   const w = lanes.clientWidth, h = lanes.clientHeight;
   if (!w || !h) return;
@@ -706,11 +800,13 @@ let lastFrameDraw = 0;
 function songFrame() {
   seqFrame();
   hereFrame();
-  if (!song.view || ui.view !== "song") return;
+  if (!song.view) return;
   const st = song.st;
   const pos = curPos();
+  // the LCD is in the top bar: it runs in every view
   $("tpPos").textContent = fmtPos(pos);
   $("tpTime").textContent = fmtTime(pos);
+  if (!winShown("song")) return;
   if (st && st.playing) {
     const lanes = $("lanes"), x = pos * song.ppb - lanes.scrollLeft;
     if (song.follow && (x > lanes.clientWidth - 30 || x < 0)) {
@@ -1156,10 +1252,15 @@ async function toggleSongMenu() {
   menu.style.left = r.left + "px";
   menu.style.top = r.bottom + 8 + "px";
   const v = song.view;
-  menu.innerHTML = `<label class="lbl-sm" for="songRename">Song name</label>
+  menu.innerHTML = `<div class="macts">
+      <button id="mNew"><span>New song</span></button>
+      <button id="mExport"><span>Export as WAV…</span><kbd>Ctrl+E</kbd></button>
+      <button id="mSound"><span>Audio &amp; MIDI settings</span></button>
+      <button id="mConnect"><span>Connect to your partner</span></button>
+    </div>
+    <label class="lbl-sm" for="songRename">Song name</label>
     <input type="text" id="songRename" spellcheck="false" autocomplete="off">
     <div class="who${v.shared ? " on" : ""}"><i></i>${v.shared ? "Open on both sides: you're working on it together" : "Only on this computer. Connect, and your partner opens it too."}</div>
-    <button class="btn block" id="songNew">+ New song</button>
     <div class="lbl-sm" style="margin-top:12px">Your songs</div>
     <div class="songs" id="songList"><div class="lbl-sm">Loading…</div></div>`;
   menu.hidden = false;
@@ -1167,7 +1268,10 @@ async function toggleSongMenu() {
   inp.value = v.meta.name;
   inp.onchange = () => inp.value.trim() && songEdit([["meta", "meta", { name: inp.value.trim() }]]);
   inp.onkeydown = (e) => e.key === "Enter" && inp.blur();
-  $("songNew").onclick = async () => {
+  $("mExport").onclick = () => { menu.hidden = true; openExport(); };
+  $("mSound").onclick = () => { menu.hidden = true; openPanel("sound"); };
+  $("mConnect").onclick = () => { menu.hidden = true; openPanel("connect"); };
+  $("mNew").onclick = async () => {
     if (v.shared && !confirm("Start a new song? Your partner switches to it too (this one stays saved).")) return;
     menu.hidden = true;
     setSongView(await api.daw_new("New song"));
@@ -1283,7 +1387,8 @@ function demoSong() {
       v++; return copy();
     },
     daw_local: async (k, val, tid) => {
-      if (tid) view.tracks.find((t) => t.id === tid)[k] = val; else view.local[k] = val;
+      if (k === "livesends") view.local.livesends = { ...(view.local.livesends || {}), [tid]: val };
+      else if (tid) view.tracks.find((t) => t.id === tid)[k] = val; else view.local[k] = val;
       v++; return copy();
     },
     daw_play: async () => { pos = now(); playing = true; t0 = performance.now(); view.patternMode = null; },

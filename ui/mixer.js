@@ -54,8 +54,8 @@ function addBus(kind) {
   const rack = kind === "reverb" ? [{ kind: "reverb", on: true, ...FX_DEFAULTS.reverb, size: 0.75, mix: 0.5, dry: 0 }]
     : kind === "delay" ? [{ kind: "delay", on: true, ...FX_DEFAULTS.delay, feedback: 0.45, mix: 1, pingpong: 0.6, dry: 0 }] : [];
   songEdit([["track", newId("b"), { name, order, owner: v.me, bus: true, vol: 0.8, pan: 0, rack }]]);
-  toast(kind ? `${name} bus added: turn up its send on a track (the Routing box in the track's FX rack).`
-    : "Bus added: send tracks to it with Output in their Routing box.");
+  toast(kind ? `${name} bus added: select a track in the mixer, then click the arrow under "${name}" to send it there.`
+    : "Bus added: select a track, then click the arrow under the bus (right-click: route it there only).");
 }
 
 function deleteBus(b) {
@@ -73,48 +73,300 @@ function deleteBus(b) {
   songEdit(ch);
 }
 
-// the routing box at the start of a song track's (or bus's) rack
-function routingCard(track) {
-  const p = document.createElement("div");
-  p.className = "pedal routep";
-  p.style.setProperty("--c", BUS_COLOR);
-  p.innerHTML = `<div class="top"><div class="ttl"><div class="name">Routing</div><div class="sub">where it goes</div></div></div>`;
-  const row = document.createElement("label");
-  row.className = "rrow";
-  row.innerHTML = "<span>Output</span>";
-  const sel = document.createElement("select");
-  sel.append(new Option("Master", ""));
-  const ok = (b) => b.id !== track.id && !reaches(b.id, track.id);
-  for (const b of busesOf().filter(ok)) sel.append(new Option(b.name || "Bus", b.id, false, b.id === track.out));
-  if (!track.out || ![...sel.options].some((o) => o.value === track.out)) sel.value = "";
-  sel.title = "Where this track's sound goes after its fader: the master, or a bus (a group: e.g. all drums through one compressor)";
-  sel.onchange = () => songEdit([["track", track.id, { out: sel.value || null }]]);
-  row.append(sel);
-  p.append(row);
-  const targets = busesOf().filter((b) => ok(b) && b.id !== track.out);
-  if (targets.length) {
-    p.insertAdjacentHTML("beforeend", `<div class="rlbl">Sends <span>to buses, after the fader</span></div>`);
-    const knobs = document.createElement("div");
-    knobs.className = "knobs";
-    for (const b of targets) {
-      knobs.append(knob({
-        label: esc(b.name || "Bus"), value: (track.sends || {})[b.id] || 0, def: 0, color: BUS_COLOR,
-        fmt: (v) => (v < 0.001 ? "off" : fmtDb(v)),
-        onChange: (v) => {
-          const s = { ...(track.sends || {}) };
-          if (v < 0.001) delete s[b.id]; else s[b.id] = v;
-          track.sends = s;
-          throttledEdit("track", track.id, { sends: s });
-        },
-      }));
-    }
-    p.append(knobs);
-    if (targets.length > 4) p.insertAdjacentHTML("beforeend", `<div class="mnote">Up to 4 sends per track are heard.</div>`);
-  } else if (!track.bus) {
-    p.insertAdjacentHTML("beforeend", `<div class="mnote">Sends go to buses: add a reverb or delay bus with <b>+ Bus</b> in the mixer, then turn up its knob here.</div>`);
+// ---------- routing, FL style ----------
+// Select a channel, then click the arrow at the foot of a bus: the channel sends
+// some of its sound there (a cable shows it, a small knob above the arrow sets
+// how much). Right-click the arrow to route the channel there instead of the
+// master. The master's arrow takes it back to the master.
+const MAX_SENDS = 4;
+
+// The selected strip, when it can be routed: a song track or bus (an output and
+// sends, part of the song), or a live strip, yours or your partner's (sends
+// only, to the song's buses, just for your own ears: e.g. one shared reverb
+// while you jam).
+function routeSource() {
+  const t = ui.sel;
+  if (!t) return null;
+  if (t[0] === "T") {
+    const tr = trackBySlot(+t.slice(1));
+    return tr && { t, id: tr.id, name: tr.name || "Track", track: tr, sends: tr.sends || {},
+      out: tr.out && trackById(tr.out)?.bus ? tr.out : null };
   }
-  return p;
+  if (t[0] === "L" || (t[0] === "R" && +t.slice(1) < (ui.remoteCount || 0)))
+    return { t, id: t, name: stripName(t), live: true, sends: liveSends()[t] || {}, out: null };
+  return null;
 }
+const liveSends = () => song.view?.local?.livesends || {};
+
+// change a source's sends: the song for a track, this machine for a live strip
+function editSends(src, sends, drag = false) {
+  if (src.live) {
+    song.view.local.livesends = { ...liveSends(), [src.t]: sends };
+    clearTimeout(editSends.t);
+    const go = () => api.daw_local("livesends", sends, src.t).then((v) => !drag && setSongView(v));
+    if (drag) editSends.t = setTimeout(go, 80); else go();
+    return;
+  }
+  src.track.sends = sends;
+  if (drag) throttledEdit("track", src.id, { sends }); else songEdit([["track", src.id, { sends }]]);
+}
+
+// where a track's sound goes after its fader: the master or a bus (it can't
+// be a bus that feeds the track itself)
+function outButton(track) {
+  const b = document.createElement("button");
+  const out = track.out ? trackById(track.out) : null;
+  b.className = "sout" + (out?.bus ? " routed" : "");
+  b.textContent = "→ " + (out?.bus ? out.name || "Bus" : "Master");
+  b.title = "Where it goes after its fader: the master, or a bus (a group: all drums through one compressor)";
+  b.onclick = (e) => {
+    e.stopPropagation();
+    const r = b.getBoundingClientRect();
+    const ok = busesOf().filter((x) => x.id !== track.id && !reaches(x.id, track.id));
+    showCtx([["Master", "", () => setOut(track, null)], ...ok.map((x) => ["Bus: " + (x.name || "Bus"), "", () => setOut(track, x.id)])], r.left, r.bottom + 2);
+  };
+  return b;
+}
+
+function setOut(track, busId) {
+  const ch = { out: busId };
+  // a bus it now goes to isn't a send as well
+  if (busId && track.sends && busId in track.sends) { const s = { ...track.sends }; delete s[busId]; ch.sends = s; }
+  songEdit([["track", track.id, ch]]);
+}
+
+// a source's sends with one changed (level 0: gone); null when there's no room
+function withSend(src, busId, level) {
+  const s = { ...src.sends };
+  if (level > 0) {
+    if (!(busId in s) && Object.keys(s).length >= MAX_SENDS) { toast(`A channel has up to ${MAX_SENDS} sends.`); return null; }
+    s[busId] = level;
+  } else delete s[busId];
+  src.sends = s;
+  return s;
+}
+
+// the foot of a strip: the arrow that routes the selected channel here
+function routeFoot(t) {
+  const foot = document.createElement("div");
+  foot.className = "rfoot";
+  const src = routeSource();
+  const me = t === "M" ? null : t[0] === "T" ? trackBySlot(+t.slice(1)) : null;
+  if (!src || !(t === "M" || me?.bus) || me?.id === src.id) return foot;
+  if (src.live && !me) return foot; // a live strip always goes to the master
+  const loops = me && reaches(me.id, src.id);
+  const isOut = me ? src.out === me.id : !src.out;
+  const lvl = me ? src.sends[me.id] || 0 : 0;
+  const send = (level, drag) => { const s = withSend(src, me.id, level); if (s) editSends(src, s, drag); };
+  if (lvl > 0) {
+    foot.append(knob({ label: "Send", value: lvl, def: 1, fmt: (v) => fmtDb(v), color: BUS_COLOR, size: 26,
+      onChange: (v) => { send(Math.max(0.001, v), true); drawCables(); } }));
+  }
+  const a = document.createElement("button");
+  a.className = "rarrow" + (isOut ? " out" : lvl > 0 ? " send" : "");
+  a.disabled = !!loops;
+  a.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 20 3 8h18z"/></svg>`;
+  a.title = loops ? `${me.name} already feeds ${src.name}: that would loop`
+    : t === "M" ? (isOut ? `${src.name} goes to the master` : `Route ${src.name} back to the master`)
+    : isOut ? `${src.name} goes to ${me.name} (click: back to the master)`
+    : lvl > 0 ? `${src.name} sends to ${me.name} (click: stop sending)`
+    : `Send ${src.name} to ${me.name}` + (src.live ? " (just for your ears)" : " (right-click: route it there only)");
+  a.onclick = (e) => {
+    e.stopPropagation();
+    if (!me) { if (src.out) setOut(src.track, null); return; }
+    if (isOut) setOut(src.track, null);
+    else send(lvl > 0 ? 0 : 1);
+  };
+  a.oncontextmenu = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!me || loops) return;
+    const items = [["Send here", "", () => send(lvl || 1), isOut || lvl > 0]];
+    if (!src.live) items.push(["Route here only (not to the master)", "", () => setOut(src.track, me.id), isOut]);
+    items.push(["Remove", "", () => (isOut ? setOut(src.track, null) : send(0)), !isOut && !lvl]);
+    showCtx(items, e.clientX, e.clientY);
+  };
+  foot.append(a);
+  return foot;
+}
+
+// the selection changed: new arrows and cables, without rebuilding the strips
+function refreshRouting() {
+  for (const el of $("strips").querySelectorAll(".strip")) el.querySelector(".rfoot")?.replaceWith(routeFoot(el.dataset.t));
+  drawCables();
+}
+
+// cables from the selected channel to where it goes (and, for a bus, from what feeds it)
+function drawCables() {
+  const box = $("strips");
+  box.querySelector("svg.cables")?.remove();
+  const sel = routeSource();
+  if (!sel) return;
+  const at = (t, part) => {
+    const el = box.querySelector(`.strip[data-t="${t}"] ${part}`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
+    return [r.left + r.width / 2 - b.left + box.scrollLeft, r.bottom - b.top + box.scrollTop];
+  };
+  const lines = [];
+  // from a strip ("T3", "L0"...) to a bus, or (dest null) the master
+  const add = (from, dest, kind, lvl = 1) => {
+    const to = dest ? "T" + dest.slot : "M";
+    const p = at(from, ".rfoot"), q = at(to, ".rarrow") || at(to, ".rfoot");
+    if (p && q) lines.push({ p, q, kind, lvl, mine: from === sel.t });
+  };
+  const sendsFrom = (from, sends) => {
+    for (const [b, v] of Object.entries(sends || {})) if (v > 0 && trackById(b)?.bus) add(from, trackById(b), "send", v);
+  };
+  const wires = (t) => {
+    add("T" + t.slot, t.out && trackById(t.out)?.bus ? trackById(t.out) : null, "out");
+    sendsFrom("T" + t.slot, t.sends);
+  };
+  if (sel.live) sendsFrom(sel.t, sel.sends);
+  else wires(sel.track);
+  // a bus: also what feeds it, tracks and live strips
+  if (sel.track?.bus) {
+    for (const f of feedersOf(sel.track)) wires(f);
+    for (const [strip, sends] of Object.entries(liveSends())) if (sends[sel.id] > 0) add(strip, sel.track, "send", sends[sel.id]);
+  }
+  if (!lines.length) return;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("cables");
+  svg.setAttribute("width", box.scrollWidth);
+  svg.setAttribute("height", box.scrollHeight);
+  const NS = "http://www.w3.org/2000/svg";
+  for (const { p, q, kind, lvl, mine } of lines) {
+    // under the strips, from the channel's foot to the arrow it goes into
+    const y = Math.max(p[1], q[1]) + 16 + Math.min(8, Math.abs(q[0] - p[0]) / 60);
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", `M${p[0]} ${p[1] - 2}C${p[0]} ${y},${q[0]} ${y},${q[0]} ${q[1] - 2}`);
+    path.setAttribute("class", "cable " + kind + (mine ? "" : " other"));
+    path.style.opacity = kind === "send" ? 0.45 + 0.55 * Math.min(1, lvl) : 1;
+    const dot = document.createElementNS(NS, "circle");
+    dot.setAttribute("cx", p[0]); dot.setAttribute("cy", p[1] - 2); dot.setAttribute("r", 3.5);
+    dot.setAttribute("class", "cable-end " + kind);
+    svg.append(path, dot);
+  }
+  box.append(svg);
+}
+
+// right-click on an effect's slot
+function slotMenu(t, pos, x, y) {
+  const n = stripCfg(t).rack.length;
+  showCtx([
+    ["Open", "", () => openFx(t, pos)],
+    [stripCfg(t).rack[pos].on ? "Switch off" : "Switch on", "", () => fxToggle(t, pos)],
+    ["Move up", "", () => fxMove(t, pos, pos - 1), pos === 0],
+    ["Move down", "", () => fxMove(t, pos, pos + 1), pos >= n - 1],
+    ["Remove", "", () => fxRemove(t, pos)],
+  ], x, y);
+}
+
+async function fxMove(t, a, b) {
+  await rackChanged(await api.rack_move(t, a, b));
+  fxRekey(t, (p) => (p === a ? b : p === b ? a : p));
+}
+
+async function fxRemove(t, pos) {
+  fxw.get(fxKey(t, pos))?.el.remove();
+  fxw.delete(fxKey(t, pos));
+  fxRekey(t, (p) => (p > pos ? p - 1 : p));
+  await rackChanged(await api.rack_remove(t, pos));
+}
+
+// ---------- an effect's own window ----------
+// Like a plugin window in FL: click an effect on a strip and just that effect
+// opens, floating over everything, where you can drag it. Several can be open.
+const fxw = new Map();
+const fxKey = (t, pos) => t + "|" + pos;
+let fxZ = 1;
+
+function openFx(t, pos, anchor) {
+  const k = fxKey(t, pos);
+  const had = fxw.get(k);
+  if (had) { had.el.style.zIndex = ++fxZ; had.el.animate([{ transform: "scale(1.03)" }, { transform: "none" }], 160); return; }
+  const el = document.createElement("div");
+  el.className = "fxwin";
+  el.innerHTML = `<div class="fxbar"><button class="fxled" title="On / off"></button><span class="fxt"></span><span class="spacer"></span>
+    <button class="wb del" title="Remove this effect"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>
+    <button class="wb x" title="Close (Esc)"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div><div class="fxbody rack"></div>`;
+  const w = { el, t, pos };
+  fxw.set(k, w);
+  $("fxLayer").append(el);
+  el.style.zIndex = ++fxZ;
+  el.addEventListener("pointerdown", () => (el.style.zIndex = ++fxZ));
+  el.querySelector(".x").onclick = () => fxClose(w);
+  el.querySelector(".del").onclick = () => (w.pos === "inst" ? api.inst_set(w.t, null).then((r) => { rackChanged(r); syncMidiTarget(); sendNames(); }) : fxRemove(w.t, w.pos));
+  el.querySelector(".fxled").onclick = () => w.pos !== "inst" && fxToggle(w.t, w.pos);
+  fxDrag(el);
+  fxFill(w);
+  // next to the slot it came from, inside the window
+  const r = anchor?.getBoundingClientRect?.();
+  const n = fxw.size;
+  el.style.left = (r ? r.right + 10 : 160 + n * 24) + "px";
+  el.style.top = (r ? r.top - 30 : 140 + n * 24) + "px";
+  requestAnimationFrame(() => {
+    const b = el.getBoundingClientRect();
+    if (r && b.right > innerWidth - 8) el.style.left = Math.max(8, r.left - b.width - 10) + "px";
+    el.style.left = Math.max(8, Math.min(innerWidth - b.width - 8, parseFloat(el.style.left))) + "px";
+    el.style.top = Math.max(8, Math.min(innerHeight - b.height - 8, parseFloat(el.style.top))) + "px";
+  });
+}
+
+// (re)build a window's contents; it closes when its effect is gone
+function fxFill(w) {
+  const cfg = stripCfg(w.t);
+  const body = w.el.querySelector(".fxbody");
+  if (w.pos === "inst") {
+    if (!cfg?.inst) { fxClose(w); return; }
+    body.replaceChildren(instPanel(w.t, cfg.inst));
+    w.el.querySelector(".fxt").textContent = `${instLabel(cfg.inst)} · ${stripName(w.t)}`;
+    w.el.querySelector(".fxled").hidden = true;
+    w.el.querySelector(".del").title = "Remove the instrument (back to an input)";
+    return;
+  }
+  const slot = cfg?.rack[w.pos];
+  if (!slot) { fxClose(w); return; }
+  body.replaceChildren(pedalEl(w.t, w.pos, slot));
+  const meta = FXMETA[slot.kind];
+  const name = slot.kind === "vst" ? slot.vst?.name || "Plugin" : slot.kind === "nam" && slot.model_name ? `${meta.name}: ${slot.model_name}` : meta.name;
+  w.el.querySelector(".fxt").textContent = `${name} · ${stripName(w.t)}`;
+  w.el.style.setProperty("--fxc", meta.color);
+  w.el.querySelector(".fxled").classList.toggle("on", !!slot.on);
+}
+
+function fxRefresh() { for (const w of [...fxw.values()]) fxFill(w); }
+function fxBody(t, pos) { return fxw.get(fxKey(t, pos))?.el.querySelector(".fxbody"); }
+function fxClose(w) { w.el.remove(); fxw.delete(fxKey(w.t, w.pos)); }
+function fxCloseStrip(t) { for (const w of [...fxw.values()]) if (w.t === t) fxClose(w); }
+
+// effects moved within a strip: their windows go along
+function fxRekey(t, map) {
+  const ws = [...fxw.values()].filter((w) => w.t === t && w.pos !== "inst");
+  for (const w of ws) fxw.delete(fxKey(t, w.pos));
+  for (const w of ws) { w.pos = map(w.pos); fxw.set(fxKey(t, w.pos), w); }
+}
+
+function fxDrag(el) {
+  const bar = el.querySelector(".fxbar");
+  bar.onpointerdown = (e) => {
+    if (e.target.closest("button")) return;
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    const x0 = e.clientX - el.offsetLeft, y0 = e.clientY - el.offsetTop;
+    bar.onpointermove = (ev) => {
+      el.style.left = Math.max(-el.offsetWidth + 60, Math.min(innerWidth - 60, ev.clientX - x0)) + "px";
+      el.style.top = Math.max(0, Math.min(innerHeight - 30, ev.clientY - y0)) + "px";
+    };
+    bar.onpointerup = () => (bar.onpointermove = bar.onpointerup = null);
+  };
+}
+
+// Esc closes the effect window in front
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !fxw.size || document.querySelector(".modal:not([hidden])")) return;
+  const top = [...fxw.values()].sort((a, b) => +b.el.style.zIndex - +a.el.style.zIndex)[0];
+  fxClose(top);
+});
 
 // a compressor on a song track or the master can listen to another track
 function keySelect(t, pos, slot) {

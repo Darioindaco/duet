@@ -43,15 +43,18 @@ has two tabs:
    - **M / S**: mute / solo; the fader and pan knob set your own mix
    
    Your partner's channels appear after the divider, one strip each, and you
-   mix them however you like. **Safety buffer** (top right): on **Auto** it
-   finds the smallest buffer that doesn't crackle by itself: up a step on a
-   dropout, down a step after 10 s without trouble (on a quiet moment, so you
-   don't hear it). − / + set it by hand instead; each step is one block (about
-   2.7 ms at 128 / 48k).
-4. **FX rack:** click a strip to see its effects below. *+ Add effect* adds a
-   pedal, the arrows reorder, ✕ removes, the round footswitch turns it on/off.
-   Drag knobs up/down (Shift = fine, double-click = reset, scroll wheel works).
-   Presets replace the strip's whole rack. Effects on your strips are heard by
+   mix them however you like. **Safety buffer** (in the mixer's title bar): on
+   **Auto** it finds the smallest buffer that doesn't crackle by itself: up a
+   step on a dropout, down a step after 10 s without trouble (on a quiet moment,
+   so you don't hear it). − / + set it by hand instead; each step is one block
+   (about 2.7 ms at 128 / 48k).
+4. **Effects:** a strip's effects are slots on the strip, like in Logic or FL.
+   Click one and just that effect opens in a small window of its own (drag it by
+   its title; several can be open; *Esc* closes the one in front). The dot on a
+   slot switches it on/off; right-click a slot to move it up or down or remove
+   it; **+** adds an effect, a VST3 plugin or a preset (which replaces the
+   strip's effects). Drag knobs up/down (Shift = fine, double-click = reset,
+   scroll wheel works). Effects on your strips are heard by
    your partner; effects on their strips only change what you hear (e.g. some
    reverb on their vocals). The effects: **EQ** (low and high cut, low and high
    shelf, a mid band, with its curve drawn), **Compressor** (attack, release, and
@@ -78,22 +81,42 @@ has two tabs:
    delay. (Instruments are under *Instruments*, below.) The first scan takes
    about half a minute; after that it's instant. A plugin that hangs or shows a
    license dialog while being scanned is skipped, not fatal.
-7. **Metronome** (next to *Mixer*): on/off, tempo (type it, −/+, or *Tap*) and
+7. **Metronome** (*Jam* in the top bar, for playing live; its tempo is its own,
+   apart from the song's): on/off, tempo (type it, −/+, or *Tap*) and
    beats per bar are shared with your partner; the click volume is just yours
    and the click is never sent. Whoever starts it or changes the tempo leads;
    the other one's click is lined up with the leader's playing *as it arrives*,
    so you play along to what you hear. Tempo-synced plugins follow it too.
 
+## The workspace
+
+Like FL Studio, everything is a window you arrange yourself: the **Playlist**
+(F5), the **Channel rack** (F6), the **Piano roll** (F7) and the **Mixer** (F9),
+with each effect in a small window of its own. The buttons in the top bar open a
+window, bring it to the front, or (already in front) close it.
+
+- **Move** a window by its title bar; **size** it from any edge or corner. Edges
+  stick to the workspace's edges and to the other windows.
+- **Snap:** drag a window against an edge of the workspace and let go: it fills
+  that half (a corner: that quarter; the top: all of it). Double-click the title
+  to fill the workspace, and again to go back.
+- **Layouts:** the button next to the window buttons has ready-made layouts
+  (*Compose*, *Arrange*, *Mix*, *Mixer on the right*, *Piano roll big*) and
+  *Save this layout…* for your own. The layout you have is kept for next time,
+  and it scales along when the app's window changes size.
+
 ## Recording a song together
 
-The **Playlist** (top left, next to *Mixer*) is a timeline you both work in at
+The **Playlist** is a timeline you both work in at
 the same time, like a shared document: the song is open on both computers and
 every change (a new track, a moved clip, the tempo) shows up on the other side
 right away. The green dot on the song name means you're in the same song.
 
-1. **Tracks:** *+ Track* adds one. Under its name you pick **who plays on it and
-   from which input**: *You · Guitar* or *Partner · Vocals*. Orange tracks are
-   yours, teal ones your partner's.
+1. **Tracks:** *+ Track* asks what goes on it. **Audio · line in**: pick **who
+   plays on it and from which input** (*You · Guitar* or *Partner · Vocals*);
+   it's armed right away. **Software instrument**: a drum kit, the synth or a VST,
+   with a pattern for it already in the song at the playhead, and the sequencer
+   open to write in. Orange tracks are yours, teal ones your partner's.
 2. **Arm** the tracks you want to record (the red dot). Arm yours and theirs at
    once to record both of you in one go.
 3. **Record** (the red button, or *R*). With *1 bar count-in* on you get a bar
@@ -127,14 +150,14 @@ Click in the ruler to move the playhead, drag in the ruler to mark a loop.
 *Space* plays and stops, *R* records, *Ctrl + scroll* zooms. *Click* gives you
 a metronome while the song plays (just for you).
 
-**Export** (top right of the playlist) saves the song as a 24-bit WAV: just the
+**Export** (the song menu top left, or *Ctrl+E*) saves the song as a 24-bit WAV: just the
 mix, or the mix plus every track on its own (stems, e.g. to mix it further in
 another program), the whole song or just the loop. It renders faster than real
 time and the sound keeps running meanwhile. What you hear is what you get: the
 faders, pans, effects, mute and solo as you have them.
 
 Each track also has a strip in the **Mixer** (under *Song*) with volume, pan
-and its own FX rack, NAM amps and VST3 plugins included; *FX* on a track header
+and its own effects, NAM amps and VST3 plugins included; *FX* on a track header
 takes you there. Volume, pan and effects are part of the song (you both hear
 them); mute and solo are just for you. A VST on a song track needs that plugin
 on both computers (without it, that slot lets the sound through and says so).
@@ -148,17 +171,23 @@ hear it, either of you can change it, and the export sounds exactly like it.
   A bus is a mixer track that other tracks feed: one shared room for every
   track that sends to it, or a group (all drums through one compressor, one
   fader for all of them).
-- **Routing:** a song track's FX rack starts with a **Routing** box. *Output*
-  sends the track to a bus instead of the master (the strip then says
-  *→ Drums*); the knobs below are **sends**: some of the track to a bus, after
-  its fader, on top of its own sound. Up to four per track. A bus can go to
-  another bus, as long as it doesn't loop back.
+- **Routing, like FL Studio:** click a channel in the mixer, then the **arrow**
+  at the foot of a bus: the channel **sends** some of its sound there, after its
+  fader, on top of its own (a dashed cable shows it, and a small knob above the
+  arrow sets how much). Click the arrow again to stop. Right-click it, *Route
+  here only*, to send the whole channel to the bus instead of the master (an
+  orange cable; the channel's **→ Master** button picks its output too). Up to
+  four sends per channel. A bus can go to another bus, as long as it doesn't
+  loop back. Select a bus to see everything that feeds it.
+- **Live channels** (yours and your partner's) can send to a bus too: one shared
+  reverb while you jam. That part is just for your own ears, kept with the song
+  on your computer; your partner hears you as you send it.
 - **Sidechain:** a compressor on a song track or the master can listen to
   another track instead of its own sound (*Sidechain:* under its knobs): the
   kick pushes the bass down.
-- **Master FX:** click the *Master* strip: its rack shapes the whole song (an EQ
-  and a limiter at the end make it fuller and louder). It's on what you hear
-  live too.
+- **Master FX:** the *Master* strip's effects shape the whole song (an EQ and a
+  limiter at the end make it fuller and louder). They're on what you hear live
+  too.
 - **Delay compensation:** plugins that delay the sound (the limiter's
   look-ahead, many VSTs) don't put a track behind the beat: the song is read
   that much earlier, also through buses with slow plugins on them. The rack's
@@ -176,19 +205,36 @@ the other one stays saved.
 The **Sequencer** tab works like FL Studio's channel rack and piano roll, in
 the shared song (your partner sees every note you place, and you theirs).
 
-- **Channels** are the song's instruments: *+ Channel* → Drum kit, Synth or a
-  VST instrument. A channel is also a track in the playlist and a strip in the
-  mixer (*Sound* opens its knobs, pads and effects there).
+- **Channels** are the song's instruments: *+ Track → Software instrument* in the
+  playlist, or *+ Channel* here (it joins the open pattern). A channel is also a
+  track in the playlist and a strip in the mixer (*Sound* opens its knobs, pads
+  and effects there).
 - **Patterns** hold notes for any number of channels. Pick one at the top (or
   *+ New pattern*), set its length (1–8 bars); *⋯* renames, copies, clears or
   deletes it.
 - **Steps:** every channel has a row of 16th-note steps per bar; a drum kit has a
   row per pad (*All pads* shows all 16). Click a step to switch it on or off.
-- **Piano roll** (below) for the selected channel: click to draw a note, drag to
-  move it (up/down changes the pitch), drag its right end to make it longer,
-  right-click to delete. Notes snap to the grid (*Snap*, or hold *Alt*). The bars
-  underneath are the velocities: drag them up or down. Click a key on the left to
-  hear it. *Ctrl+A*, *Delete* and *Ctrl+Z* work here too.
+- **Piano roll** (below; drag the bar above it for more or less room) for the
+  selected channel: click to draw a note, drag to move it (up/down changes the
+  pitch), drag its right end to make it longer. Notes snap to the grid (*Snap*,
+  or hold *Alt*). The bars underneath are the velocities: drag them up or down
+  (or *Alt + scroll* on a note). Click a key on the left to hear it. The other
+  channels' notes show faintly behind, to write against.
+
+  | | |
+  |---|---|
+  | Erase | right-click, or hold the right button and drag over notes |
+  | Select | *Shift* (or *Ctrl*) + drag a box on empty space; *Shift*-click a note; *Ctrl+A* |
+  | Copy while moving | *Ctrl* + drag a note |
+  | Copy / cut / paste | *Ctrl+C* / *Ctrl+X* / *Ctrl+V* (pastes at the mouse) |
+  | Duplicate | *Ctrl+B* puts a copy right after the selection |
+  | Quantize | *Ctrl+Q*, with a bar to pick the grid (triplets too), the strength and whether the ends line up |
+  | Humanize | *Ctrl+H* loosens the timing and velocity a little |
+  | Legato | *Ctrl+L*: every note lasts until the next one |
+  | Move | arrows: a semitone (*Shift* / *Ctrl*: an octave), a grid step left/right |
+  | Delete, undo | *Delete*, *Ctrl+Z* / *Ctrl+Y* |
+
+  *Ctrl+Q*, *H* and *L* work on the selection, or on all of the channel's notes.
 - **▶** plays the pattern on its own, looped (*space*), while you work on it.
 - **Into the song:** *+ Into the song* puts the pattern in the playlist at the
   playhead, or double-click an empty spot in the playlist. A pattern block plays
@@ -232,7 +278,7 @@ record, your notes end up in the song through you, so nothing is recorded twice.
 
 A strip of yours can play an **instrument** instead of an input: in the strip's
 input menu (where it says *In 1*) pick **Drum kit**, **Synth** or **VST
-instrument…**. Your partner hears it like any other channel, its FX rack works
+instrument…**. Your partner hears it like any other channel, its effects work
 as usual, and a song track set to that strip records it.
 
 - **Drum kit** (built in): 16 pads on the General MIDI drum notes (36–51: kick,
@@ -327,11 +373,12 @@ to it through lock-free queues and atomics.
 | `daw.py` | The shared song: a last-writer-wins document synced with the partner, recording, the engine's timeline |
 | `t3k.py` | TONE3000: OAuth/PKCE tone picker over a loopback redirect, model download, local library |
 | `ui/index.html` | The interface, incl. the WebRTC video call |
+| `ui/wm.js` | The workspace: windows that move, size and snap, layouts |
 | `ui/daw.js`, `ui/daw.css` | The playlist: transport, track headers, timeline with waveforms, song menu |
 | `ui/seq.js`, `ui/seq.css` | The sequencer: patterns, channel rack with steps, piano roll with velocities |
 | `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |
 | `ui/presence.js` | Seeing each other work: the partner's pointer, selection, view and live notes; Follow |
-| `ui/mixer.js` | Buses, routing and sends, the sidechain picker, the EQ's curve |
+| `ui/mixer.js` | Buses, FL-style routing (arrows, cables, sends, live strips' sends too), effect windows, the sidechain picker, the EQ's curve |
 | `.github/workflows/build.yml` | Every push: engine tests + self-test on Linux. The Mac apps (built, tested, smoke-tested) for main, or on request: Actions → build → Run workflow |
 
 Live audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.
