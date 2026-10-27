@@ -35,7 +35,7 @@ jobs:
         run: python selftest.py
 
   mac:
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -87,10 +87,10 @@ jobs:
           name: Duet-mac-${{ matrix.arch }}
           path: Duet-mac-${{ matrix.arch }}.zip
 
-  # a manual run (Actions -> build -> Run workflow) also publishes the Mac apps
-  # as a release, so they can be downloaded from the Releases page
+  # a manual run (Actions -> build -> Run workflow) or a version tag (v1.2.3)
+  # also publishes the Mac apps as a release, on the Releases page
   release:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     needs: [test, mac]
     runs-on: ubuntu-latest
     permissions:
@@ -104,7 +104,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="build-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; else tag="build-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"; fi
           gh release create "$tag" dist/*.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Duet $(date -u +%Y-%m-%d) (${GITHUB_REF_NAME})" \
+            --title "Duet ${tag}" \
             --notes "Mac builds of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Apple Silicon (M1 and newer): Duet-mac-apple-silicon.zip; older Intel Macs: Duet-mac-intel.zip. Unsigned: the first time, right-click the app -> Open (or run: xattr -cr Duet.app)."
