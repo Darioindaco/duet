@@ -200,6 +200,29 @@ start a new one, or open an older one (your partner switches along). If you
 both had a different song open when you connected, Duet asks which one to use;
 the other one stays saved.
 
+## Automation
+
+A knob that moves by itself while the song plays: a filter opening up, a
+reverb growing into the chorus, a fade-out. Each automation lane is a row in
+the playlist, right under the track it moves.
+
+- **Make one:** right-click any knob or fader of a song track or the master
+  (in the mixer, an effect's window, an instrument's window) and choose
+  *Automate*. Or right-click a track's header, or empty space in the playlist,
+  for everything on that track (volume, pan, every effect knob, the
+  instrument's knobs). A new lane starts flat, at the value the knob has now.
+- **Draw it:** click to add a point, drag a point to move it (it snaps to the
+  grid; hold Alt to place it freely), Alt-click or right-click to take one away.
+  Points are joined by straight lines; before the first and after the last the
+  value stays where it is. Two points on the same beat make a jump.
+- **What it moves** can be changed with the menu in the lane's header (another
+  knob on the same track). If the effect it moves is taken out of the rack, the
+  lane goes grey and says so; put the effect back and it works again (an effect
+  moved to another place in the rack is followed).
+- While a lane is there it decides: the knob's own setting comes back when the
+  lane is deleted. It works stopped too (the sound is the one at the
+  playhead), on your partner's side (it's part of the song), and in an export.
+
 ## Sequencer: patterns, channel rack, piano roll
 
 The **Sequencer** tab works like FL Studio's channel rack and piano roll, in
@@ -403,6 +426,7 @@ to it through lock-free queues and atomics.
 | `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |
 | `ui/presence.js` | Seeing each other work: the partner's pointer, selection, view and live notes; Follow |
 | `library.py` | The sample library: folders, bins, search, import |
+| `ui/auto.js` | Automation lanes in the playlist: drawing them, *Automate* on knobs and faders |
 | `ui/browser.js` | The browser on the left: folders, bins, preview, drag sounds into the song |
 | `ui/mixer.js` | Buses, FL-style routing (arrows, cables, sends, live strips' sends too), effect windows, the sidechain picker, the EQ's curve |
 | `.github/workflows/build.yml` | Every push: engine tests + self-test on Linux. The Mac apps (built, tested, smoke-tested) for main, or on request: Actions → build → Run workflow |

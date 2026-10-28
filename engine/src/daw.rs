@@ -19,7 +19,7 @@ use std::time::Duration;
 use crate::dsp::StripSettings;
 use crate::fx::{Rack, Slot, SlotCfg};
 use crate::instr::{InstCfg, InstSlot, NoteEv};
-use crate::mix::{render_tracks, Play, Strip, TrackBufs, Wiring};
+use crate::mix::{apply_automation, render_tracks, Play, Strip, TrackBufs, Wiring};
 
 pub const MAX_TRACKS: usize = 32;
 /// Samples per waveform overview bucket (one min/max pair each).
@@ -73,11 +73,73 @@ pub struct NoteAt {
 pub struct Timeline {
     pub tracks: Vec<Vec<ClipRt>>,
     pub notes: Vec<Vec<NoteAt>>,
+    pub autos: Vec<AutoLane>,
+}
+
+/// What an automation lane moves. Values on the lane are 0..1 (knob range);
+/// a fader's is turned into gain the way the fader does it, a pan into -1..1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AutoTarget {
+    /// a song track's fader or pan
+    Fader(usize),
+    Pan(usize),
+    /// a knob on an effect: track slot (None = the master rack), rack position, parameter
+    Fx(Option<usize>, usize, usize),
+    /// a knob on a track's instrument
+    Inst(usize, usize),
+}
+
+/// One automation lane: points (timeline position, value 0..1) sorted by
+/// position, straight lines between them, flat before the first and after the last.
+#[derive(Clone, Debug)]
+pub struct AutoLane {
+    pub target: AutoTarget,
+    pub pts: Vec<(i64, f32)>,
+}
+
+impl AutoLane {
+    pub fn value_at(&self, pos: i64) -> Option<f32> {
+        let p = &self.pts;
+        let first = p.first()?;
+        let i = p.partition_point(|q| q.0 <= pos);
+        Some(if i == 0 {
+            first.1
+        } else if i == p.len() {
+            p[i - 1].1
+        } else {
+            let (a, b) = (p[i - 1], p[i]);
+            let t = (pos - a.0) as f32 / (b.0 - a.0).max(1) as f32;
+            a.1 + (b.1 - a.1) * t
+        })
+    }
+}
+
+/// The fader law of the UI's faders: 0..1 travel to gain (0.5 = -12 dB, 0.794 = 0 dB).
+pub fn fader_gain(v: f32) -> f32 {
+    2.0 * v.clamp(0.0, 1.0).powi(3)
+}
+
+/// An automation lane as the project describes it: points in seconds.
+#[derive(Clone, Debug)]
+pub struct AutoDesc {
+    pub target: AutoTarget,
+    pub pts: Vec<(f64, f32)>,
+}
+
+pub fn auto_lanes(desc: &[AutoDesc], sr: u32) -> Vec<AutoLane> {
+    desc.iter()
+        .filter(|d| !d.pts.is_empty())
+        .map(|d| {
+            let mut pts: Vec<(i64, f32)> = d.pts.iter().map(|&(t, v)| ((t * sr as f64).round() as i64, v.clamp(0.0, 1.0))).collect();
+            pts.sort_by_key(|p| p.0);
+            AutoLane { target: d.target, pts }
+        })
+        .collect()
 }
 
 impl Timeline {
     pub fn empty() -> Self {
-        Timeline { tracks: (0..MAX_TRACKS).map(|_| Vec::new()).collect(), notes: (0..MAX_TRACKS).map(|_| Vec::new()).collect() }
+        Timeline { tracks: (0..MAX_TRACKS).map(|_| Vec::new()).collect(), notes: (0..MAX_TRACKS).map(|_| Vec::new()).collect(), autos: Vec::new() }
     }
 
     /// Track `t`'s note events in pos..end (a binary search: no scanning).
@@ -440,6 +502,7 @@ pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, mas
         l[..n].fill(0.0);
         r[..n].fill(0.0);
         let play = Play { segs: [(0, x, n), (0, 0, 0)], nseg: 1, looping: None };
+        apply_automation(tl, x, &mut strips, &mut master_rack);
         render_tracks(&mut strips, &mut wiring, &mut bufs, Some(tl), Some(&play), n, &mut l[..n], &mut r[..n]);
         // stems: the tracks as they leave their faders (no master rack: no delay)
         for (slot, w) in stems.iter_mut().enumerate() {
@@ -477,6 +540,18 @@ pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, mas
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automation_lines_between_points() {
+        let lane = &auto_lanes(&[AutoDesc { target: AutoTarget::Pan(0), pts: vec![(1.0, 0.2), (0.0, 0.0), (2.0, 1.0)] }], 100)[0];
+        assert_eq!(lane.pts[0], (0, 0.0)); // sorted
+        assert_eq!(lane.value_at(-50), Some(0.0)); // flat before the first point
+        assert!((lane.value_at(50).unwrap() - 0.1).abs() < 1e-6);
+        assert!((lane.value_at(150).unwrap() - 0.6).abs() < 1e-6);
+        assert_eq!(lane.value_at(500), Some(1.0)); // and after the last
+        assert!(auto_lanes(&[AutoDesc { target: AutoTarget::Pan(0), pts: vec![] }], 100).is_empty());
+        assert!((fader_gain(0.7937) - 1.0).abs() < 1e-3); // 0 dB where the fader has it
+    }
 
     fn clip(start: i64, offset: i64, len: i64, data: &Arc<AudioData>) -> ClipRt {
         ClipRt { start, offset, len, gain: 1.0, fade_in: 0, fade_out: 0, data: data.clone() }

@@ -259,7 +259,7 @@ function brTarget(el, ev) {
   if (el.closest("#chanRows")) return { el: $("chanRows"), what: "A new channel", drop: brToChannel };
   if (el.closest("#lanes")) {
     const p = lanePoint(ev);
-    const tr = song.view.tracks[p.row];
+    const at = song.view.tracks[p.row], tr = at && !isAuto(at) ? at : null;
     const beat = Math.max(0, snapBeat(p.beat));
     return { el: $("lanes"), what: tr ? "Onto " + tr.name : "A new track", lane: { beat, row: tr ? p.row : song.view.tracks.length },
       drop: (f) => brToSong(f, tr ? tr.id : null, beat) };

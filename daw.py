@@ -49,7 +49,11 @@ FIELDS = {
     "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end", "master_rack"},
     # bus: a mixer track others feed (no clips); out: the bus it goes to (else
     # the master); sends: {bus: level}
-    "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "inst", "seq", "bus", "out", "sends", "del"},
+    # auto: an automation lane instead of a track ({"target": track id or
+    # "master", "param": "vol" | "pan" | "fx:<pos>:<kind>:<knob>" | "inst:<knob>"}),
+    # its points [[beat, value 0..1], ...]
+    "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "inst", "seq", "bus", "out", "sends",
+              "auto", "points", "del"},
     "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out", "del"},
     "file": {"frames", "sr", "owner", "name", "del"},
     "pattern": {"name", "len", "color", "del"},
@@ -61,14 +65,14 @@ FIELDS = {
 FIELD_DEFAULTS = {
     "meta": META_DEFAULTS,
     "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None,
-              "bus": False, "out": None, "sends": {}, "del": False},
+              "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "del": False},
     "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "del": False},
     "file": {"del": False},
     "pattern": {"del": False},
     "note": {"vel": 100, "del": False},
 }
 # controls you turn rather than click: a run of turns is one undo step
-CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel", "sends", "master_rack"}
+CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel", "sends", "master_rack", "points"}
 MAX_SENDS = 4
 UNDO_DEPTH = 200
 
@@ -225,6 +229,10 @@ class Daw:
         self.sent_routes = None
         self.sent_live: dict[str, list] = {}
         self.sent_mrack: list = []
+        self.sent_autos = None
+        self.auto_bad: set[str] = set()  # automation lanes that point at nothing
+        self._auto_missing: set[str] = set()
+        self._engine_bad: set[str] = set()
         self.pattern_mode: str | None = None  # playing just this pattern, looped (local)
         self.sent_loop = None
         self.sent_click = None
@@ -702,7 +710,9 @@ class Daw:
     def _push(self):
         """Bring the engine in line with the project (only what changed)."""
         e, p = self.e, self.p
-        tracks = sorted(p.live("track").items(), key=lambda kv: (float(kv[1].get("order", 0)), kv[0]))
+        every = sorted(p.live("track").items(), key=lambda kv: (float(kv[1].get("order", 0)), kv[0]))
+        autos = [(tid, t) for tid, t in every if t.get("auto")]
+        tracks = [(tid, t) for tid, t in every if not t.get("auto")]  # automation lanes have no mixer strip
         alive = {tid for tid, _ in tracks}
         for tid in [t for t in self.slots if t not in alive]:
             slot = self.slots.pop(tid)
@@ -770,6 +780,16 @@ class Daw:
             self._apply_rack("M", self.sent_mrack, mrack)
             self.sent_mrack = mrack
         spb = self._spb()
+        # automation, looked up in the racks as they are now (so again when a rack changes)
+        self._auto_missing: set[str] = set()
+        lanes = [lane for tid, t in autos if (lane := self._auto_lane(tid, t, byid, mrack, spb))]
+        racks = (tuple(json.dumps(self.sent_rack.get(s), sort_keys=True) for s in range(MAX_TRACKS)),
+                 json.dumps(mrack, sort_keys=True), json.dumps(self.sent_inst, sort_keys=True))
+        if (lanes, racks) != self.sent_autos:
+            bad = set(e.daw_automation([(strip, what, pts) for _, strip, what, pts in lanes]))
+            self._engine_bad = {tid for tid, strip, what, _ in lanes if f"{strip} {what}" in bad}
+            self.sent_autos = (lanes, racks)
+        self.auto_bad = self._auto_missing | self._engine_bad
         if self.pattern_mode and self.pattern_mode not in p.live("pattern"):
             self.pattern_mode = None
         desc = [[] for _ in range(MAX_TRACKS)]
@@ -795,6 +815,47 @@ class Daw:
         if click != self.sent_click:
             e.daw_click(*click)
             self.sent_click = click
+
+    def _auto_lane(self, tid: str, t: dict, byid: dict, mrack: list, spb: float):
+        """An automation lane for the engine: (lane id, strip, what, [(seconds, value)]), or None."""
+        a = t.get("auto")
+        if not isinstance(a, dict):
+            return None
+        target, param = a.get("target"), str(a.get("param") or "")
+        if target == "master":
+            strip, rack, inst = "M", mrack, None
+        elif target in self.slots:
+            strip, rack, inst = f"T{self.slots[target]}", byid[target].get("rack") or [], byid[target].get("inst")
+        else:
+            self._auto_missing.add(tid)
+            return None
+        what = param
+        if param.startswith("fx:"):
+            # fx:<pos>:<kind>:<knob>: the effect moved in the rack? follow it (the first of its kind)
+            bits = param.split(":")
+            if len(bits) != 4:
+                return None
+            pos, kind, knob = bits[1], bits[2], bits[3]
+            kinds = [str(x.get("kind")) for x in rack if isinstance(x, dict)]
+            i = int(pos) if pos.isdigit() else -1
+            if not (0 <= i < len(kinds) and kinds[i] == kind):
+                i = kinds.index(kind) if kind in kinds else -1
+            if i < 0:
+                self._auto_missing.add(tid)
+                return None
+            what = f"fx:{i}:{knob}"
+        elif param.startswith("inst:") and not isinstance(inst, dict):
+            self._auto_missing.add(tid)
+            return None
+        pts = []
+        for pt in t.get("points") or []:
+            try:
+                beat, v = float(pt[0]), float(pt[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if math.isfinite(beat) and math.isfinite(v):
+                pts.append((max(0.0, beat) * spb, min(1.0, max(0.0, v))))
+        return (tid, strip, what, sorted(pts)) if pts else None
 
     def _pattern_len(self, pid: str) -> float:
         return max(0.25, float(self.p.live("pattern").get(pid, {}).get("len") or 4 * int(self.p.meta()["beats"])))
@@ -906,7 +967,7 @@ class Daw:
             f = self.p.live("file")[key]
             changes = []
             tracks = self.p.live("track")
-            if not safe(track) or track not in tracks:
+            if not safe(track) or track not in tracks or tracks[track].get("auto") or tracks[track].get("bus"):
                 track = new_id("t")
                 order = max([float(t.get("order", 0)) for t in tracks.values() if not t.get("bus")] or [0]) + 1
                 changes.append(["track", track, {"name": Path(path).stem[:40], "order": order, "owner": self.me, "src": 0,
@@ -1267,6 +1328,8 @@ class Daw:
                 t["mute"] = bool(p.local["mute"].get(t["id"]))
                 t["solo"] = bool(p.local["solo"].get(t["id"]))
                 t["bus"] = bool(t.get("bus"))
+                if t.get("auto"):
+                    t["autoBad"] = t["id"] in self.auto_bad
             files = {}
             for name, f in p.live("file").items():
                 files[name] = {**f, "here": name in self.loaded, "mine": f.get("owner") == self.me}

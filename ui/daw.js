@@ -315,6 +315,13 @@ function renderHeads() {
     name.onfocus = () => (song.headBusy = true);
     name.onblur = () => { song.headBusy = false; if (name.value.trim() && name.value !== t.name) songEdit([["track", t.id, { name: name.value.trim() }]]); else if (song.pendingHeads) renderHeads(); };
     name.onkeydown = (e) => { if (e.key === "Enter") name.blur(); if (e.key === "Escape") { name.value = t.name; name.blur(); } };
+    if (isAuto(t)) {
+      el.append(name);
+      autoHead(t, el);
+      box.append(el);
+      return;
+    }
+    el.oncontextmenu = (e) => { if (e.target.closest("input, select")) return; e.preventDefault(); autoMenu(t.id, e.clientX, e.clientY); };
 
     const btns = document.createElement("div");
     btns.className = "tbtns";
@@ -597,6 +604,10 @@ function songDraw() {
     if (x > w || x + cw < 0 || y > h || y + ROW < 0) return;
     drawClip(ctx, cc, x, y + 2, cw, ROW - 5, v.tracks[row]);
   };
+  v.tracks.forEach((t, i) => {
+    const y = i * ROW - sy;
+    if (isAuto(t) && y < h && y + ROW > 0) drawAutoLane(ctx, t, y, sx, w);
+  });
   for (const c of v.clips) place(c, d && !d.copy ? res[c.id] : null);
   if (d && d.copy) for (const c of v.clips) if (res[c.id]) place(c, res[c.id]);
   drawRuler();
@@ -876,8 +887,10 @@ const selClips = () => song.view.clips.filter((c) => song.sel.has(c.id));
 const MIN_LEN = 0.05; // seconds
 
 function lanesHover(e) {
-  if (song.drag || song.band || e.buttons || !song.view) return;
-  const p = lanePoint(e), h = p.inside ? hitZone(p) : null;
+  if (song.drag || song.band || song.autoDrag || e.buttons || !song.view) return;
+  const p = lanePoint(e), at = p.inside ? song.view.tracks[p.row] : null;
+  if (isAuto(at) || song.autoHover) { autoHoverAt(isAuto(at) ? at : null, p); if (isAuto(at)) return; }
+  const h = p.inside ? hitZone(p) : null;
   $("lanes").style.cursor = h ? CURSORS[h.zone] : "";
   const key = h ? h.c.id + h.zone : "";
   if (key !== song.hoverKey) { song.hoverKey = key; song.hover = h ? h.c.id : null; songDraw(); }
@@ -890,6 +903,8 @@ function lanesDown(e) {
   hideCtx();
   const lanes = $("lanes");
   lanes.setPointerCapture(e.pointerId);
+  const row = song.view.tracks[p.row];
+  if (isAuto(row)) { autoDown(e, p, row); return; }
   const h = hitZone(p);
   if (!h) { bandSelect(e, p); return; }
   const c = h.c;
@@ -921,13 +936,13 @@ function lanesDown(e) {
 // what a drag would do: {id: {fields, row}} for the clips it changes
 function dragResult(d, q, snap) {
   const v = song.view, s = spb(), c = d.anchor, out = {};
-  const clampRow = (r) => Math.max(0, Math.min(v.tracks.length - 1, r));
+  const clampRow = (r, from) => { const k = Math.max(0, Math.min(v.tracks.length - 1, r)); return isAuto(v.tracks[k]) ? from : k; };
   if (d.zone === "body") {
     const db = Math.max(0, snapBeat(q.beat - d.grab, snap)) - c.start;
     const minStart = Math.min(...d.sel.map((k) => k.start));
     const shift = Math.max(db, -minStart);
     const dr = q.row - d.row0;
-    for (const k of d.sel) out[k.id] = { start: k.start + shift, row: clampRow(trackRow(k.track) + dr) };
+    for (const k of d.sel) out[k.id] = { start: k.start + shift, row: clampRow(trackRow(k.track) + dr, trackRow(k.track)) };
   } else if (c.pattern && d.zone === "left") {
     // a pattern clip can start anywhere in its pattern (and wraps round)
     const hi = c.start + clipBeats(c) - STEP;
@@ -1012,6 +1027,7 @@ function lanesDbl(e) {
   // double-click: a pattern opens in the sequencer; empty space gets the
   // current pattern; an audio clip selects everything on its track from there on
   const p = lanePoint(e), c = hitClip(p.beat, p.row);
+  if (isAuto(song.view.tracks[p.row])) return;
   if (!c) { insertPattern(p); return; }
   if (c.pattern) { seq.pat = c.pattern; setMainView("seq"); return; }
   for (const k of song.view.clips) if (k.track === c.track && k.start >= c.start) song.sel.add(k.id);
@@ -1020,7 +1036,7 @@ function lanesDbl(e) {
 
 function insertPattern(p) {
   const pat = curPattern(), t = song.view.tracks[p.row];
-  if (!pat || !t) return;
+  if (!pat || !t || isAuto(t)) return;
   const at = Math.max(0, Math.floor(p.beat / bpb() + 1e-9) * bpb());
   const id = newId("c");
   song.sel = new Set([id]);
@@ -1095,7 +1111,7 @@ function paste(at, row) {
   for (const it of cb.items) {
     const r = row == null ? null : row + (it.row - cb.minRow);
     const track = r == null ? it.track : v.tracks[Math.min(v.tracks.length - 1, Math.max(0, r))]?.id;
-    if (!track || !v.tracks.some((t) => t.id === track)) continue;
+    if (!track || !v.tracks.some((t) => t.id === track && !isAuto(t))) continue;
     const { rel, row: _r, ...f } = it;
     const id = newId("c");
     ch.push(["clip", id, { ...f, track, start: base + rel }]);
@@ -1113,6 +1129,8 @@ function lanesContext(e) {
   if (!song.view) return;
   const p = lanePoint(e);
   if (!p.inside) return;
+  const row = song.view.tracks[p.row];
+  if (isAuto(row)) { autoContext(p, row, e.clientX, e.clientY); return; }
   const h = hitZone(p), items = [];
   if (h) {
     const c = h.c;
@@ -1134,6 +1152,8 @@ function lanesContext(e) {
     if (pat) items.push([`Put "${pat.name}" here`, "dbl-click", () => insertPattern(p)]);
     items.push(["Paste here", "Ctrl+V", () => paste(Math.max(0, snapBeat(p.beat)), p.row), !song.clipboard]);
     items.push(["Add a track", "", addTrack]);
+    if (row) items.push([`Automate ${row.name || "this track"}…`, "", () => autoMenu(row.id, e.clientX, e.clientY)]);
+    items.push(["Automate the master…", "", () => autoMenu("master", e.clientX, e.clientY)]);
   }
   showCtx(items, e.clientX, e.clientY);
 }
@@ -1395,6 +1415,8 @@ function demoSong() {
       { id: "t5", name: "Bass synth", order: 0.7, owner: partner, src: 0, arm: false, vol: 0.7, pan: 0, rack: [], slot: 4, mine: false, mute: false, solo: false, inst: { kind: "synth", wave: 0.3, cutoff: 0.4, resonance: 0.3, attack: 0.02, release: 0.2, detune: 0.2 } },
       { id: "t2", name: "Vocals", order: 2, owner: partner, src: 0, arm: true, vol: 0.75, pan: 0, rack: [], slot: 1, mine: false, mute: false, solo: false, sends: { b1: 0.6 } },
       { id: "t3", name: "Keys", order: 3, owner: partner, src: 1, arm: false, vol: 0.7, pan: 0, rack: [], slot: 2, mine: false, mute: false, solo: false, sends: { b1: 0.4 } },
+      { id: "a1", name: "Guitar · Reverb · Mix", order: 1.5, owner: me, auto: { target: "t1", param: "fx:0:reverb:mix" },
+        points: [[0, 0.1], [8, 0.1], [16, 0.7], [20, 0.7], [24, 0.25]], slot: null, mine: true, mute: false, solo: false },
     ],
     buses: [
       { id: "b1", name: "Reverb", order: 1001, owner: me, bus: true, vol: 0.8, pan: 0, rack: [{ kind: "reverb", size: 0.75, mix: 0.5, dry: 0 }], slot: 5, mine: true, mute: false, solo: false },

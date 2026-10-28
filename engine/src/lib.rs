@@ -28,7 +28,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use daw::{AudioCache, ClipDesc, NoteDesc, MAX_TRACKS};
+use daw::{AudioCache, AutoDesc, AutoTarget, ClipDesc, NoteDesc, MAX_TRACKS};
 use dsp::{decode_peer, encode_peer, Cmd, Dsp, Garbage, InPacket, RecRings, Shared, StripParam, StripSettings, Target, MAX_LOCAL, MAX_REMOTE};
 use fx::{kind_index, param_index, preset_slots, Slot, SlotCfg, FX, MAX_SLOTS};
 use instr::{InstCfg, InstSlot, NoteEv};
@@ -84,6 +84,8 @@ struct DawCtl {
     cache: AudioCache,
     desc: Vec<Vec<ClipDesc>>,
     notes: Vec<Vec<NoteDesc>>,
+    /// the song's automation lanes
+    autos: Vec<AutoDesc>,
     rec: Option<RecSession>,
     export: Option<ExportJob>,
 }
@@ -440,7 +442,7 @@ impl Engine {
             live_in: Mutex::new(livenotes::In::default()),
             track_keys: Mutex::new([0; MAX_TRACKS]),
             midi_target: std::sync::atomic::AtomicU64::new(u64::MAX),
-            daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], notes: vec![], rec: None, export: None }),
+            daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], notes: vec![], autos: vec![], rec: None, export: None }),
             noterec: Mutex::new(noterec_rx),
             files: Mutex::new(transfer::Transfers::new(std::env::temp_dir().join("duet-incoming"))),
             running: AtomicBool::new(false),
@@ -1308,6 +1310,77 @@ impl Engine {
         py.allow_threads(|| self.rebuild_timeline());
     }
 
+    /// The song's automation: [(strip, what, [(seconds, value 0..1)])]. strip is
+    /// "T<n>" (a song track) or "M" (the master: its effects only); what is
+    /// "vol", "pan", "fx:<rack position>:<knob>" or "inst:<knob>". Points are
+    /// joined by straight lines. Knobs are looked up in the racks as they are
+    /// now: send this again after a rack changes. Anything automated before and
+    /// not any more goes back to its own setting. Returns the lanes that point
+    /// at nothing (as "strip what").
+    fn daw_automation(&self, py: Python<'_>, lanes: Vec<(String, String, Vec<(f64, f32)>)>) -> PyResult<Vec<String>> {
+        let mut out = Vec::new();
+        let mut bad = Vec::new();
+        {
+            let mut c = self.inner.ctl.lock().unwrap();
+            for (strip, what, pts) in lanes {
+                let t = parse_target(&strip)?;
+                let slot = match t {
+                    Target::Track(i) => Some(i),
+                    Target::Master => None,
+                    _ => return Err(PyValueError::new_err("only song tracks and the master have automation")),
+                };
+                let m = mirror(&mut c, t);
+                let target = match (what.as_str(), slot) {
+                    ("vol", Some(i)) => Some(AutoTarget::Fader(i)),
+                    ("pan", Some(i)) => Some(AutoTarget::Pan(i)),
+                    (w, _) if w.starts_with("fx:") => {
+                        let mut it = w[3..].splitn(2, ':');
+                        let pos = it.next().and_then(|x| x.parse::<usize>().ok());
+                        let key = it.next().unwrap_or("");
+                        pos.and_then(|pos| {
+                            let cfg = m.rack.get(pos)?;
+                            param_index(cfg.kind, key).map(|k| AutoTarget::Fx(slot, pos, k))
+                        })
+                    }
+                    (w, Some(i)) if w.starts_with("inst:") => m.inst.as_ref().and_then(|inst| {
+                        instr::PARAMS[inst.kind].iter().position(|p| *p == &w[5..]).map(|k| AutoTarget::Inst(i, k))
+                    }),
+                    _ => None,
+                };
+                match target {
+                    Some(target) => out.push(AutoDesc { target, pts }),
+                    None => bad.push(format!("{strip} {what}")),
+                }
+            }
+        }
+        let old = std::mem::replace(&mut self.inner.daw.lock().unwrap().autos, out.clone());
+        py.allow_threads(|| self.rebuild_timeline());
+        // let go of what isn't automated any more: back to its own setting
+        let c = self.inner.ctl.lock().unwrap();
+        for gone in old.iter().map(|a| a.target).filter(|t| !out.iter().any(|a| a.target == *t)) {
+            match gone {
+                AutoTarget::Fader(i) => self.cmd(Cmd::Strip(Target::Track(i), StripParam::Fader, c.tracks[i].s.fader)),
+                AutoTarget::Pan(i) => self.cmd(Cmd::Strip(Target::Track(i), StripParam::Pan, c.tracks[i].s.pan)),
+                AutoTarget::Fx(slot, pos, k) => {
+                    let t = slot.map_or(Target::Master, Target::Track);
+                    let rack = match slot {
+                        Some(i) => &c.tracks[i].rack,
+                        None => &c.master_strip.rack,
+                    };
+                    if let Some(cfg) = rack.get(pos) {
+                        self.cmd(Cmd::RackParam(t, pos, k, cfg.p[k]));
+                    }
+                }
+                AutoTarget::Inst(i, k) => {
+                    if let Some(inst) = &c.tracks[i].inst {
+                        self.cmd(Cmd::InstParam(Target::Track(i), k, inst.p[k]));
+                    }
+                }
+            }
+        }
+        Ok(bad)
+    }
+
     /// Play from `pos`. The click plays at least until `click_until` (count-in).
     #[pyo3(signature = (pos, click_until=None))]
     fn daw_play(&self, pos: f64, click_until: Option<f64>) {
@@ -1505,8 +1578,10 @@ impl Engine {
             return Err(PyRuntimeError::new_err("an export is already running"));
         }
         let tl = {
-            let DawCtl { cache, desc, notes, .. } = &mut *d;
-            cache.build(desc, notes, sr)
+            let DawCtl { cache, desc, notes, autos, .. } = &mut *d;
+            let mut tl = cache.build(desc, notes, sr);
+            tl.autos = daw::auto_lanes(autos, sr);
+            tl
         };
         let s = |x: f64| (x * sr as f64).round() as i64;
         let (a, b) = (s(start), s(end).max(s(start)));
@@ -1676,8 +1751,10 @@ impl Engine {
         let sr = self.samplerate() as u32;
         let tl = {
             let mut d = self.inner.daw.lock().unwrap();
-            let DawCtl { cache, desc, notes, .. } = &mut *d;
-            cache.build(desc, notes, sr)
+            let DawCtl { cache, desc, notes, autos, .. } = &mut *d;
+            let mut tl = cache.build(desc, notes, sr);
+            tl.autos = daw::auto_lanes(autos, sr);
+            tl
         };
         self.cmd(Cmd::Timeline(Box::new(tl)));
     }

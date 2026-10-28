@@ -926,6 +926,9 @@ impl Dsp {
         if looping {
             play.looping = Some((self.tp.loop_start, self.tp.loop_end));
         }
+        if let Some(tl) = self.timeline.as_deref() {
+            crate::mix::apply_automation(tl, tp_pos, &mut self.tracks, &mut self.master_strip.rack);
+        }
         if let Some(w) = self.wiring.as_deref_mut() {
             let playing = self.tp.playing.then_some(&play);
             render_tracks(&mut self.tracks, w, &mut self.bufs, self.timeline.as_deref(), playing, n,

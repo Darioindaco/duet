@@ -20,7 +20,7 @@
 //! you play live can't be read early: a slow plugin delays that by its latency,
 //! as in any DAW.)
 
-use crate::daw::{render_inst, Timeline, MAX_TRACKS};
+use crate::daw::{fader_gain, render_inst, AutoTarget, Timeline, MAX_TRACKS};
 use crate::dsp::{pan_gains, StripSettings};
 use crate::fx::Rack;
 use crate::instr::{InstSlot, NoteEv};
@@ -347,6 +347,48 @@ fn read_segs(play: &Play, ahead: i64, out: &mut [(usize, i64, usize); 6]) -> usi
 /// rack, and goes through its fader and pan to its bus or the master
 /// (`mix_l` / `mix_r`, added to), plus its sends. Realtime-safe.
 #[allow(clippy::too_many_arguments)]
+/// Set everything the song's automation lanes move to where they are at `pos`
+/// (once per block: before the tracks are rendered). Playing or not, so a
+/// stopped song sounds the way it would at the playhead.
+pub fn apply_automation(tl: &Timeline, pos: i64, tracks: &mut [Strip], master_rack: &mut Rack) {
+    for lane in &tl.autos {
+        let Some(v) = lane.value_at(pos) else { continue };
+        match lane.target {
+            AutoTarget::Fader(t) => {
+                if let Some(s) = tracks.get_mut(t) {
+                    s.s.fader = fader_gain(v);
+                }
+            }
+            AutoTarget::Pan(t) => {
+                if let Some(s) = tracks.get_mut(t) {
+                    s.s.pan = 2.0 * v - 1.0;
+                }
+            }
+            AutoTarget::Fx(t, pos, k) => {
+                let rack = match t {
+                    Some(t) => match tracks.get_mut(t) {
+                        Some(s) => &mut s.rack,
+                        None => continue,
+                    },
+                    None => &mut *master_rack,
+                };
+                if let Some(slot) = rack.slots.get_mut(pos) {
+                    if k < slot.cfg.p.len() {
+                        slot.cfg.p[k] = v;
+                    }
+                }
+            }
+            AutoTarget::Inst(t, k) => {
+                if let Some(inst) = tracks.get_mut(t).and_then(|s| s.inst.as_mut()) {
+                    if k < inst.cfg.p.len() {
+                        inst.cfg.p[k] = v;
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn render_tracks(tracks: &mut [Strip], w: &mut Wiring, b: &mut TrackBufs, tl: Option<&Timeline>,
                      play: Option<&Play>, n: usize, mix_l: &mut [f32], mix_r: &mut [f32]) {
     for s in 0..MAX_TRACKS {

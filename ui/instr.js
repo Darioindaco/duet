@@ -224,8 +224,8 @@ function instPanel(t, inst) {
     const knobs = document.createElement("div");
     knobs.className = "knobs";
     for (const [key, label, fmt] of meta.knobs) {
-      knobs.append(knob({ label, value: inst[key] ?? INST_DEFAULTS[inst.kind][key], def: INST_DEFAULTS[inst.kind][key], fmt, color: meta.color,
-        onChange: (v) => { inst[key] = v; api.inst_param(t, key, v); saveMixer(); } }));
+      knobs.append(autoOnControl(knob({ label, value: inst[key] ?? INST_DEFAULTS[inst.kind][key], def: INST_DEFAULTS[inst.kind][key], fmt, color: meta.color,
+        onChange: (v) => { inst[key] = v; api.inst_param(t, key, v); saveMixer(); } }), t, `inst:${key}`));
     }
     body.append(knobs);
   }

@@ -571,6 +571,101 @@ def test_routing():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_automation():
+    """Automation lanes in the shared song: a fader lane fades a track out (on
+    the partner's side too, and in an export), a lane taken away gives the
+    fader back, an effect knob follows its lane, and a lane whose effect isn't
+    there says so."""
+    import shutil
+    import tempfile
+    import wave
+    from pathlib import Path
+
+    from daw import Daw
+
+    a, b, _ = connect_pair()
+    root = Path(tempfile.mkdtemp(prefix="duet-auto-"))
+    da, db = Daw(a, root / "A", "alice"), Daw(b, root / "B", "bob")
+    x = [0.0] * N
+
+    def peak(e, at=0.0, blocks=60):
+        e.daw_play(at)
+        out = []
+        for _ in range(blocks):
+            out += e.process(x)
+        e.daw_stop()
+        return max(abs(v) for v in out[len(out) // 2:])
+
+    try:
+        wait_for(lambda: da.p.pid == db.p.pid and da.view()["shared"] and db.view()["shared"], what="one shared song")
+        for d in (da, db):
+            d.set_local("click", False)
+        da.edit([["meta", "meta", {"bpm": 120.0}],
+                 ["track", "keys", {"name": "Keys", "order": 1.0, "owner": "alice", "vol": 1.0,
+                                    "inst": {"kind": "synth", "cutoff": 0.7}, "rack": [{"kind": "drive", "level": 0.5}]}],
+                 ["pattern", "p1", {"name": "Hold", "len": 16.0}],
+                 *[["note", f"n{i}", {"pattern": "p1", "track": "keys", "start": i * 0.25, "len": 0.25, "key": 60, "vel": 110}]
+                   for i in range(64)],  # short notes: playing from anywhere starts one
+                 ["clip", "c1", {"track": "keys", "pattern": "p1", "start": 0.0, "blen": 16.0}]])
+        wait_for(lambda: "keys" in db.slots and len(db.view()["notes"]) == 64, what="the song on bob's side")
+        loud = peak(b, 1.0)
+        assert loud > 0.05, loud
+
+        # the fader lane: unity for 4 beats (2 s), then down to nothing at beat 8 (4 s)
+        unity = 0.7937
+        da.edit([["track", "a1", {"name": "Keys volume", "order": 1.5, "owner": "alice",
+                                  "auto": {"target": "keys", "param": "vol"},
+                                  "points": [[0.0, unity], [4.0, unity], [8.0, 0.0]]}]])
+        wait_for(lambda: db.sent_autos and db.sent_autos[0], what="the lane on bob's side")
+        assert "a1" not in db.slots, "a lane has no mixer strip"
+        assert "a1" in [t["id"] for t in db.view()["tracks"]] and not db.view()["tracks"][1].get("autoBad")
+        assert abs(peak(b, 1.0) - loud) < 0.05 * loud, "at unity: as before"
+        mid = peak(b, 3.0)  # beat 6: halfway down
+        assert 0.02 * loud < mid < 0.6 * loud, (mid, loud)
+        assert peak(b, 4.5) < 1e-4, "faded out"
+
+        # in an export too: the end of the mix is silent
+        out = root / "out"
+        out.mkdir()
+        da.edit([["meta", "meta", {"loop": True, "loop_start": 0.0, "loop_end": 12.0}]])
+        res = da.export(str(out / "mix.wav"), None, loop=True)
+        assert res.get("ok"), res
+        t0 = time.monotonic()
+        while (st := a.daw_export_status())["result"] is None:
+            assert time.monotonic() - t0 < 20, "export never finished"
+            time.sleep(0.02)
+        assert st["result"]["ok"], st
+        with wave.open(str(out / "mix.wav")) as w:
+            sr, raw = w.getframerate(), w.readframes(w.getnframes())
+        v = np.frombuffer(b"".join(raw[i:i + 3] + (b"\xff" if raw[i + 2] & 0x80 else b"\x00")
+                                   for i in range(0, len(raw), 3)), dtype="<i4") / 8388608.0
+        first, last = np.abs(v[sr // 2 * 2:sr * 2 * 2]).max(), np.abs(v[int(4.5 * sr) * 2:]).max()
+        assert first > 0.05 and last < 1e-3, (first, last)
+
+        # the lane gone: the fader's own setting again
+        da.edit([["track", "a1", {"del": True}]])
+        wait_for(lambda: db.sent_autos and not db.sent_autos[0], what="the lane gone on bob's side")
+        assert abs(peak(b, 4.5) - loud) < 0.05 * loud, "the fader is back"
+
+        # an effect knob: the drive's level all the way down (0.2x instead of 0.85x)
+        da.edit([["track", "a2", {"name": "Drive level", "order": 1.5, "owner": "alice",
+                                  "auto": {"target": "keys", "param": "fx:0:drive:level"}, "points": [[0.0, 0.0]]}]])
+        wait_for(lambda: db.sent_autos and db.sent_autos[0], what="the knob lane on bob's side")
+        assert peak(b, 1.0) < 0.35 * loud, "the drive's level follows its lane"
+        assert b.mixer()["tracks"][db.slots["keys"]]["rack"][0]["level"] == 0.5, "the knob itself keeps its setting"
+        # pointing at an effect that isn't there
+        da.edit([["track", "a2", {"auto": {"target": "keys", "param": "fx:0:reverb:mix"}}]])
+        wait_for(lambda: [t for t in db.view()["tracks"] if t["id"] == "a2"][0].get("autoBad"), what="the lane flagged")
+        assert abs(peak(b, 1.0) - loud) < 0.05 * loud, "and the drive back as it was"
+        print(f"automation: ok  (fade {loud:.3f} -> {mid:.3f} -> 0 on the partner's side and in the export)")
+    finally:
+        da.close()
+        db.close()
+        a.close()
+        b.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_library():
     """The sample library: the built-in sounds as WAVs, folders you make, sounds
     you import, search, nested bins; nothing outside its folders. And samples
@@ -1152,6 +1247,7 @@ if __name__ == "__main__":
     test_patterns()
     test_live()
     test_routing()
+    test_automation()
     test_library()
     test_signals()
     test_mixer()

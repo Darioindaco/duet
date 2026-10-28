@@ -663,6 +663,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 
 <script src="wm.js"></script>
 <script src="daw.js"></script>
+<script src="auto.js"></script>
 <script src="instr.js"></script>
 <script src="seq.js"></script>
 <script src="presence.js"></script>
@@ -1232,8 +1233,8 @@ function stripEl(t) {
   if (track) el.append(outButton(track));
 
   // pan
-  if (cfg && t !== "M") el.append(knob({ label: "Pan", value: cfg.pan, def: 0, min: -1, max: 1, fmt: fmtPan, color: "var(--c)", size: 30,
-    onChange: (v) => setStrip(t, "pan", v) }));
+  if (cfg && t !== "M") el.append(autoOnControl(knob({ label: "Pan", value: cfg.pan, def: 0, min: -1, max: 1, fmt: fmtPan, color: "var(--c)", size: 30,
+    onChange: (v) => setStrip(t, "pan", v) }), t, "pan"));
 
   // meter + fader
   const fs = document.createElement("div");
@@ -1243,7 +1244,7 @@ function stripEl(t) {
   const value = t === "M" ? ui.mixer.master : cfg.fader;
   const db = document.createElement("div");
   db.className = "db"; db.textContent = fmtDb(value);
-  fs.append(fader({ value, onChange: (g) => { db.textContent = fmtDb(g); setStrip(t, "fader", g); } }), meter);
+  fs.append(autoOnControl(fader({ value, onChange: (g) => { db.textContent = fmtDb(g); setStrip(t, "fader", g); } }), t, "vol"), meter);
   el.append(fs, db);
   ui.meters[t] = meter.firstChild;
 
@@ -1581,9 +1582,9 @@ function pedalEl(t, pos, slot) {
     p.style.width = meta.knobs.length * 62 + 20 + "px"; // one row of knobs
   }
   for (const [key, label, fmt] of meta.knobs) {
-    knobs.append(knob({ label, value: slot[key] ?? FX_DEFAULTS[slot.kind][key], def: FX_DEFAULTS[slot.kind][key], fmt, color: meta.color,
+    knobs.append(autoOnControl(knob({ label, value: slot[key] ?? FX_DEFAULTS[slot.kind][key], def: FX_DEFAULTS[slot.kind][key], fmt, color: meta.color,
       size: slot.kind === "eq" ? 40 : 46,
-      onChange: (v) => { slot[key] = v; curve?.redraw(); api.rack_set(t, pos, key, v); saveMixer(); } }));
+      onChange: (v) => { slot[key] = v; curve?.redraw(); api.rack_set(t, pos, key, v); saveMixer(); } }), t, `fx:${pos}:${slot.kind}:${key}`));
   }
   if (slot.kind === "comp" && (t[0] === "T" || t === "M")) knobs.after(keySelect(t, pos, slot));
   if (slot.error && slot.kind !== "vst" && slot.kind !== "nam") knobs.insertAdjacentHTML("beforebegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
