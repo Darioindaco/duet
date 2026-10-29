@@ -5,3 +5,5 @@ __pycache__/
 engine/target/
 dist_new/
 build_new/
+crates/*/target/
+crates/*/renders/**/*.wav
