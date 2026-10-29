@@ -50,12 +50,13 @@ impl AudioData {
 
 #[derive(Clone)]
 pub struct ClipRt {
-    pub start: i64,  // timeline position of the clip's first sample
-    pub offset: i64, // where in the audio that first sample is (in the audio's own samples)
+    pub start: i64, // timeline position of the clip's first sample
+    /// where in the audio that first sample is (in the audio's own samples)
+    pub pos0: f64,
     pub len: i64,
     /// audio samples per timeline sample: 1 when the file is at the device
-    /// rate, else it's converted as it plays (no converted copy to make first:
-    /// an hour-long file is ready as soon as it's read)
+    /// rate and plays as it is; otherwise it's converted as it plays (another
+    /// rate, a faster or slower clip in tape mode); negative plays it backwards
     pub step: f64,
     pub gain: f32,
     pub fade_in: i64,
@@ -174,15 +175,15 @@ impl Timeline {
             let last = src.len() as i64 - 1;
             for x in a..b {
                 let rel = x - c.start;
-                let (sl, sr) = if c.step == 1.0 {
-                    let si = c.offset + rel;
+                let (sl, sr) = if c.step == 1.0 && c.pos0.fract() == 0.0 {
+                    let si = c.pos0 as i64 + rel;
                     if si < 0 || si > last {
                         continue;
                     }
                     (src[si as usize], src_r[si as usize])
                 } else {
                     // Catmull-Rom between the audio's own samples
-                    let p = c.offset as f64 + rel as f64 * c.step;
+                    let p = c.pos0 + rel as f64 * c.step;
                     let i = p.floor() as i64;
                     if i < 0 || i > last {
                         continue;
@@ -221,11 +222,61 @@ fn cubic(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
 pub struct ClipDesc {
     pub key: String,
     pub start: f64,
+    /// where in the file the clip begins (seconds of the file as it is)
     pub offset: f64,
+    /// on the timeline (seconds)
     pub len: f64,
     pub gain: f32,
     pub fade_in: f64,
     pub fade_out: f64,
+    /// 2 = twice as fast
+    pub speed: f64,
+    /// semitones
+    pub pitch: f32,
+    /// keep the pitch when the speed changes (and transpose without changing
+    /// the speed): a stretched copy, made in the background. Off = tape:
+    /// speed and pitch go together, as it plays.
+    pub stretch: bool,
+    /// the clip's stretch of the file, backwards
+    pub reverse: bool,
+}
+
+impl ClipDesc {
+    /// A plain clip: as the file is.
+    pub fn plain(key: &str, start: f64, offset: f64, len: f64) -> Self {
+        ClipDesc { key: key.into(), start, offset, len, gain: 1.0, fade_in: 0.0, fade_out: 0.0, speed: 1.0, pitch: 0.0, stretch: false, reverse: false }
+    }
+
+    /// File seconds per timeline second.
+    pub fn ratio(&self) -> f64 {
+        if self.stretch { self.speed } else { self.speed * 2f64.powf(self.pitch as f64 / 12.0) }
+    }
+
+    /// Which stretched copy it needs, if any.
+    pub fn stretch_key(&self) -> Option<StretchKey> {
+        let k = StretchKey::new(&self.key, self.speed, self.pitch);
+        (self.stretch && (k.speed != 10_000 || k.cents != 0)).then_some(k)
+    }
+}
+
+/// A stretched copy of a file: speed in 1/10000, pitch in cents.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StretchKey {
+    pub key: String,
+    pub speed: u32,
+    pub cents: i32,
+}
+
+impl StretchKey {
+    pub fn new(key: &str, speed: f64, pitch: f32) -> Self {
+        StretchKey { key: key.into(), speed: (speed.clamp(0.05, 20.0) * 10_000.0).round() as u32, cents: (pitch * 100.0).round() as i32 }
+    }
+    pub fn speed(&self) -> f64 {
+        self.speed as f64 / 10_000.0
+    }
+    pub fn semis(&self) -> f32 {
+        self.cents as f32 / 100.0
+    }
 }
 
 /// Play track `t`'s instrument for timeline samples pos..pos+l.len() into
@@ -260,6 +311,10 @@ pub struct NoteDesc {
 #[derive(Default)]
 pub struct AudioCache {
     files: HashMap<String, Arc<AudioData>>,
+    /// stretched copies the clips use
+    stretched: HashMap<StretchKey, Arc<AudioData>>,
+    /// stretched copies the last build wanted and didn't have
+    pub missing: Vec<StretchKey>,
 }
 
 impl AudioCache {
@@ -276,6 +331,17 @@ impl AudioCache {
 
     pub fn remove(&mut self, key: &str) {
         self.files.remove(key);
+        self.stretched.retain(|k, _| k.key != key);
+    }
+
+    pub fn file(&self, key: &str) -> Option<Arc<AudioData>> {
+        self.files.get(key).cloned()
+    }
+
+    pub fn add_stretched(&mut self, k: StretchKey, data: AudioData) {
+        if self.files.contains_key(&k.key) {
+            self.stretched.insert(k, Arc::new(data));
+        }
     }
 
 
@@ -283,18 +349,40 @@ impl AudioCache {
     pub fn build(&mut self, desc: &[Vec<ClipDesc>], notes: &[Vec<NoteDesc>], sr: u32) -> Timeline {
         let s = |secs: f64| (secs * sr as f64).round() as i64;
         let mut tl = Timeline::empty();
+        let mut used = std::collections::HashSet::new();
+        self.missing.clear();
         for (t, clips) in desc.iter().enumerate().take(MAX_TRACKS) {
             for c in clips {
-                let Some(data) = self.files.get(&c.key).cloned() else { continue }; // not here (yet)
+                let Some(file) = self.files.get(&c.key).cloned() else { continue }; // not here (yet)
                 let len = s(c.len);
                 if len <= 0 {
                     continue;
                 }
+                // which audio, where in it the clip starts, and how fast it's read
+                let (data, at, rate) = match c.stretch_key() {
+                    Some(k) => {
+                        let Some(d) = self.stretched.get(&k).cloned() else {
+                            if !self.missing.contains(&k) {
+                                self.missing.push(k);
+                            }
+                            continue; // being made
+                        };
+                        used.insert(k);
+                        // the stretched copy is in timeline time: read as it is
+                        let at = c.offset / c.speed.clamp(0.05, 20.0);
+                        (d, at, 1.0)
+                    }
+                    None => (file, c.offset, c.ratio()),
+                };
+                let per = data.sr as f64 / sr as f64 * rate; // audio samples per timeline sample
+                let pos0 = at * data.sr as f64;
+                let (pos0, step) = if c.reverse { (pos0 + (len - 1) as f64 * per, -per) } else { (pos0, per) };
+                let pos0 = if step == 1.0 { pos0.round() } else { pos0 };
                 tl.tracks[t].push(ClipRt {
                     start: s(c.start),
-                    offset: (c.offset * data.sr as f64).round() as i64,
+                    pos0,
                     len,
-                    step: data.sr as f64 / sr as f64,
+                    step,
                     gain: c.gain,
                     fade_in: s(c.fade_in),
                     fade_out: s(c.fade_out),
@@ -303,6 +391,8 @@ impl AudioCache {
             }
             tl.tracks[t].sort_by_key(|c| c.start);
         }
+        // stretched copies nothing uses any more: let go (they're big)
+        self.stretched.retain(|k, _| used.contains(k));
         for (t, ns) in notes.iter().enumerate().take(MAX_TRACKS) {
             let ev = &mut tl.notes[t];
             for n in ns {
@@ -804,7 +894,7 @@ mod tests {
     }
 
     fn clip(start: i64, offset: i64, len: i64, data: &Arc<AudioData>) -> ClipRt {
-        ClipRt { start, offset, len, step: 1.0, gain: 1.0, fade_in: 0, fade_out: 0, data: data.clone() }
+        ClipRt { start, pos0: offset as f64, len, step: 1.0, gain: 1.0, fade_in: 0, fade_out: 0, data: data.clone() }
     }
 
     #[test]
@@ -839,7 +929,7 @@ mod tests {
     fn build_converts_seconds_and_rates() {
         let mut cache = AudioCache::default();
         cache.insert("a", AudioData::mono(24000, vec![0.5; 24000]));
-        let desc = vec![vec![ClipDesc { key: "a".into(), start: 1.0, offset: 0.0, len: 0.5, gain: 1.0, fade_in: 0.0, fade_out: 0.0 }]];
+        let desc = vec![vec![ClipDesc::plain("a", 1.0, 0.0, 0.5)]];
         let tl = cache.build(&desc, &[], 48000);
         let c = &tl.tracks[0][0];
         // the audio stays at its own rate and is read at half speed
@@ -850,6 +940,39 @@ mod tests {
         // a missing file just isn't there yet
         let desc = vec![vec![ClipDesc { key: "b".into(), ..desc[0][0].clone() }]];
         assert!(cache.build(&desc, &[], 48000).tracks[0].is_empty());
+    }
+
+    #[test]
+    fn tape_speed_reverse_and_stretched_copies() {
+        let mut cache = AudioCache::default();
+        // a ramp: the value says where in the file it was read
+        cache.insert("r", AudioData::mono(48000, (0..48000).map(|k| k as f32 / 48000.0).collect()));
+        let read = |cache: &mut AudioCache, c: ClipDesc, at: i64| {
+            let tl = cache.build(&[vec![c]], &[], 48000);
+            let (mut l, mut r) = (vec![0f32; 1], vec![0f32; 1]);
+            tl.render(0, at, &mut l, &mut r);
+            l[0]
+        };
+        // twice as fast (tape): 0.1 s in, it's 0.2 s into the file (+ the 0.1 s offset)
+        let c = ClipDesc { speed: 2.0, ..ClipDesc::plain("r", 0.0, 0.1, 0.4) };
+        assert!((read(&mut cache, c, 4800) - 0.3).abs() < 1e-3);
+        // an octave up in tape mode is twice as fast too
+        let c = ClipDesc { pitch: 12.0, ..ClipDesc::plain("r", 0.0, 0.0, 0.4) };
+        assert!((read(&mut cache, c, 4800) - 0.2).abs() < 1e-3);
+        // backwards: the clip's stretch (0.1..0.5 s of the file) from its end
+        let c = ClipDesc { reverse: true, ..ClipDesc::plain("r", 0.0, 0.1, 0.4) };
+        assert!((read(&mut cache, c.clone(), 2400) - 0.45).abs() < 1e-3, "{}", read(&mut cache, c, 2400));
+        // keep pitch: left out until the stretched copy is there, then read from it
+        let c = ClipDesc { speed: 2.0, stretch: true, ..ClipDesc::plain("r", 0.0, 0.1, 0.4) };
+        assert!(cache.build(&[vec![c.clone()]], &[], 48000).tracks[0].is_empty());
+        assert_eq!(cache.missing, vec![StretchKey::new("r", 2.0, 0.0)]);
+        let half: Vec<f32> = (0..24000).map(|k| k as f32 / 24000.0).collect(); // (a stand-in for the stretched copy)
+        cache.add_stretched(StretchKey::new("r", 2.0, 0.0), AudioData::mono(48000, half));
+        assert!((read(&mut cache, c.clone(), 4800) - 0.3).abs() < 1e-3);
+        assert!(cache.missing.is_empty());
+        // not used any more: let go
+        cache.build(&[vec![ClipDesc::plain("r", 0.0, 0.0, 0.4)]], &[], 48000);
+        assert!(cache.stretched.is_empty());
     }
 
     #[test]

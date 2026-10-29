@@ -737,6 +737,129 @@ def test_big_file():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_clip_edit():
+    """The clip editor's changes, through the shared song: tape speed (faster
+    and higher), keep pitch (faster, same pitch: a stretched copy made in the
+    background), transpose, backwards; the partner hears the same, an export
+    waits for a stretched copy it needs; and the analysis finds a beat's tempo,
+    its hits and the peak."""
+    import shutil
+    import tempfile
+    import wave
+    from pathlib import Path
+
+    from daw import Daw
+
+    a, b, _ = connect_pair()
+    root = Path(tempfile.mkdtemp(prefix="duet-clip-"))
+    da, db = Daw(a, root / "A", "alice"), Daw(b, root / "B", "bob")
+    x = [0.0] * N
+
+    def write(path, samples, sr=48000):
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes((np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes())
+
+    def listen(e, at, blocks=80):
+        e.daw_play(at)
+        out = []
+        for _ in range(blocks):
+            out += e.process(x)
+        e.daw_stop()
+        return np.array(out[N * 16:])
+
+    def hz(sig):
+        dev = 48000
+        return np.count_nonzero(np.diff(np.signbit(sig))) / 2 / (len(sig) / dev)
+
+    try:
+        wait_for(lambda: da.p.pid == db.p.pid and da.view()["shared"] and db.view()["shared"], what="one shared song")
+        for d in (da, db):
+            d.set_local("click", False)
+        da.edit([["meta", "meta", {"bpm": 120.0}]])
+        t = np.arange(48000 * 6) / 48000
+        sine = root / "sine.wav"
+        write(sine, 0.5 * np.sin(2 * np.pi * 500 * t))
+        res = da.sample_clip(str(sine), None, 0.0)
+        assert res.get("ok"), res
+        cid = da.view()["clips"][0]["id"]
+        key = da.view()["clips"][0]["file"]
+        wait_for(lambda: key in db.loaded and db.sent_desc and any(db.sent_desc), timeout=20, what="the clip on bob's side")
+        base = hz(listen(b, 0.5))
+        assert abs(base - 500) < 5, base
+
+        def set_clip(fields, what):
+            da.edit([["clip", cid, fields]])
+            wait_for(lambda: all(db.p.live("clip")[cid].get(k) == v for k, v in fields.items()), what=what)
+            wait_for(lambda: key not in b.daw_processing(), timeout=30, what=f"{what}: stretched")
+
+        # tape: twice as fast is an octave up
+        set_clip({"speed": 2.0, "len": 3.0}, "tape 2x")
+        tape = hz(listen(b, 0.5))
+        assert abs(tape - 1000) < 10, tape
+        # keep pitch: twice as fast, same pitch
+        set_clip({"stretch": True}, "keep pitch 2x")
+        keep = hz(listen(b, 0.5))
+        assert abs(keep - 500) < 8, keep
+        # transposed a fifth up, at the original speed
+        set_clip({"speed": 1.0, "len": 6.0, "pitch": 7.0}, "a fifth up")
+        fifth = hz(listen(b, 0.5))
+        assert abs(fifth - 500 * 2 ** (7 / 12)) < 8, fifth
+        # backwards: a file that gets louder is a clip that gets softer
+        ramp = root / "ramp.wav"
+        write(ramp, np.linspace(0, 0.9, 48000 * 2) * np.sin(2 * np.pi * 300 * t[:96000]))
+        res = da.sample_clip(str(ramp), None, 16.0)  # (at 8 s: after the sine's 6)
+        rid = [c for c in da.view()["clips"] if c["id"] != cid][0]["id"]
+        rkey = da.p.live("clip")[rid]["file"]
+        da.edit([["clip", rid, {"reverse": True}]])
+        wait_for(lambda: rkey in db.loaded and db.p.live("clip").get(rid, {}).get("reverse"), timeout=20, what="the backwards clip")
+        wait_for(lambda: db.sent_desc and any(len(t) > 0 and any(c[0] == rkey and c[10] for c in t) for t in db.sent_desc), what="backwards on bob's timeline")
+        rev = listen(b, 8.0 + 0.05, blocks=48000 * 2 // N + 20)
+        first, last = np.abs(rev[:4800]).max(), np.abs(rev[int(48000 * 1.75):int(48000 * 1.85)]).max()
+        assert first > 4 * last, (first, last)
+
+        # an export waits for a stretched copy it needs
+        da.edit([["clip", cid, {"pitch": 0.0, "speed": 1.5, "len": 4.0}]])
+        out = root / "out"
+        out.mkdir()
+        res = da.export(str(out / "mix.wav"), None, loop=False)
+        assert res.get("ok"), res
+        t0 = time.monotonic()
+        while (st := a.daw_export_status())["result"] is None:
+            assert time.monotonic() - t0 < 60, "export never finished"
+            time.sleep(0.02)
+        with wave.open(str(out / "mix.wav")) as w:
+            raw = w.readframes(w.getnframes())
+        v = np.frombuffer(b"".join(raw[i:i + 3] + (b"\xff" if raw[i + 2] & 0x80 else b"\x00")
+                                   for i in range(0, 48000 * 2 * 3 * 2, 3)), dtype="<i4") / 8388608.0
+        assert np.abs(v[48000:]).max() > 0.2, "the stretched clip is in the export"
+
+        # analysis: clicks at 120 BPM
+        clicks = np.zeros(48000 * 8)
+        for k in range(16):
+            s0 = int((0.25 + 0.5 * k) * 48000)
+            clicks[s0:s0 + 400] = 0.8 * np.exp(-np.arange(400) / 80) * np.where(np.arange(400) % 2, -1, 1)
+        cl = root / "clicks.wav"
+        write(cl, clicks)
+        da.sample_clip(str(cl), None, 32.0)
+        kid = [c for c in da.view()["clips"] if c["id"] not in (cid, rid)][0]["id"]
+        wait_for(lambda: da.p.live("clip")[kid]["file"] in da.loaded, what="the clicks loaded")
+        bpm = da.analyze(kid, "tempo")["bpm"]
+        hits = da.analyze(kid, "hits", 0.5)["hits"]
+        peak = da.analyze(kid, "peak")["peak"]
+        assert abs(bpm - 120) < 1.5 and len(hits) == 16 and abs(peak - 0.8) < 0.01, (bpm, len(hits), peak)
+        print(f"clip edit: ok  (tape 2x {tape:.0f} Hz, keep pitch 2x {keep:.0f} Hz, a fifth up {fifth:.0f} Hz, "
+              f"backwards, export waits for the stretch; tempo {bpm} BPM, {len(hits)} hits)")
+    finally:
+        da.close()
+        db.close()
+        a.close()
+        b.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_library():
     """The sample library: the built-in sounds as WAVs, folders you make, sounds
     you import, search, nested bins; nothing outside its folders. And samples
@@ -1320,6 +1443,7 @@ if __name__ == "__main__":
     test_routing()
     test_automation()
     test_big_file()
+    test_clip_edit()
     test_library()
     test_signals()
     test_mixer()

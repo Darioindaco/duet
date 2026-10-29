@@ -652,6 +652,31 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
     </div>
   </div>
 </div>
+<div class="modal" id="clipEd" hidden>
+  <div class="mbox ce" role="dialog" aria-modal="true" aria-labelledby="ceTitle">
+    <div class="mhead"><b id="ceTitle">Clip</b><span id="ceSub"></span>
+      <button class="btn sq" id="cePlay" title="Play the song from this clip (Space)">▶</button>
+      <button class="x" id="ceX" aria-label="Close">✕</button></div>
+    <div class="mbody">
+      <canvas id="ceWave" class="cewave" aria-label="The clip's audio: drag its edges to trim, drag inside to slide the sound"></canvas>
+      <p class="fine cehint">Drag the edges to trim · drag inside to slide the sound under the clip · scroll to zoom, shift-scroll to move</p>
+      <div class="seg" id="ceTabs"><button data-v="clip">Clip</button><button data-v="pitch">Pitch &amp; speed</button><button data-v="chop">Chop</button></div>
+      <div id="ceBody" class="cebody"></div>
+    </div>
+  </div>
+</div>
+<div class="modal" id="keysM" hidden>
+  <div class="mbox wide" role="dialog" aria-modal="true" aria-labelledby="keysTitle">
+    <div class="mhead"><b id="keysTitle">Keyboard shortcuts</b><span>On this computer</span><button class="x" id="keysX" aria-label="Close">✕</button></div>
+    <div class="mbody">
+      <div class="field"><label>Start from</label><div class="seg" id="keysPreset"></div></div>
+      <p class="fine">Click a shortcut, then press the new key. A key does one thing: giving it to something else takes it away from what had it.</p>
+      <div class="klist" id="keysList"></div>
+      <div class="row"><label class="fine" for="keysXf">Crossfade length</label><input type="number" id="keysXf" class="cenum" min="5" max="2000" step="5"><span class="fine">ms</span>
+        <button class="btn" id="keysReset" style="margin-left:auto">Undo my changes</button></div>
+    </div>
+  </div>
+</div>
 <div class="modal" id="conflict" hidden>
   <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="cfTitle">
     <div class="mhead"><b id="cfTitle">Two different songs</b></div>
@@ -664,6 +689,8 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="wm.js"></script>
 <script src="daw.js"></script>
 <script src="auto.js"></script>
+<script src="clipedit.js"></script>
+<script src="keys.js"></script>
 <script src="instr.js"></script>
 <script src="seq.js"></script>
 <script src="presence.js"></script>
@@ -1805,6 +1832,8 @@ async function boot(a) {
   instSetup();
   seqSetup();
   browserSetup();
+  ceSetup();
+  keysSetup();
   hereSetup();
   $("vstX").onclick = () => ($("vstm").hidden = true);
   $("vstm").onclick = (e) => e.target === $("vstm") && ($("vstm").hidden = true);

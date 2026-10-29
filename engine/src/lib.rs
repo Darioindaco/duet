@@ -17,6 +17,7 @@ mod midi;
 mod mix;
 mod net;
 mod signal;
+mod stretch;
 mod transfer;
 mod vst;
 
@@ -87,6 +88,9 @@ struct DawCtl {
     notes: Vec<Vec<NoteDesc>>,
     /// the song's automation lanes
     autos: Vec<AutoDesc>,
+    /// the background worker making stretched copies is running; what it's on
+    stretching: bool,
+    stretch_now: Option<daw::StretchKey>,
     rec: Option<RecSession>,
     export: Option<ExportJob>,
 }
@@ -443,7 +447,7 @@ impl Engine {
             live_in: Mutex::new(livenotes::In::default()),
             track_keys: Mutex::new([0; MAX_TRACKS]),
             midi_target: std::sync::atomic::AtomicU64::new(u64::MAX),
-            daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], notes: vec![], autos: vec![], rec: None, export: None }),
+            daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], notes: vec![], autos: vec![], stretching: false, stretch_now: None, rec: None, export: None }),
             noterec: Mutex::new(noterec_rx),
             files: Mutex::new(transfer::Transfers::new(std::env::temp_dir().join("duet-incoming"))),
             running: AtomicBool::new(false),
@@ -1298,12 +1302,48 @@ impl Engine {
         self.inner.daw.lock().unwrap().cache.remove(key);
     }
 
+    /// Files whose stretched copies (keep-pitch clips) are still being made.
+    fn daw_processing(&self) -> Vec<String> {
+        let d = self.inner.daw.lock().unwrap();
+        let mut out: Vec<String> = d.cache.missing.iter().map(|k| k.key.clone()).collect();
+        out.extend(d.stretch_now.iter().map(|k| k.key.clone()));
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The loudest sample of a loaded file in seconds offset..offset+dur (for normalize).
+    fn daw_clip_peak(&self, py: Python<'_>, key: &str, offset: f64, dur: f64) -> PyResult<f32> {
+        let a = self.loaded_file(key)?;
+        let (x, y) = frames_of(&a, offset, dur);
+        Ok(py.allow_threads(|| stretch::peak(&a, x, y)))
+    }
+
+    /// Where the hits are in a loaded file, seconds offset..offset+dur: their
+    /// times in the file (seconds). sensitivity 0..1: higher finds softer ones.
+    fn daw_transients(&self, py: Python<'_>, key: &str, offset: f64, dur: f64, sensitivity: f32) -> PyResult<Vec<f64>> {
+        let a = self.loaded_file(key)?;
+        let (x, y) = frames_of(&a, offset, dur);
+        let hits = py.allow_threads(|| stretch::transients(&a, x, y, sensitivity));
+        Ok(hits.into_iter().map(|h| h as f64 / a.sr as f64).collect())
+    }
+
+    /// The tempo of a loaded file in seconds offset..offset+dur (BPM), if it has a beat.
+    fn daw_tempo(&self, py: Python<'_>, key: &str, offset: f64, dur: f64) -> PyResult<Option<f64>> {
+        let a = self.loaded_file(key)?;
+        let (x, y) = frames_of(&a, offset, dur);
+        Ok(py.allow_threads(|| stretch::tempo(&a, x, y)))
+    }
+
     /// The whole clip layout: tracks[i] = [(key, start, offset, length, gain,
     /// fade in, fade out)] for track strip Ti, all times in seconds. Clips whose
     /// audio isn't loaded yet are skipped (send the layout again once it is).
     /// notes[i] = [(start, duration, key, velocity)] for Ti's instrument.
+    /// A clip is (key, start, offset, length, gain, fade in, fade out, speed,
+    /// pitch in semitones, keep pitch, reverse).
     #[pyo3(signature = (tracks, notes=None))]
-    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, f64, f64)>>,
+    #[allow(clippy::type_complexity)]
+    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, f64, f64, f64, f32, bool, bool)>>,
                     notes: Option<Vec<Vec<(f64, f64, u8, u8)>>>) {
         let notes: Vec<Vec<NoteDesc>> = notes
             .unwrap_or_default()
@@ -1318,7 +1358,12 @@ impl Engine {
             .map(|clips| {
                 clips
                     .into_iter()
-                    .map(|(key, start, offset, len, gain, fade_in, fade_out)| ClipDesc { key, start, offset, len, gain, fade_in, fade_out })
+                    .map(|(key, start, offset, len, gain, fade_in, fade_out, speed, pitch, stretch, reverse)| ClipDesc {
+                        key, start, offset, len, gain, fade_in, fade_out,
+                        speed: if speed.is_finite() { speed.clamp(0.05, 20.0) } else { 1.0 },
+                        pitch: if pitch.is_finite() { pitch.clamp(-48.0, 48.0) } else { 0.0 },
+                        stretch, reverse,
+                    })
                     .collect()
             })
             .collect();
@@ -1593,12 +1638,13 @@ impl Engine {
         if d.export.as_ref().is_some_and(|j| !j.worker.is_finished()) {
             return Err(PyRuntimeError::new_err("an export is already running"));
         }
-        let tl = {
-            let DawCtl { cache, desc, notes, autos, .. } = &mut *d;
-            let mut tl = cache.build(desc, notes, sr);
-            tl.autos = daw::auto_lanes(autos, sr);
-            tl
+        // stretched copies not made yet are made first, by the export itself
+        let missing: Vec<(daw::StretchKey, Arc<daw::AudioData>)> = {
+            let DawCtl { cache, desc, notes, .. } = &mut *d;
+            cache.build(desc, notes, sr);
+            cache.missing.iter().filter_map(|k| cache.file(&k.key).map(|f| (k.clone(), f))).collect()
         };
+        let inner = self.inner.clone();
         let s = |x: f64| (x * sr as f64).round() as i64;
         let (a, b) = (s(start), s(end).max(s(start)));
         let done = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1606,7 +1652,20 @@ impl Engine {
         let mix = mix.map(std::path::PathBuf::from);
         let worker = std::thread::Builder::new()
             .name("duet-export".into())
-            .spawn(move || daw::render(&tl, tracks, wiring, master_rack, master, sr, a, b, mix, &done2))
+            .spawn(move || {
+                let made: Vec<_> = missing.into_iter().map(|(k, f)| { let st = stretch::stretch(&f, k.speed(), k.semis()); (k, st) }).collect();
+                let tl = {
+                    let mut d = inner.daw.lock().unwrap();
+                    let DawCtl { cache, desc, notes, autos, .. } = &mut *d;
+                    for (k, st) in made {
+                        cache.add_stretched(k, st);
+                    }
+                    let mut tl = cache.build(desc, notes, sr);
+                    tl.autos = daw::auto_lanes(autos, sr);
+                    tl
+                };
+                daw::render(&tl, tracks, wiring, master_rack, master, sr, a, b, mix, &done2)
+            })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         d.export = Some(ExportJob { done, total: (b - a) as u64, worker });
         Ok(())
@@ -1757,35 +1816,33 @@ impl Engine {
     }
 }
 
+/// Seconds offset..offset+dur of a file, as frames.
+fn frames_of(a: &daw::AudioData, offset: f64, dur: f64) -> (usize, usize) {
+    let sr = a.sr as f64;
+    let x = (offset.max(0.0) * sr) as usize;
+    let y = ((offset.max(0.0) + dur.max(0.0)) * sr).ceil() as usize;
+    (x.min(a.samples.len()), y.min(a.samples.len()))
+}
+
 impl Engine {
+    fn loaded_file(&self, key: &str) -> PyResult<Arc<daw::AudioData>> {
+        self.inner.daw.lock().unwrap().cache.file(key).ok_or_else(|| PyValueError::new_err(format!("{key} isn't loaded")))
+    }
+
     fn samplerate(&self) -> f32 {
         self.inner.shared.samplerate.load(Relaxed) as f32
     }
 
     /// Build the timeline for the current rate from the last layout and hand it over.
     fn rebuild_timeline(&self) {
-        let sr = self.samplerate() as u32;
-        let tl = {
-            let mut d = self.inner.daw.lock().unwrap();
-            let DawCtl { cache, desc, notes, autos, .. } = &mut *d;
-            let mut tl = cache.build(desc, notes, sr);
-            tl.autos = daw::auto_lanes(autos, sr);
-            tl
-        };
-        self.cmd(Cmd::Timeline(Box::new(tl)));
+        rebuild(&self.inner, &self.dsp);
     }
 
     /// Queue a command for the audio thread. With no stream running nothing
     /// would drain the queue (and it would fill up and drop commands), so then
     /// apply it right away.
     fn cmd(&self, c: Cmd) {
-        self.inner.cmd(c);
-        if !self.inner.shared.streaming.load(Relaxed) {
-            if let Ok(mut d) = self.dsp.try_lock() {
-                d.apply_pending();
-            }
-            self.inner.free_retired();
-        }
+        cmd_on(&self.inner, &self.dsp, c);
     }
 
     /// Bring the audio thread's wiring of the song up to date: who goes where,
@@ -1904,6 +1961,72 @@ fn parse_target(s: &str) -> PyResult<Target> {
 impl Ctl {
     fn clone_slot(&mut self, t: Target, pos: usize) -> Option<SlotCfg> {
         mirror(self, t).rack.get(pos).cloned()
+    }
+}
+
+/// Queue a command for the audio thread. With no stream running nothing
+/// would drain the queue (and it would fill up and drop commands), so then
+/// apply it right away.
+fn cmd_on(inner: &Inner, dsp: &Mutex<Dsp>, c: Cmd) {
+    inner.cmd(c);
+    if !inner.shared.streaming.load(Relaxed) {
+        if let Ok(mut d) = dsp.try_lock() {
+            d.apply_pending();
+        }
+        inner.free_retired();
+    }
+}
+
+/// Build the timeline for the current rate from the last layout and hand it
+/// over. Clips that want a stretched copy that isn't made yet are left out
+/// for now; the worker makes them one at a time (the newest wish first, so
+/// turning a speed knob doesn't queue up every value it passed) and builds
+/// again after each.
+fn rebuild(inner: &Arc<Inner>, dsp: &Arc<Mutex<Dsp>>) {
+    let sr = inner.shared.samplerate.load(Relaxed) as u32;
+    let (tl, start_worker) = {
+        let mut d = inner.daw.lock().unwrap();
+        let DawCtl { cache, desc, notes, autos, .. } = &mut *d;
+        let mut tl = cache.build(desc, notes, sr);
+        tl.autos = daw::auto_lanes(autos, sr);
+        let start = !d.cache.missing.is_empty() && !d.stretching;
+        if start {
+            d.stretching = true;
+        }
+        (tl, start)
+    };
+    cmd_on(inner, dsp, Cmd::Timeline(Box::new(tl)));
+    if start_worker {
+        let (inner2, dsp2) = (inner.clone(), dsp.clone());
+        let spawned = std::thread::Builder::new().name("duet-stretch".into()).spawn(move || loop {
+            let (inner, dsp) = (&inner2, &dsp2);
+            let job = {
+                let mut d = inner.daw.lock().unwrap();
+                let next = d.cache.missing.last().cloned();
+                match next.and_then(|k| d.cache.file(&k.key).map(|f| (k, f))) {
+                    Some((k, f)) => {
+                        d.stretch_now = Some(k.clone());
+                        (k, f)
+                    }
+                    None => {
+                        d.stretching = false;
+                        d.stretch_now = None;
+                        return;
+                    }
+                }
+            };
+            let (k, f) = job;
+            let made = stretch::stretch(&f, k.speed(), k.semis());
+            {
+                let mut d = inner.daw.lock().unwrap();
+                d.cache.add_stretched(k, made);
+                d.stretch_now = None;
+            }
+            rebuild(inner, dsp); // (the worker is still marked running: no second one)
+        });
+        if spawned.is_err() {
+            inner.daw.lock().unwrap().stretching = false;
+        }
     }
 }
 

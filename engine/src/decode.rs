@@ -14,8 +14,6 @@ use symphonia::core::probe::Hint;
 
 use crate::daw::{self, AudioData, PEAK_BUCKET};
 
-/// The file kinds Duet reads, by extension.
-pub const EXTENSIONS: &[&str] = &["wav", "wave", "mp3", "m4a", "aac", "mp4", "alac", "flac", "aif", "aiff", "aifc", "ogg", "oga"];
 
 fn is_wav(path: &Path) -> bool {
     matches!(path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(), Some("wav" | "wave"))

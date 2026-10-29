@@ -209,24 +209,7 @@ function setMainView(v) {
   else wmOpen(v === "mixer" ? "mixer" : "song");
 }
 
-function songKeys(e) {
-  if (ui.view === "seq" || e.target.closest("input, select, textarea") || !$("vstm").hidden || !$("newTrackM").hidden) return;
-  if (e.target.closest("button")) e.target.blur(); // or space would press that button too
-  // the transport is in the top bar, so it answers in the mixer too
-  if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-  else if (e.key === "r" || e.key === "R") { e.preventDefault(); toggleRec(); }
-  else if (e.key === "Home") { e.preventDefault(); api.daw_locate(0); }
-  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") { e.preventDefault(); openExport(); }
-  else if (ui.view !== "song") return;
-  else if ((e.key === "Delete" || e.key === "Backspace") && song.sel.size) { e.preventDefault(); deleteSel(); }
-  else if (e.key === "Escape") { hideCtx(); song.sel.clear(); songDraw(); }
-  else if (e.ctrlKey || e.metaKey) {
-    const k = e.key.toLowerCase();
-    const act = { a: () => { song.view.clips.forEach((c) => song.sel.add(c.id)); songDraw(); },
-      z: () => (e.shiftKey ? redo() : undo()), y: redo, d: duplicateSel, c: () => copySel(), x: () => copySel(true), v: () => paste() }[k];
-    if (act) { e.preventDefault(); act(); }
-  } else if (e.key === "s" || e.key === "S") { e.preventDefault(); splitAtPlayhead(); }
-}
+// (the keys: keys.js)
 
 // ---------- transport ----------
 async function togglePlay() {
@@ -276,6 +259,7 @@ function songPaint(d) {
     return `<span class="xchip ${dir}" title="${dir === "out" ? "Sending a take to your partner" : "Getting a take from your partner"}">${dir === "out" ? "↑" : "↓"} take <i style="--p:${p}%"></i>${tot ? p + "%" : "…"}</span>`;
   }).join("");
   if (was && was.xfer && Object.keys(was.xfer).length !== names.length) songDraw();
+  if (String(was && was.processing) !== String(d.processing)) { songDraw(); if (typeof ceDraw === "function") ceDraw(); }
   // meters
   for (const t of song.view ? song.view.tracks : []) {
     const m = document.querySelector(`.th[data-id="${t.id}"] .lv i`);
@@ -629,6 +613,19 @@ function songDraw() {
   drawOverlay();
 }
 
+// what's been done to a clip, after its name: ◀ backwards, ±semitones, the speed
+function clipBadges(c) {
+  let out = "";
+  if (c.reverse) out += "  ◀";
+  const p = c.pitch || 0;
+  if (Math.abs(p) >= 0.005) out += `  ${p > 0 ? "+" : ""}${Number.isInteger(+p.toFixed(2)) ? p.toFixed(0) : p.toFixed(2)} st`;
+  const sp = c.speed ?? 1;
+  if (Math.abs(sp - 1) >= 0.0005) out += `  ${Math.round(sp * 1000) / 10}%`;
+  return out;
+}
+const stretching = (c) => !!(c.stretch && (Math.abs((c.speed ?? 1) - 1) > 1e-4 || Math.abs(c.pitch || 0) > 0.005)
+  && (song.st?.processing || []).includes(c.file));
+
 function drawClip(ctx, c, x, y, w, h, track) {
   if (c.pattern) { drawPatternClip(ctx, c, x, y, w, h); return; }
   const col = tColor(track), sel = song.sel.has(c.id);
@@ -648,15 +645,18 @@ function drawClip(ctx, c, x, y, w, h, track) {
     if (levels) {
       const sr = file.sr || 48000, secPerPx = spb() / song.ppb;
       let k = 0;
-      while (k + 1 < levels.length && (512 << (k + 1)) <= secPerPx * sr) k++;
+      while (k + 1 < levels.length && (512 << (k + 1)) <= secPerPx * sr * clipRatio(c)) k++;
       const pk = levels[k], per = 512 << k;
       const lv = document.querySelector("#lanes").clientWidth;
       const px0 = Math.max(0, Math.floor(-x)), px1 = Math.min(Math.ceil(w), Math.ceil(lv - x));
       ctx.fillStyle = col + "e0";
       const g = (c.gain ?? 1) * (wh / 2) / 127;
+      const r = clipRatio(c);
       for (let px = px0; px < px1; px++) {
-        const t0 = c.offset + px * secPerPx;
-        let i0 = Math.floor(t0 * sr / per), i1 = Math.max(i0 + 1, Math.floor((t0 + secPerPx) * sr / per));
+        // the stretch of the file this pixel plays (backwards: read from the end)
+        const a = clipSrcAt(c, px * secPerPx), b = clipSrcAt(c, (px + 1) * secPerPx);
+        const t0 = Math.min(a, b), w = secPerPx * r;
+        let i0 = Math.floor(t0 * sr / per), i1 = Math.max(i0 + 1, Math.floor((t0 + w) * sr / per));
         let lo = 0, hi = 0;
         for (let i = i0; i < i1 && 2 * i + 1 < pk.length; i++) {
           if (i < 0) continue;
@@ -697,8 +697,16 @@ function drawClip(ctx, c, x, y, w, h, track) {
   ctx.fillStyle = "#121016";
   ctx.font = "700 10.5px system-ui, sans-serif";
   const g = c.gain ?? 1;
-  const label = (track ? track.name : "Clip") + (Math.abs(g - 1) > 0.001 ? `  ${fmtDb(g)}` : "");
+  const label = (track ? track.name : "Clip") + (Math.abs(g - 1) > 0.001 ? `  ${fmtDb(g)}` : "") + clipBadges(c);
   ctx.fillText(label, Math.max(x, 0) + 6, y + 11);
+  // a keep-pitch clip whose stretched copy is still being made: silent till then
+  if (stretching(c)) {
+    ctx.fillStyle = "rgba(8,7,11,0.6)";
+    ctx.fillRect(Math.max(x, 0) + 6, mid - 9, 92, 18);
+    ctx.fillStyle = "#ffe2a3";
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.fillText("Stretching…", Math.max(x, 0) + 12, mid + 4);
+  }
   // fade handles on the clip you're pointing at (or that's selected)
   if ((song.hover === c.id || sel) && w > 30) {
     ctx.fillStyle = "#ffffff";
@@ -899,7 +907,17 @@ function hitZone(p) {
 
 const clipFields = (c) => (c.pattern ? { track: c.track, pattern: c.pattern, start: c.start, blen: c.blen, boff: c.boff || 0 }
   : { track: c.track, file: c.file, start: c.start, offset: c.offset || 0, len: c.len,
-      gain: c.gain ?? 1, fade_in: c.fade_in || 0, fade_out: c.fade_out || 0 });
+      gain: c.gain ?? 1, fade_in: c.fade_in || 0, fade_out: c.fade_out || 0,
+      speed: c.speed ?? 1, pitch: c.pitch || 0, stretch: !!c.stretch, reverse: !!c.reverse });
+// file seconds per timeline second (in tape mode the pitch speeds it up too)
+const clipRatio = (c) => (c.speed ?? 1) * (c.stretch ? 1 : 2 ** ((c.pitch || 0) / 12));
+// where in the file the clip is at timeline second t (from its start)
+const clipSrcAt = (c, t) => (c.offset || 0) + (c.reverse ? c.len - t : t) * clipRatio(c);
+// a cut at timeline second t: the file offsets of the part before and after it
+const cutOffsets = (c, t) => {
+  const r = clipRatio(c), o = c.offset || 0;
+  return c.reverse ? { left: o + (c.len - t) * r, right: o } : { left: o, right: o + t * r };
+};
 const fileDur = (c) => { const f = song.view.files[c.file]; return f && f.frames ? f.frames / f.sr : Infinity; };
 const gridOf = (mode) => (mode < 0 ? 0 : mode === 0 ? bpb() : mode);
 const selClips = () => song.view.clips.filter((c) => song.sel.has(c.id));
@@ -971,15 +989,21 @@ function dragResult(d, q, snap) {
     const end = Math.max(c.start + STEP, snapBeat(q.beat, snap));
     out[c.id] = { blen: end - c.start };
   } else if (d.zone === "left") {
-    const lo = Math.max(0, c.start - (c.offset || 0) / s), hi = c.start + clipBeats(c) - MIN_LEN / s;
+    // how much file there is before the clip's start (backwards: after its end)
+    const r = clipRatio(c), o = c.offset || 0;
+    const room = c.reverse ? fileDur(c) - o - c.len * r : o;
+    const lo = Math.max(0, c.start - room / r / s), hi = c.start + clipBeats(c) - MIN_LEN / s;
     const start = Math.min(hi, Math.max(lo, snapBeat(q.beat, snap)));
     const dt = (start - c.start) * s, len = c.len - dt;
-    out[c.id] = { start, offset: (c.offset || 0) + dt, len, fade_in: Math.min(c.fade_in || 0, len - (c.fade_out || 0)) };
+    out[c.id] = { start, offset: c.reverse ? o : o + dt * r, len, fade_in: Math.min(c.fade_in || 0, len - (c.fade_out || 0)) };
   } else if (d.zone === "right") {
-    const lo = c.start + MIN_LEN / s, hi = c.start + (fileDur(c) - (c.offset || 0)) / s;
+    const r = clipRatio(c), o = c.offset || 0;
+    const room = c.reverse ? o + c.len * r : fileDur(c) - o; // file seconds the clip can reach
+    const lo = c.start + MIN_LEN / s, hi = c.start + room / r / s;
     const end = Math.min(hi, Math.max(lo, snapBeat(q.beat, snap)));
     const len = (end - c.start) * s;
     out[c.id] = { len, fade_out: Math.min(c.fade_out || 0, len - (c.fade_in || 0)) };
+    if (c.reverse) out[c.id].offset = Math.max(0, o - (len - c.len) * r);
   } else if (d.zone === "fin") {
     out[c.id] = { fade_in: Math.max(0, Math.min(c.len - (c.fade_out || 0), (q.beat - c.start) * s)) };
   } else if (d.zone === "fout") {
@@ -1043,12 +1067,17 @@ function bandSelect(e, p) {
 }
 
 function lanesDbl(e) {
-  // double-click: a pattern opens in the sequencer; empty space gets the
-  // current pattern; an audio clip selects everything on its track from there on
+  // double-click: a pattern opens in the sequencer, an audio clip in the
+  // clip editor; empty space gets the current pattern
   const p = lanePoint(e), c = hitClip(p.beat, p.row);
   if (isAuto(song.view.tracks[p.row])) return;
   if (!c) { insertPattern(p); return; }
   if (c.pattern) { seq.pat = c.pattern; setMainView("seq"); return; }
+  openClipEditor(c.id);
+}
+
+// every clip on the track from this one on (it used to be the double-click)
+function selectFrom(c) {
   for (const k of song.view.clips) if (k.track === c.track && k.start >= c.start) song.sel.add(k.id);
   songDraw();
 }
@@ -1073,9 +1102,9 @@ function splitClips(beat, clips) {
       ch.push(["clip", newId("c"), { ...clipFields(c), start: beat, boff: (c.boff || 0) + lb, blen: c.blen - lb }]);
       continue;
     }
-    const left = (beat - c.start) * s, right = c.len - left;
-    ch.push(["clip", c.id, { len: left, fade_out: 0, fade_in: Math.min(c.fade_in || 0, left) }]);
-    ch.push(["clip", newId("c"), { ...clipFields(c), start: beat, offset: (c.offset || 0) + left, len: right,
+    const left = (beat - c.start) * s, right = c.len - left, cut = cutOffsets(c, left);
+    ch.push(["clip", c.id, { offset: cut.left, len: left, fade_out: 0, fade_in: Math.min(c.fade_in || 0, left) }]);
+    ch.push(["clip", newId("c"), { ...clipFields(c), start: beat, offset: cut.right, len: right,
       fade_in: 0, fade_out: Math.min(c.fade_out || 0, right) }]);
   }
   if (ch.length) songEdit(ch);
@@ -1163,6 +1192,9 @@ function lanesContext(e) {
     if (c.pattern) {
       items.push(["Open in the sequencer", "dbl-click", () => { seq.pat = c.pattern; setMainView("seq"); }]);
     } else {
+      items.push(["Edit clip…", "dbl-click", () => openClipEditor(c.id)]);
+      items.push(["Reverse", "", () => songEdit(selClips().filter((k) => !k.pattern).map((k) => ["clip", k.id, { reverse: !k.reverse }]))]);
+      items.push(["Select everything after", "", () => selectFrom(c)]);
       items.push(["Remove fades", "", () => songEdit(selClips().map((k) => ["clip", k.id, { fade_in: 0, fade_out: 0 }]))]);
       items.push({ gain: c });
     }
@@ -1303,6 +1335,7 @@ async function toggleSongMenu() {
   menu.innerHTML = `<div class="macts">
       <button id="mNew"><span>New song</span></button>
       <button id="mExport"><span>Export as WAV…</span><kbd>Ctrl+E</kbd></button>
+      <button id="mKeys"><span>Keyboard shortcuts…</span><kbd>Ctrl+/</kbd></button>
       <button id="mSound"><span>Audio &amp; MIDI settings</span></button>
       <button id="mConnect"><span>Connect to your partner</span></button>
     </div>
@@ -1317,6 +1350,7 @@ async function toggleSongMenu() {
   inp.onchange = () => inp.value.trim() && songEdit([["meta", "meta", { name: inp.value.trim() }]]);
   inp.onkeydown = (e) => e.key === "Enter" && inp.blur();
   $("mExport").onclick = () => { menu.hidden = true; openExport(); };
+  $("mKeys").onclick = () => { menu.hidden = true; openShortcuts(); };
   $("mSound").onclick = () => { menu.hidden = true; openPanel("sound"); };
   $("mConnect").onclick = () => { menu.hidden = true; openPanel("connect"); };
   $("mNew").onclick = async () => {
@@ -1488,6 +1522,16 @@ function demoSong() {
     daw_record: async () => { playing = true; recording = true; recFrom = pos; t0 = performance.now(); return { ok: true }; },
     daw_locate: async (p) => { pos = p; t0 = performance.now(); },
     daw_peaks: async (n) => pk[n] || null,
+    // (the demo makes up its answers: a steady beat at 96, hits every half second)
+    daw_analyze: async (id, what) => {
+      const c = view.clips.find((k) => k.id === id);
+      if (!c) return { error: "That clip is gone." };
+      if (what === "peak") return { peak: 0.5 };
+      if (what === "tempo") return { bpm: 96 * clipRatio(c) };
+      const o = c.offset || 0, L = c.len * clipRatio(c), hits = [];
+      for (let t = Math.ceil(o / 0.5) * 0.5 + 0.02; t < o + L; t += 0.5) hits.push(t);
+      return { hits };
+    },
     daw_projects: async () => [{ pid: "pdemo", name: view.meta.name, modified: Date.now() / 1000, clips: view.clips.length, current: true },
       { pid: "p2", name: "Blues in A", modified: Date.now() / 1000 - 86400, clips: 5, current: false }],
     daw_new: async () => copy(), daw_open: async () => copy(), daw_resolve: async () => copy(),

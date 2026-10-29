@@ -145,6 +145,43 @@ matters for what you hear of each other live, not for what ends up in the song.
 | Copy / cut / paste | *Ctrl+C* / *Ctrl+X* / *Ctrl+V* (pastes at the playhead) |
 | Delete | *Delete* |
 | Undo / redo | *Ctrl+Z* / *Ctrl+Y*: your own changes only, never your partner's |
+| Crossfade | select two clips that meet on a track, *X*: they overlap a little, one fading out as the other fades in |
+| In / out points | *I* and *O* at the playhead (the loop); *Ctrl+U* around the selected clips |
+| Trim / fade to the playhead | *Alt+[* / *Alt+]* trim the clip's start / end to the playhead; *Alt+I* / *Alt+O* fade in up to it / out from it |
+| Nudge | *Alt+←* / *Alt+→* one grid step |
+| Edit the clip | double-click it (or *E*): the clip editor, below |
+
+**Shortcuts are yours to set:** the song menu → *Keyboard shortcuts…* (or
+*Ctrl+/*). Start from Duet's, or from a set in the style of FL Studio, Logic,
+Pro Tools (*A*/*S* trim, *D*/*G* fade, *F* crossfade, *B* split) or Premiere/Avid
+(*I*/*O*, *Ctrl+K* split), then click any shortcut and press the key you want.
+A key does one thing: giving it to something else takes it away from what had it.
+The crossfade length is set there too. They're kept on this computer (your
+partner has their own).
+
+**The clip editor** (double-click an audio clip). Everything in it changes the
+clip, never the file, and is part of the song: your partner hears the same,
+and *Undo* takes it back.
+
+- **The waveform** shows the whole file with the clip's stretch of it lit up.
+  Drag its edges to trim, drag inside to slide the sound under the clip (the
+  clip stays where it is in the song). Scroll to zoom, shift-scroll to move.
+  ▶ plays the song from the clip.
+- **Clip:** volume and *Normalize* (as loud as it goes without clipping), fade
+  in and out, *Backwards*, and *Reset everything*.
+- **Pitch & speed:** transpose (semitones, and cents for fine tuning) and
+  speed (25% to 400%), in one of two modes:
+  - *Keep pitch*: speed and pitch apart, like Logic's Flex or FL's stretch
+    modes. The sound is stretched in the background (Signalsmith Stretch, a
+    moment for a few minutes of audio); the clip says *Stretching…* and is
+    silent until it's ready. An export waits for it.
+  - *Tape*: faster is higher, like a record. Instant, no artifacts.
+  *Detect* finds the sound's tempo; *Fit to the song* then plays it at the
+  song's tempo. *Make it last 1/2/4/8/16 bars* stretches it to exactly that.
+- **Chop:** cuts where every hit starts (*Find the hits*, with a sensitivity
+  slider), or on the grid (bar, beat, 1/8, 1/16), or click your own; drag a cut
+  to move it, right-click it to take it away. *Chop into clips* cuts the clip
+  at every mark: each piece is its own clip, to move, copy or delete.
 
 Click in the ruler to move the playhead, drag in the ruler to mark a loop.
 *Space* plays and stops, *R* records, *Ctrl + scroll* zooms. *Click* gives you
@@ -423,6 +460,9 @@ to it through lock-free queues and atomics.
 | `engine/src/instr.rs` | Instruments: the synthesized drum kit, the synth, VST3 instruments (notes in) |
 | `engine/src/midi.rs` | MIDI keyboards (midir), on a thread of their own |
 | `engine/src/daw.rs` | Song timeline: clips (converted to the device rate as they play), the fast WAV reader, waveform peaks, take writer |
+| `engine/src/stretch.rs` | Keep-pitch speed and transposing (Signalsmith Stretch), and finding a clip's hits, tempo and peak |
+| `ui/clipedit.js` | The clip editor (double-click an audio clip) |
+| `ui/keys.js` | Keyboard shortcuts: the actions, the sets in other programs' style, the settings window |
 | `engine/src/decode.rs` | Every other kind of sound file (MP3, M4A/AAC/ALAC, FLAC, AIFF, Ogg) through symphonia |
 | `engine/src/transfer.rs` | Reliable, paced file transfer to the partner (recorded takes) over the audio socket |
 | `engine/src/livenotes.rs` | Notes played live on a song track, to the partner: tiny packets with the last few events repeated, so loss can't leave a note hanging |

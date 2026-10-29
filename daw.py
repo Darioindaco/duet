@@ -56,7 +56,11 @@ FIELDS = {
     # its points [[beat, value 0..1], ...]
     "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "inst", "seq", "bus", "out", "sends",
               "auto", "points", "del"},
-    "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out", "del"},
+    # speed (2 = twice as fast), pitch (semitones), stretch (keep the pitch
+    # when the speed changes; off = tape), reverse (the clip's stretch of the
+    # file backwards). offset is in seconds of the file, len on the timeline.
+    "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out",
+             "speed", "pitch", "stretch", "reverse", "del"},
     "file": {"frames", "sr", "owner", "name", "del"},
     "pattern": {"name", "len", "color", "del"},
     "note": {"pattern", "track", "start", "len", "key", "vel", "del"},
@@ -68,18 +72,28 @@ FIELD_DEFAULTS = {
     "meta": META_DEFAULTS,
     "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None,
               "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "del": False},
-    "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "del": False},
+    "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "speed": 1.0, "pitch": 0.0,
+             "stretch": False, "reverse": False, "del": False},
     "file": {"del": False},
     "pattern": {"del": False},
     "note": {"vel": 100, "del": False},
 }
 # controls you turn rather than click: a run of turns is one undo step
-CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel", "sends", "master_rack", "points"}
+CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel", "sends", "master_rack", "points", "speed", "pitch"}
 MAX_SENDS = 4
 UNDO_DEPTH = 200
 
 # ids and file names end up in paths: only plain names, whatever the partner sends
 SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
+
+
+def num(v, default: float, lo: float, hi: float) -> float:
+    """A number from the song (the partner's too): in range, or the default."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    return min(hi, max(lo, x)) if math.isfinite(x) else default
 
 
 def copy_file(src: Path, dst: Path):
@@ -819,7 +833,9 @@ class Daw:
             if slot is None or key not in self.loaded:
                 continue
             desc[slot].append((key, float(c.get("start", 0)) * spb, float(c.get("offset", 0)), float(c.get("len", 0)),
-                               float(c.get("gain", 1.0)), float(c.get("fade_in", 0)), float(c.get("fade_out", 0))))
+                               float(c.get("gain", 1.0)), float(c.get("fade_in", 0)), float(c.get("fade_out", 0)),
+                               num(c.get("speed"), 1.0, 0.05, 20.0), num(c.get("pitch"), 0.0, -48.0, 48.0),
+                               bool(c.get("stretch")), bool(c.get("reverse"))))
         notes = self._notes(spb)
         if desc != self.sent_desc or notes != self.sent_notes:
             e.daw_timeline(desc, notes)
@@ -1004,6 +1020,30 @@ class Daw:
                                                   "len": f["frames"] / f["sr"], "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}])
             self._do(changes)
             return {"ok": True, "track": track}
+
+    def analyze(self, clip: str, what: str, sensitivity: float = 0.5) -> dict:
+        """Look into a clip's audio (the stretch of the file it plays)."""
+        with self.lock:
+            c = self.p.live("clip").get(clip)
+            if not c or not c.get("file"):
+                return {"error": "That clip is gone."}
+            key = c["file"]
+            if key not in self.loaded:
+                return {"error": "The audio isn't here yet."}
+            offset = num(c.get("offset"), 0.0, 0.0, 1e7)
+            speed = num(c.get("speed"), 1.0, 0.05, 20.0)
+            ratio = speed if c.get("stretch") else speed * 2 ** (num(c.get("pitch"), 0.0, -48.0, 48.0) / 12)
+            dur = num(c.get("len"), 0.0, 0.0, 1e7) * ratio  # seconds of the file
+        try:  # (nothing locked: a long clip takes a moment)
+            if what == "peak":
+                return {"peak": self.e.daw_clip_peak(key, offset, dur)}
+            if what == "hits":
+                return {"hits": self.e.daw_transients(key, offset, dur, min(1.0, max(0.0, sensitivity)))}
+            if what == "tempo":
+                return {"bpm": self.e.daw_tempo(key, offset, dur)}
+        except Exception as exc:
+            return {"error": str(exc)}
+        return {"error": f"Nothing called {what}."}
 
     def sample_pad(self, track: str, pad: int, path: str | None) -> dict:
         """A library sample onto a drum pad of a song channel (pad 0 of a
@@ -1418,7 +1458,8 @@ class Daw:
                     "recording": bool(s["daw_recording"]) or bool(self.rec and playing),
                     "recFrom": self.rec["punch"] / spb if self.rec else None,
                     "levels": levels, "xfer": xfer, "notices": notices,
-                    "partnerHere": self._partner_here(), "partnerNotes": live}
+                    "partnerHere": self._partner_here(), "partnerNotes": live,
+                    "processing": self.e.daw_processing()}
 
     def close(self):
         self._running = False

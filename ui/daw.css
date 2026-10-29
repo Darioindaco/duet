@@ -399,3 +399,34 @@ header > .spacer { flex-shrink: 1; }
 .th.auto .tn { font-weight: 600; }
 .th .autosel { width: 100%; }
 .autotip { position: fixed; z-index: 60; pointer-events: none; padding: 3px 7px; border-radius: 6px; background: #1d1a24; border: 1px solid #ffc857; color: #ffe2a3; font: 600 11px/1.3 system-ui, sans-serif; }
+
+/* clip editor */
+.mbox.ce { width: min(980px, calc(100vw - 32px)); }
+.mbox.ce .mhead { align-items: center; }
+.mbox.ce .mhead #cePlay { margin-left: auto; }
+.mbox.ce .mhead #cePlay.on { color: var(--me); border-color: var(--me); }
+.mbox.ce .mhead .x { margin-left: 4px; }
+.cewave { display: block; width: 100%; height: 190px; border-radius: 10px; border: 1px solid var(--line-2); background: #0e0d12; touch-action: none; }
+.cehint { margin: 6px 0 12px !important; color: var(--muted); }
+.cebody { margin-top: 12px; min-height: 210px; }
+.cerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.cerow > label { width: 92px; color: var(--muted); font-size: 12.5px; flex: none; }
+.cerow .hs { width: 220px; }
+.ceval { min-width: 74px; font-variant-numeric: tabular-nums; color: var(--text); font-size: 12.5px; }
+.cerange { width: 220px; accent-color: var(--me); }
+.cenum { width: 78px; background: var(--bg); color: var(--text); border: 1px solid var(--line-2); border-radius: 8px; padding: 5px 8px; font: inherit; }
+.cebtns { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn.sq { padding: 5px 10px; min-width: 34px; }
+.cebody .btn, .mbox.ce .mhead .btn { padding: 6px 12px; font-size: 12.5px; border-radius: 9px; }
+
+/* keyboard shortcuts */
+.klist { max-height: min(56vh, 520px); overflow-y: auto; margin: 6px 0 12px; border: 1px solid var(--line); border-radius: 10px; }
+.kgroup { padding: 10px 12px 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.krow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 12px; border-top: 1px solid var(--line); }
+.krow span { font-size: 13px; }
+.krow.custom span::after { content: " •"; color: var(--me); }
+.kchip { border: 1px solid var(--line-2); background: var(--bg); border-radius: 8px; padding: 3px 8px; cursor: pointer; color: var(--text); min-width: 70px; text-align: center; }
+.kchip kbd { font-family: var(--mono); font-size: 11.5px; }
+.kchip i { color: var(--muted); font-style: normal; font-size: 12px; }
+.krow.listen .kchip { border-color: var(--me); color: var(--me); }
+#keysM .row { display: flex; align-items: center; gap: 8px; }

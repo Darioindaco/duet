@@ -246,6 +246,11 @@ class Api:
     def daw_peaks(self, name):
         return self._daw.peaks(name)
 
+    def daw_analyze(self, clip, what, sensitivity=0.5):
+        """For the clip editor: "peak" (its loudest sample), "hits" (where the
+        hits are, in seconds of the file) or "tempo" (BPM or None)."""
+        return self._daw.analyze(str(clip), str(what), float(sensitivity))
+
     def daw_projects(self):
         return self._daw.projects()
 
