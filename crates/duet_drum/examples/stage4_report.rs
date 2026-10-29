@@ -29,7 +29,8 @@ fn main() {
     for fs in [48000.0, 96000.0, 192000.0] {
         let m = DrumModel::prepare_single_head(&DrumParams::default(), Head::Batter, fs).unwrap();
         println!("== fs = {fs} Hz: glide in cents above the linear frequency, at t = 35 / 100 / 200 / 500 ms; peak ΔT/T ==");
-        for (label, mode) in [("(0,1)", 0usize), ("(1,1)", 1)] {
+        for (label, (mm, nn)) in [("(0,1)", (0usize, 1usize)), ("(1,1)", (1, 1))] {
+            let mode = m.find_mode(Head::Batter, mm, nn, false).unwrap();
             let f0 = m.modes[mode].freq();
             for vel in [0.1f32, 0.4, 0.7, 1.0] {
                 let (f, rise) = track(&m, vel, mode, &times);

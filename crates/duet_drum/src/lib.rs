@@ -7,7 +7,8 @@
 //!
 //! Built stage by stage (see the spec): stage 1 is the Bessel functions and the
 //! in-vacuo membrane mode basis; stage 2 the linear single head with the exact
-//! modal discretisation.
+//! modal discretisation; stage 3 the stick; stage 4 tension modulation; stage 5 two heads, air
+//! loading, the cavity and radiation damping.
 
 pub mod analysis;
 pub mod bessel;
@@ -19,5 +20,5 @@ pub mod voice;
 
 pub use modes::{MembraneBasis, MembraneMode, MembraneParams, RADIAL_POINTS};
 pub use params::{DrumParams, Head, HeadParams, MicParams, StickParams};
-pub use prepare::{DrumModel, ModeInfo, PrepareError};
+pub use prepare::{Block, DrumModel, ModeInfo, PrepareError, PrepareOptions};
 pub use voice::{DrumVoice, Hit};

@@ -38,7 +38,8 @@ const TIMES: [f64; 4] = [0.035, 0.1, 0.2, 0.5];
 #[test]
 fn a_hard_hit_starts_sharp_and_glides_down() {
     let m = model(48000.0, DrumParams::default());
-    for mode in [0usize, 1] {
+    for (mm, nn) in [(0usize, 1usize), (1, 1)] {
+        let mode = m.find_mode(Head::Batter, mm, nn, false).unwrap();
         let g = glide(&m, 1.0, mode, &TIMES);
         println!("mode {mode}: {g:.1?} cents at 35 / 100 / 200 / 500 ms");
         assert!(g[0] > 20.0, "measurably sharp: {g:?}");
@@ -50,7 +51,7 @@ fn a_hard_hit_starts_sharp_and_glides_down() {
 #[test]
 fn the_glide_deepens_with_velocity_and_is_nothing_for_a_soft_hit() {
     let m = model(48000.0, DrumParams::default());
-    let depth: Vec<f64> = [0.1f32, 0.4, 0.7, 1.0].iter().map(|v| glide(&m, *v, 0, &[0.035])[0]).collect();
+    let depth: Vec<f64> = [0.1f32, 0.4, 0.7, 1.0].iter().map(|v| glide(&m, *v, m.find_mode(Head::Batter, 0, 1, false).unwrap(), &[0.035])[0]).collect();
     println!("glide at 35 ms, vel 0.1 / 0.4 / 0.7 / 1.0: {depth:.1?} cents");
     assert!(depth.windows(2).all(|w| w[1] > w[0]), "{depth:?}");
     assert!(depth[0].abs() < 1.0, "vel 0.1: {}", depth[0]);

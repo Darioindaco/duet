@@ -1,10 +1,18 @@
 //! Prepare time: everything that is solved once, off the audio thread (§4.6).
 //!
-//! Stage 2: one head, in vacuo, no air, cavity, lugs or nonlinearity: every
-//! (m, n) of the head's basis is one or two uncoupled modes with
-//! `Ω = ω_vac`, `σ = σ0 + σ1·Ω²`.
+//! Two heads (batter and resonant), air mass loading (§4.3), the cavity's air spring
+//! (§4.4) and damping (§4.7), diagonalised into a bank of uncoupled oscillators:
+//!
+//! * **block A**, the axisymmetric (m = 0) modes of both heads, coupled by the cavity: a dense
+//!   `T_A` (rows: every m = 0 head mode, columns: the kept final modes) with `q = T_A·η`;
+//! * **pairs**, every (head, m ≥ 1, n): a degenerate (cos, sin) pair, `q = η/√(1+μ)` (the lugs, stage 6,
+//!   will rotate the pair).
+//!
+//! The runtime state is the final modes' coordinates η, A's first, then the pairs.
 
 use std::f64::consts::PI;
+
+use nalgebra::{DMatrix, SymmetricEigen};
 
 use crate::modes::{MembraneBasis, MembraneParams};
 use crate::params::{DrumParams, Head};
@@ -29,19 +37,57 @@ impl std::fmt::Display for PrepareError {
 
 impl std::error::Error for PrepareError {}
 
+/// Which physics is in the model (for tests and to build up the stages).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrepareOptions {
+    /// the resonant head (without it, only the batter)
+    pub resonant: bool,
+    /// air mass loading (§4.3)
+    pub air_loading: bool,
+    /// the cavity's air spring coupling the m = 0 modes (§4.4)
+    pub cavity: bool,
+}
+
+impl Default for PrepareOptions {
+    fn default() -> Self {
+        PrepareOptions { resonant: true, air_loading: true, cavity: true }
+    }
+}
+
+/// How a final mode sits in the bank.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Block {
+    /// an axisymmetric mode of the (possibly coupled) two heads
+    Axisym,
+    /// one member (cos or sin) of a degenerate pair
+    Pair,
+}
+
 /// One final mode of the prepared model.
 #[derive(Clone, Debug)]
 pub struct ModeInfo {
+    /// the head that takes most of the mode
     pub head: Head,
-    /// index into the head's basis, and which member of a pair
+    pub block: Block,
+    /// index into the dominant head's basis (a pair; for block A the dominant row)
     pub basis_index: usize,
     pub sin: bool,
     pub m: usize,
+    /// n of the dominant (m, n) of the head
     pub n: usize,
     /// Ω (rad/s): the modal oscillator is `e^{−σt}·cos(Ωt)`
     pub omega: f64,
-    /// σ (1/s): amplitude decay rate
+    /// σ = σ_int + σ_rad (1/s): amplitude decay rate
     pub sigma: f64,
+    pub sigma_int: f64,
+    pub sigma_rad: f64,
+    /// how much of the mode's energy each head holds (batter, resonant); sums to 1
+    pub participation: [f64; 2],
+    /// net volume weight ã = (Tᵀa)_i and its batter-only part (m³ per √kg·m)
+    pub vol_weight: f64,
+    pub vol_weight_batter: f64,
+    /// the pair's `1/√(1+μ)`
+    pub scale: f64,
 }
 
 impl ModeInfo {
@@ -70,67 +116,239 @@ pub fn exact_coefficients(omega: f64, sigma: f64, k: f64) -> (f64, f64) {
     (t / k, o2)
 }
 
+/// One m = 0 head mode (a row of block A).
+#[derive(Clone, Debug)]
+pub(crate) struct Row {
+    pub head: usize,
+    pub basis_index: usize,
+    pub kappa2: f64,
+}
+
 /// Everything prepare computes: immutable, shared by voices.
 #[derive(Clone, Debug)]
 pub struct DrumModel {
     pub fs: f64,
     pub k: f64,
     pub params: DrumParams,
+    pub options: PrepareOptions,
     pub modes: Vec<ModeInfo>,
-    /// the head's in-vacuo basis (its radial tables serve strikes and mics)
-    pub basis: MembraneBasis,
+    /// the heads' in-vacuo bases (batter, resonant): their radial tables serve strikes and mics
+    pub bases: [Option<MembraneBasis>; 2],
+    /// things prepare noticed (a damping clamped, ...)
+    pub warnings: Vec<String>,
+    /// final modes in block A (they come first), and the rows of `t_a`
+    pub(crate) n_a: usize,
+    pub(crate) rows: Vec<Row>,
+    /// row-major `rows × n_a`: q_row = Σ_i t_a[row, i]·η_i
+    pub(crate) t_a: Vec<f64>,
     // per mode, contiguous (struct of arrays), padded to a multiple of 4
     pub(crate) omega_t2: Vec<f64>,
-    /// κ² of every mode (the tension modulation's weights)
-    pub(crate) kappa2: Vec<f64>,
-    /// C of V_tm = C·G², G = Σκ²η² (§4.8a): γ_nl·E·h / (8A(1−ν²)σ²)
-    pub(crate) c_tm: f64,
+    /// κ²/(1+μ) of a pair's modes (0 for block A and padding), and the head it belongs to
+    pub(crate) w_k2: Vec<f64>,
+    pub(crate) head_idx: Vec<usize>,
     /// 1 + kσ̃ and 1 − kσ̃
     pub(crate) d_plus: Vec<f64>,
     pub(crate) d_minus: Vec<f64>,
+    /// C of V_tm = Σ_h C_h·G_h², G_h = Σκ²q² (§4.8a): γ_nl·E·h / (8A(1−ν²)σ²), per head
+    pub(crate) c_tm: [f64; 2],
+}
+
+fn head_index(h: Head) -> usize {
+    match h {
+        Head::Batter => 0,
+        Head::Resonant => 1,
+    }
 }
 
 impl DrumModel {
-    /// Stage 2: one head, linear, in vacuo.
+    /// The full model: both heads, air loading, cavity, damping.
+    pub fn prepare(p: &DrumParams, fs: f64) -> Result<Self, PrepareError> {
+        Self::prepare_with(p, fs, &PrepareOptions::default())
+    }
+
+    /// Stage 2–4's model: the batter alone, in vacuo (no air, cavity or radiation).
     pub fn prepare_single_head(p: &DrumParams, head: Head, fs: f64) -> Result<Self, PrepareError> {
+        assert_eq!(head, Head::Batter, "the single-head model is the batter");
+        let mut q = p.clone();
+        q.radiation_on = false;
+        Self::prepare_with(&q, fs, &PrepareOptions { resonant: false, air_loading: false, cavity: false })
+    }
+
+    pub fn prepare_with(p: &DrumParams, fs: f64, opt: &PrepareOptions) -> Result<Self, PrepareError> {
         if !(fs > 8000.0) {
             return Err(PrepareError::InvalidParams(format!("sample rate {fs}")));
         }
-        let hp = p.head(head);
-        let f_cut = hp.f_max.min(0.45 * fs);
-        let basis = MembraneBasis::build(&MembraneParams::from_drum(p, head), f_cut);
-        let mut modes = Vec::new();
-        for (bi, bm) in basis.modes.iter().enumerate() {
-            let omega = bm.omega_vac;
-            let sigma = hp.sigma0 + hp.sigma1 * omega * omega;
-            for sin in [false, true] {
-                if sin && bm.m == 0 {
+        let k = 1.0 / fs;
+        let heads: Vec<Head> = if opt.resonant { vec![Head::Batter, Head::Resonant] } else { vec![Head::Batter] };
+        let mut warnings = Vec::new();
+        // the in-vacuo bases, with 1.6·f_max of headroom: air loading lowers frequencies
+        let mut bases: [Option<MembraneBasis>; 2] = [None, None];
+        for &h in &heads {
+            let mp = MembraneParams::from_drum(p, h);
+            bases[head_index(h)] = Some(MembraneBasis::build(&mp, 1.6 * p.head(h).f_max));
+        }
+        // air mass loading per head mode: μ = β·ρ_a/(σ_h κ)
+        let mu = |hi: usize, kappa: f64| -> f64 {
+            if opt.air_loading {
+                let h = if hi == 0 { Head::Batter } else { Head::Resonant };
+                p.air_mass_factor * p.air_density / (p.surface_density(h) * kappa)
+            } else {
+                0.0
+            }
+        };
+        let f_keep = |hi: usize| -> f64 {
+            let h = if hi == 0 { Head::Batter } else { Head::Resonant };
+            p.head(h).f_max.min(0.45 * fs)
+        };
+        let sigma_of = |part: [f64; 2], omega: f64| -> f64 {
+            part[0] * (p.batter.sigma0 + p.batter.sigma1 * omega * omega) + part[1] * (p.resonant.sigma0 + p.resonant.sigma1 * omega * omega)
+        };
+
+        // ---- block A: the m = 0 modes of both heads, with the cavity's spring ----
+        let mut rows: Vec<Row> = Vec::new();
+        let (mut row_mu, mut row_w2, mut row_a) = (Vec::new(), Vec::new(), Vec::new());
+        for &h in &heads {
+            let hi = head_index(h);
+            for (bi, bm) in bases[hi].as_ref().unwrap().modes.iter().enumerate().filter(|(_, m)| m.m == 0) {
+                rows.push(Row { head: hi, basis_index: bi, kappa2: bm.kappa * bm.kappa });
+                row_mu.push(mu(hi, bm.kappa));
+                row_w2.push(bm.omega_vac * bm.omega_vac);
+                row_a.push(bm.vol_weight);
+            }
+        }
+        let nr = rows.len();
+        let k_cav = if opt.cavity { p.cavity_scale * p.air_density * p.speed_of_sound * p.speed_of_sound / p.cavity_volume() } else { 0.0 };
+        let mut s = DMatrix::<f64>::zeros(nr, nr);
+        for i in 0..nr {
+            for j in 0..nr {
+                let kij = k_cav * row_a[i] * row_a[j] + if i == j { row_w2[i] } else { 0.0 };
+                s[(i, j)] = kij / ((1.0 + row_mu[i]) * (1.0 + row_mu[j])).sqrt();
+            }
+        }
+        let eig = SymmetricEigen::new(s);
+        let mut order: Vec<usize> = (0..nr).collect();
+        order.sort_by(|&a, &b| eig.eigenvalues[a].total_cmp(&eig.eigenvalues[b]));
+        let mut modes: Vec<ModeInfo> = Vec::new();
+        let mut t_cols: Vec<Vec<f64>> = Vec::new(); // kept columns of T_A, each of length nr
+        for &c in &order {
+            let lam = eig.eigenvalues[c];
+            if !(lam.is_finite() && lam > 0.0) {
+                return Err(PrepareError::InvalidParams(format!("block A: Ω² = {lam}")));
+            }
+            let omega = lam.sqrt();
+            let mut v: Vec<f64> = (0..nr).map(|r| eig.eigenvectors[(r, c)]).collect();
+            // a sign convention, so the result doesn't depend on the solver's whim
+            let big = (0..nr).max_by(|&a, &b| v[a].abs().total_cmp(&v[b].abs())).unwrap();
+            if v[big] < 0.0 {
+                v.iter_mut().for_each(|x| *x = -*x);
+            }
+            // participation: Σ_{k∈h}(1+μ_k)·T_ki² = Σ_{k∈h} V_ki²
+            let mut part = [0.0; 2];
+            for r in 0..nr {
+                part[rows[r].head] += v[r] * v[r];
+            }
+            let dom = if part[1] > part[0] { 1 } else { 0 };
+            if omega / (2.0 * PI) > f_keep(dom) {
+                continue;
+            }
+            let t: Vec<f64> = (0..nr).map(|r| v[r] / (1.0 + row_mu[r]).sqrt()).collect();
+            let vol: f64 = (0..nr).map(|r| row_a[r] * t[r]).sum();
+            let vol_b: f64 = (0..nr).filter(|&r| rows[r].head == 0).map(|r| row_a[r] * t[r]).sum();
+            let sigma_int = sigma_of(part, omega);
+            let sigma_rad = if p.radiation_on { p.radiation_gain * p.air_density * lam * vol * vol / (8.0 * PI * p.speed_of_sound) } else { 0.0 };
+            let dom_row = (0..nr).filter(|&r| rows[r].head == dom).max_by(|&a, &b| v[a].abs().total_cmp(&v[b].abs())).unwrap();
+            let bm = &bases[dom].as_ref().unwrap().modes[rows[dom_row].basis_index];
+            modes.push(ModeInfo {
+                head: if dom == 0 { Head::Batter } else { Head::Resonant },
+                block: Block::Axisym,
+                basis_index: rows[dom_row].basis_index,
+                sin: false,
+                m: 0,
+                n: bm.n,
+                omega,
+                sigma: sigma_int + sigma_rad,
+                sigma_int,
+                sigma_rad,
+                participation: part,
+                vol_weight: vol,
+                vol_weight_batter: vol_b,
+                scale: 1.0,
+            });
+            t_cols.push(t);
+        }
+        let n_a = modes.len();
+
+        // ---- the pairs: (head, m ≥ 1, n), air-loaded, uncoupled ----
+        let mut pair_w2 = Vec::new();
+        let mut pair_head = Vec::new();
+        for &h in &heads {
+            let hi = head_index(h);
+            let basis = bases[hi].as_ref().unwrap();
+            for (bi, bm) in basis.modes.iter().enumerate().filter(|(_, m)| m.m >= 1) {
+                let mu_k = mu(hi, bm.kappa);
+                let omega = bm.omega_vac / (1.0 + mu_k).sqrt();
+                if omega / (2.0 * PI) > f_keep(hi) {
                     continue;
                 }
-                modes.push(ModeInfo { head, basis_index: bi, sin, m: bm.m, n: bm.n, omega, sigma });
+                let mut part = [0.0; 2];
+                part[hi] = 1.0;
+                let sigma = sigma_of(part, omega);
+                for sin in [false, true] {
+                    modes.push(ModeInfo {
+                        head: h, block: Block::Pair, basis_index: bi, sin, m: bm.m, n: bm.n, omega, sigma, sigma_int: sigma, sigma_rad: 0.0,
+                        participation: part, vol_weight: 0.0, vol_weight_batter: 0.0, scale: 1.0 / (1.0 + mu_k).sqrt(),
+                    });
+                    pair_w2.push(bm.kappa * bm.kappa / (1.0 + mu_k));
+                    pair_head.push(hi);
+                }
             }
         }
-        if modes.len() > p.n_max_per_head {
-            return Err(PrepareError::TooManyModes { head, count: modes.len(), max: p.n_max_per_head });
+        // the cap per head
+        for h in &heads {
+            let count = modes.iter().filter(|m| m.head == *h).count();
+            if count > p.n_max_per_head {
+                return Err(PrepareError::TooManyModes { head: *h, count, max: p.n_max_per_head });
+            }
         }
-        let k = 1.0 / fs;
-        let n = modes.len().div_ceil(4) * 4;
-        let (mut omega_t2, mut kappa2) = (vec![0.0; n], vec![0.0; n]);
-        let (mut d_plus, mut d_minus) = (vec![1.0; n], vec![1.0; n]);
-        for (i, m) in modes.iter().enumerate() {
-            if !(m.omega.is_finite() && m.omega > 0.0 && m.sigma >= 0.0) {
+        // damping must leave every mode underdamped
+        for (i, m) in modes.iter_mut().enumerate() {
+            if !(m.omega.is_finite() && m.omega > 0.0 && m.sigma >= 0.0 && m.sigma.is_finite()) {
                 return Err(PrepareError::InvalidParams(format!("mode {i}: Ω = {}, σ = {}", m.omega, m.sigma)));
             }
+            if m.sigma >= 0.9 * m.omega {
+                warnings.push(format!("mode {i} ({:.1} Hz): σ = {:.1}/s is not below Ω; clamped to 0.9Ω", m.freq(), m.sigma));
+                m.sigma = 0.9 * m.omega;
+            }
+        }
+
+        // ---- the runtime arrays ----
+        let n = modes.len();
+        let n_pad = n.div_ceil(4) * 4;
+        let mut omega_t2 = vec![0.0; n_pad];
+        let (mut d_plus, mut d_minus) = (vec![1.0; n_pad], vec![1.0; n_pad]);
+        for (i, m) in modes.iter().enumerate() {
             let (st, o2) = exact_coefficients(m.omega, m.sigma, k);
             omega_t2[i] = o2;
-            kappa2[i] = basis.modes[m.basis_index].kappa.powi(2);
             d_plus[i] = 1.0 + k * st;
             d_minus[i] = 1.0 - k * st;
         }
-        let sigma_h = p.surface_density(head);
-        let c_tm = p.nonlinearity_scale * p.youngs_modulus * hp.thickness
-            / (8.0 * p.area() * (1.0 - p.poisson_ratio * p.poisson_ratio) * sigma_h * sigma_h);
-        Ok(DrumModel { fs, k, params: p.clone(), modes, basis, omega_t2, kappa2, c_tm, d_plus, d_minus })
+        let (mut w_k2, mut head_idx) = (vec![0.0; n_pad], vec![0usize; n_pad]);
+        for (j, (w, h)) in pair_w2.iter().zip(&pair_head).enumerate() {
+            w_k2[n_a + j] = *w;
+            head_idx[n_a + j] = *h;
+        }
+        let mut t_a = vec![0.0; nr * n_a];
+        for (c, col) in t_cols.iter().enumerate() {
+            for r in 0..nr {
+                t_a[r * n_a + c] = col[r];
+            }
+        }
+        let c_of = |h: Head| {
+            let sg = p.surface_density(h);
+            p.nonlinearity_scale * p.youngs_modulus * p.head(h).thickness / (8.0 * p.area() * (1.0 - p.poisson_ratio * p.poisson_ratio) * sg * sg)
+        };
+        let c_tm = [c_of(Head::Batter), if opt.resonant { c_of(Head::Resonant) } else { 0.0 }];
+        Ok(DrumModel { fs, k, params: p.clone(), options: *opt, modes, bases, warnings, n_a, rows, t_a, omega_t2, w_k2, head_idx, d_plus, d_minus, c_tm })
     }
 
     /// Number of modes (degrees of freedom).
@@ -142,9 +360,66 @@ impl DrumModel {
         self.modes.is_empty()
     }
 
-    /// Φ_i at (r, θ), r as a fraction of the radius: mass-normalised, from the radial tables.
+    /// Final modes in block A (the axisymmetric ones; they come first).
+    pub fn n_axisym(&self) -> usize {
+        self.n_a
+    }
+
+    /// Mode indices, lowest frequency first.
+    pub fn by_frequency(&self) -> Vec<usize> {
+        let mut o: Vec<usize> = (0..self.len()).collect();
+        o.sort_by(|&a, &b| self.modes[a].omega.total_cmp(&self.modes[b].omega).then(a.cmp(&b)));
+        o
+    }
+
+    /// The first mode (lowest frequency) of a head's (m, n) and member; for block A, the
+    /// mode that has most of that head's (0, n).
+    pub fn find_mode(&self, head: Head, m: usize, n: usize, sin: bool) -> Option<usize> {
+        self.by_frequency().into_iter().find(|&i| {
+            let md = &self.modes[i];
+            md.head == head && md.m == m && md.n == n && md.sin == sin
+        })
+    }
+
+    /// `∂w_b(x)/∂η_i` for every mode: how the batter's displacement at (r, θ) depends on the
+    /// state (r a fraction of the radius). This is the strike vector, and the weight of every mode in a
+    /// displacement or acceleration at a point. Uses the radial tables only. `scratch`: `rows` long.
+    pub fn strike_vector(&self, r_frac: f64, theta: f64, scratch: &mut [f64], out: &mut [f64]) {
+        let basis = self.bases[0].as_ref().unwrap();
+        let r = r_frac * basis.params.radius;
+        for (k, row) in self.rows.iter().enumerate() {
+            scratch[k] = if row.head == 0 { basis.modes[row.basis_index].radial(r) } else { 0.0 };
+        }
+        out[..self.n_a].fill(0.0);
+        for (k, &phi) in scratch[..self.rows.len()].iter().enumerate() {
+            if phi != 0.0 {
+                let row = &self.t_a[k * self.n_a..(k + 1) * self.n_a];
+                for (o, t) in out[..self.n_a].iter_mut().zip(row) {
+                    *o += phi * t;
+                }
+            }
+        }
+        for i in self.n_a..self.len() {
+            let md = &self.modes[i];
+            out[i] = if md.head == Head::Batter {
+                let a = md.m as f64 * theta;
+                md.scale * basis.modes[md.basis_index].radial(r) * if md.sin { a.sin() } else { a.cos() }
+            } else {
+                0.0
+            };
+        }
+    }
+
+    /// [`Self::strike_vector`], allocated.
+    pub fn projection(&self, r_frac: f64, theta: f64) -> Vec<f64> {
+        let mut scratch = vec![0.0; self.rows.len()];
+        let mut out = vec![0.0; self.len()];
+        self.strike_vector(r_frac, theta, &mut scratch, &mut out);
+        out
+    }
+
+    /// `∂w_b/∂η_i` of one mode (slow: a whole strike vector; for tests and tables).
     pub fn shape(&self, i: usize, r_frac: f64, theta: f64) -> f64 {
-        let md = &self.modes[i];
-        self.basis.modes[md.basis_index].shape(r_frac * self.basis.params.radius, theta, md.sin)
+        self.projection(r_frac, theta)[i]
     }
 }

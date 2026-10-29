@@ -57,14 +57,14 @@ fn run_and_measure(fs: f64) -> Vec<(f64, f64, f64, f64)> {
     let (r_e, th_e) = (0.55, 0.3);
     v.test_impulse(&m, r_e, th_e, 1.0);
     let n = (6.0 * fs) as usize;
-    let mic = (0.35, 1.1);
+    let mic_w = m.projection(0.35, 1.1);
     let mut sig = Vec::with_capacity(n);
     // each of the first ten (m, n)'s: the envelope of its cos member's state
-    let firsts: Vec<usize> = (0..10).map(|b| m.modes.iter().position(|x| x.basis_index == b && !x.sin).unwrap()).collect();
+    let firsts: Vec<usize> = m.by_frequency().into_iter().filter(|&i| !m.modes[i].sin).take(10).collect();
     let mut env: Vec<Vec<f64>> = vec![Vec::new(); 10];
     for _ in 0..n {
         v.step_linear(&m, None);
-        sig.push(v.displacement_at(&m, mic.0, mic.1));
+        sig.push(v.displacement(&mic_w));
         for (e, &i) in env.iter_mut().zip(&firsts) {
             let (x, p, mo) = (v.x()[i], v.p()[i], &m.modes[i]);
             // x = A e^{−σt} cos(Ωt+φ): x² + ((p + σx)/Ω)² = (A e^{−σt})²

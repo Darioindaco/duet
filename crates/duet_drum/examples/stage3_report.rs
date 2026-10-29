@@ -80,10 +80,11 @@ fn main() {
         for vel in [0.1f32, 0.4, 0.7, 1.0] {
             let mut v = DrumVoice::new(&m);
             v.trigger(&m, Hit { velocity: vel, radius: 0.5, angle: 0.4, sample_offset: 0 });
+            let w = m.projection(0.4, 2.0);
             let mut acc = Vec::new();
             for _ in 0..12000 {
                 v.step(&m);
-                acc.push(v.acceleration_at(&m, 0.4, 2.0));
+                acc.push(v.acceleration(&w));
             }
             cs.push(spectral_centroid(&acc, 48000.0));
         }

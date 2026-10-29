@@ -97,10 +97,11 @@ fn harder_hits_are_brighter() {
         for (r, th) in spots {
             let mut v = DrumVoice::new(&m);
             v.trigger(&m, hit(vel, r, th));
+            let w = m.projection(0.4, 2.0);
             let mut a = Vec::new();
             for _ in 0..(0.25 * fs) as usize {
                 v.step(&m);
-                a.push(v.acceleration_at(&m, 0.4, 2.0));
+                a.push(v.acceleration(&w));
             }
             sum += spectral_centroid(&a, fs);
         }
