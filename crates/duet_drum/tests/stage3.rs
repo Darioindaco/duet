@@ -126,8 +126,9 @@ fn contact(ks: f64, fs: f64) -> (f64, f64) {
 
 #[test]
 fn a_soft_contact_converges_with_the_sample_rate() {
-    // K_s = 1e6: one smooth pulse that doesn't depend on the rate (the spec's K_s = 1e8 chatters,
-    // and its force changes by 2.5× from 48 to 192 kHz: see the stage-3 report)
+    // K_s = 1e6 (the default): one smooth pulse that doesn't depend on the rate (the spec's
+    // K_s = 1e8 chatters, and its force changes by 2.5× from 48 to 192 kHz: see the stage-3 report)
+    assert_eq!(DrumParams::default().stick.stiffness, 1e6);
     let (p48, t48) = contact(1e6, 48000.0);
     let (p96, t96) = contact(1e6, 96000.0);
     let (p192, t192) = contact(1e6, 192000.0);
@@ -138,9 +139,12 @@ fn a_soft_contact_converges_with_the_sample_rate() {
 
 #[test]
 fn the_spec_contact_is_finite_whatever_it_does() {
+    // (K_s = 1e8, the spec's value: ill-resolved but it must still not blow up)
     for vel in [0.1f32, 0.4, 0.7, 1.0] {
         for r in [0.0, 0.3, 0.6, 0.9] {
-            let m = model(48000.0, true);
+            let mut p = DrumParams::default();
+            p.stick.stiffness = 1e8;
+            let m = DrumModel::prepare_single_head(&p, Head::Batter, 48000.0).unwrap();
             let mut v = DrumVoice::new(&m);
             v.trigger(&m, hit(vel, r, 0.3));
             let mut peak = 0f64;

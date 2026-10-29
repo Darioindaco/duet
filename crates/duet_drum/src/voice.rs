@@ -135,11 +135,7 @@ impl DrumVoice {
         let r = hit.radius.clamp(0.0, 0.95);
         let mut ew = 0.0;
         for i in 0..self.n {
-            let mut e = model.shape(i, r, hit.angle);
-            if model.params.contact_radius > 0.0 {
-                let ka = model.basis.modes[model.modes[i].basis_index].kappa * model.params.contact_radius;
-                e *= (-0.5 * ka * ka).exp();
-            }
+            let e = model.shape(i, r, hit.angle);
             self.e[i] = e;
             ew += e * e / model.d_plus[i];
         }

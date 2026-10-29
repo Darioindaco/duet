@@ -6,11 +6,11 @@ use duet_drum::{DrumModel, DrumParams, DrumVoice, Head, Hit};
 fn main() {
     println!("{:>8} {:>7} {:>7} | {:>7} {:>7} {:>8} {:>8} {:>8}", "K_s", "patch", "fs kHz", "ms", "pulses", "peak N", "v_out/in", "SAV err");
     for ks in [1e8, 1e7, 1e6] {
-        for a in [0.0, 0.005] {
+        for a in [0.0] {
             for fs in [48000.0, 96000.0, 192000.0] {
                 let mut p = DrumParams::default();
                 p.stick.stiffness = ks;
-                p.contact_radius = a;
+                let _ = a;
                 let m = DrumModel::prepare_single_head(&p, Head::Batter, fs).unwrap();
                 let sp = &p.stick;
                 let mut v = DrumVoice::new(&m);

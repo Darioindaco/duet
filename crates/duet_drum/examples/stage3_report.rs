@@ -1,5 +1,5 @@
-//! Stage 3 report: the stick's contact on the bare batter head, for a point contact (the
-//! spec) and, as an experiment, a contact patch of 5 mm radius.
+//! Stage 3 report: the stick's contact on the bare batter head, for the spec's K_s = 1e8 and
+//! the default K_s = 1e6.
 //! `cargo run --release --example stage3_report`
 
 use duet_drum::analysis::spectral_centroid;
@@ -51,10 +51,10 @@ fn contact(m: &DrumModel, vel: f32, r: f64) -> Contact {
 }
 
 fn main() {
-    for (label, a) in [("point contact (the spec)", 0.0), ("EXPERIMENT: contact patch of 5 mm radius", 0.005)] {
+    for (label, ks) in [("K_s = 1e8 (the spec)", 1e8), ("K_s = 1e6 (the default)", 1e6)] {
         for fs in [48000.0, 96000.0] {
             let mut p = DrumParams::default();
-            p.contact_radius = a;
+            p.stick.stiffness = ks;
             let m = DrumModel::prepare_single_head(&p, Head::Batter, fs).unwrap();
             println!("== {label}, fs = {fs} Hz, {} modes ==", m.len());
             println!("first-to-last contact (ms) · separate pulses · peak force (N) · impulse (N·s) · v_out/v_in · SAV: |ψ²−(2V+ε)|/2V_peak where V > 5 % of peak");
@@ -72,9 +72,9 @@ fn main() {
         }
     }
     println!("(* = outside the plausible 0.5–4 ms)\n\nSpectral centroid of the head's acceleration over 0.25 s, vel 0.1 / 0.4 / 0.7 / 1.0:");
-    for (label, a) in [("point", 0.0), ("patch 5 mm", 0.005)] {
+    for (label, ks) in [("K_s = 1e8", 1e8), ("K_s = 1e6", 1e6)] {
         let mut p = DrumParams::default();
-        p.contact_radius = a;
+        p.stick.stiffness = ks;
         let m = DrumModel::prepare_single_head(&p, Head::Batter, 48000.0).unwrap();
         let mut cs = Vec::new();
         for vel in [0.1f32, 0.4, 0.7, 1.0] {

@@ -47,7 +47,9 @@ impl HeadParams {
 pub struct StickParams {
     /// effective mass m_s (kg)
     pub mass: f64,
-    /// contact stiffness K_s: F = K_s·[δ]₊^α
+    /// contact stiffness K_s: F = K_s·[δ]₊^α. The spec's 1e8 is too hard to resolve at audio rates
+    /// (the stick chatters, and the force depends on the sample rate); 1e6 is a soft tip and converges
+    /// (stage-3 report)
     pub stiffness: f64,
     /// contact exponent α
     pub exponent: f64,
@@ -112,9 +114,6 @@ pub struct DrumParams {
     pub mic: MicParams,
     /// gain of the contact force's dipole term in the close mic
     pub attack_gain: f64,
-    /// EXPERIMENT (not in the spec): radius a (m) of the stick's contact patch. The strike vector
-    /// is weighted by `exp(−(κa)²/2)`, a Gaussian patch instead of a point. 0 = a point (the spec).
-    pub contact_radius: f64,
     /// SAV gauge ε (J)
     pub sav_epsilon: f64,
     /// SAV drift control λ (0 = off)
@@ -145,10 +144,9 @@ impl Default for DrumParams {
             radiation_on: true,
             radiation_gain: 1.0,
             n_max_per_head: 1200,
-            stick: StickParams { mass: 0.02, stiffness: 1.0e8, exponent: 1.5, v_min: 0.2, v_max: 6.0, velocity_gamma: 1.5 },
+            stick: StickParams { mass: 0.02, stiffness: 1.0e6, exponent: 1.5, v_min: 0.2, v_max: 6.0, velocity_gamma: 1.5 },
             mic: MicParams { close_radius: 0.5, close_angle: 0.0, close_height: 0.06, far_distance: 1.5 },
             attack_gain: 1.0,
-            contact_radius: 0.0,
             sav_epsilon: 1e-12,
             sav_drift: 0.0,
             gain_close_db: 0.0,
@@ -253,7 +251,7 @@ mod tests {
         assert_eq!(p.resonant.thickness, 0.190e-3, "the resonant head's own default, not the batter's");
         assert_eq!(p.batter, d.batter);
         assert_eq!(p.stick.mass, 0.03);
-        assert_eq!(p.stick.stiffness, 1.0e8);
+        assert_eq!(p.stick.stiffness, 1.0e6);
         assert!(DrumParams::from_json(r#"{"shel_radius": 1}"#).is_err(), "typos are caught");
     }
 }
