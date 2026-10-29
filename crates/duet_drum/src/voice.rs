@@ -40,6 +40,7 @@ pub struct DrumVoice {
     /// scratch
     xh: Vec<f64>,
     y: Vec<f64>,
+    g: Vec<f64>,
     /// the strike vector e_i = Φ_i(x_e), and Σ ĝ²/D (the Sherman–Morrison denominator's part)
     e: Vec<f64>,
     g_w: f64,
@@ -65,7 +66,7 @@ impl DrumVoice {
         let n = model.omega_t2.len();
         let v = vec![0.0; n];
         DrumVoice {
-            x: v.clone(), p: v.clone(), acc: v.clone(), xh: v.clone(), y: v.clone(), e: v,
+            x: v.clone(), p: v.clone(), acc: v.clone(), xh: v.clone(), y: v.clone(), g: v.clone(), e: v,
             g_w: 0.0, z: 0.0, pz: 0.0, stick_active: false, away: 0,
             psi: model.params.sav_epsilon.sqrt(), force: 0.0, force_prev: 0.0, stick_energy_removed: 0.0, e_peak: 0.0, n: model.len(),
         }
@@ -155,7 +156,10 @@ impl DrumVoice {
         self.e_peak = self.energy(model);
     }
 
-    /// One sample of the SAV scheme (§4.9): the modes plus the stick's contact.
+    /// One sample of the SAV scheme (§4.9): the modes, the tension modulation and the stick's contact.
+    ///
+    /// The potential is `V = C·G² + V_contact`, `G = Σκ²η²`; its gradient `g = ∇V/ψ̂` is one vector,
+    /// so the implicit solve `(D + u uᵀ)p_new = b` (`u = (k/2)g`) is a Sherman–Morrison update.
     pub fn step(&mut self, model: &DrumModel) {
         let k = model.k;
         let hk = 0.5 * k;
@@ -163,54 +167,62 @@ impl DrumVoice {
         let (ks, alpha, eps) = (sp.stiffness, sp.exponent, model.params.sav_epsilon);
         let inv_sq = 1.0 / sp.mass.sqrt();
         let n = self.x.len();
-        // 1. the half step, the head's displacement under the stick, and e·p
-        let (mut ex, mut ep) = (0.0, 0.0);
+        // 1. the half step, the head's displacement under the stick, and G
+        let (mut ex, mut gsum) = (0.0, 0.0);
         for i in 0..n {
             let xh = self.x[i] + hk * self.p[i];
             self.xh[i] = xh;
             ex += self.e[i] * xh;
-            ep += self.e[i] * self.p[i];
+            gsum += model.kappa2[i] * xh * xh;
         }
         let zh = self.z + hk * self.pz;
         let delta = ex - zh * inv_sq;
-        // 2. the potential and the gradient's size along ĝ = [e, −1/√m_s]
-        let (force, v) = if self.stick_active && delta > 0.0 {
+        // 2. the potentials, and ψ̂ = sqrt(2V + ε)
+        let (force, vc) = if self.stick_active && delta > 0.0 {
             (ks * delta.powf(alpha), ks / (alpha + 1.0) * delta.powf(alpha + 1.0))
         } else {
             (0.0, 0.0)
         };
-        let psi_hat = (2.0 * v + eps).sqrt();
-        let s = force / psi_hat; // g = s·ĝ
-        // 3. the right-hand side: b_i = (1−kσ̃)p_i − k·Ω̃²·x_h,i − ĝ_i·coef
-        let gp = ep - inv_sq * self.pz; // ĝ·p
-        let coef = s * (0.25 * k * k * s * gp + k * self.psi);
-        let mut ey = 0.0;
+        let v = model.c_tm * gsum * gsum + vc;
+        let inv_psi_hat = 1.0 / (2.0 * v + eps).sqrt();
+        // 3. g = ∇V/ψ̂, and g·p
+        let tm = 4.0 * model.c_tm * gsum; // ∂V_tm/∂η_i = tm·κ²_i·η_i
+        let mut gp = 0.0;
         for i in 0..n {
-            let b = model.d_minus[i] * self.p[i] - k * model.omega_t2[i] * self.xh[i] - self.e[i] * coef;
+            let g = (tm * model.kappa2[i] * self.xh[i] + force * self.e[i]) * inv_psi_hat;
+            self.g[i] = g;
+            gp += g * self.p[i];
+        }
+        let gz = -force * inv_sq * inv_psi_hat;
+        gp += gz * self.pz;
+        // 4. b, y = b/D, and the dot products of the update
+        let (mut uy, mut uw) = (0.0, 0.0);
+        let q = 0.25 * k * k * gp;
+        for i in 0..n {
+            let b = model.d_minus[i] * self.p[i] - q * self.g[i] + k * (-model.omega_t2[i] * self.xh[i] - self.g[i] * self.psi);
             let y = b / model.d_plus[i];
             self.y[i] = y;
-            ey += self.e[i] * y;
+            uy += hk * self.g[i] * y;
+            uw += hk * hk * self.g[i] * self.g[i] / model.d_plus[i];
         }
-        let bz = self.pz + inv_sq * coef; // ĝ_z = −1/√m_s, D_z = 1
-        let gy = ey - inv_sq * bz; // ĝ·y
-        // 4. Sherman–Morrison: p_new = y − w·(u·y)/(1 + u·w), u = (k/2)·s·ĝ, w = u/D
-        let uy = hk * s * gy;
-        let uw = hk * hk * s * s * self.g_w;
-        let fac = hk * s * uy / (1.0 + uw);
-        let mut gpp = 0.0; // ĝ·(p_new + p)
+        let bz = self.pz - q * gz + k * (-gz * self.psi);
+        uy += hk * gz * bz;
+        uw += hk * hk * gz * gz;
+        // 5. p_new = y − w·(u·y)/(1 + u·w), w = u/D; x_new = x_h + (k/2)p_new; ψ_new = ψ + (k/2)g·(p_new + p)
+        let fac = uy / (1.0 + uw);
+        let mut gpp = 0.0;
         for i in 0..n {
-            let pn = self.y[i] - fac * self.e[i] / model.d_plus[i];
+            let pn = self.y[i] - hk * self.g[i] / model.d_plus[i] * fac;
             self.acc[i] = (pn - self.p[i]) / k;
-            gpp += self.e[i] * (pn + self.p[i]);
+            gpp += self.g[i] * (pn + self.p[i]);
             self.x[i] = self.xh[i] + hk * pn;
             self.p[i] = pn;
         }
-        let pzn = bz + fac * inv_sq; // −(−1/√m_s)·fac/1
-        gpp -= inv_sq * (pzn + self.pz);
+        let pzn = bz - hk * gz * fac;
+        gpp += gz * (pzn + self.pz);
         self.z = zh + hk * pzn;
         self.pz = pzn;
-        // 5. ψ
-        self.psi += hk * s * gpp;
+        self.psi += hk * gpp;
         self.force_prev = self.force;
         self.force = force;
         // 6. the stick leaves once it has been clear of the head and moving away for a while
@@ -226,6 +238,14 @@ impl DrumVoice {
                 self.away = 0;
             }
         }
+    }
+
+    /// The tension modulation's rise in tension, as a fraction of the nominal tension:
+    /// `ΔT/T = E·h/(2A(1−ν²)σ)·G / T` (§4.8a, Berger).
+    pub fn tension_rise(&self, model: &DrumModel) -> f64 {
+        let g: f64 = (0..self.n).map(|i| model.kappa2[i] * self.x[i] * self.x[i]).sum();
+        // C = E h/(8A(1−ν²)σ²) (γ_nl = 1): ΔT = 4·C·σ·G
+        4.0 * model.c_tm * model.basis.params.sigma * g / model.basis.params.tension
     }
 
     /// `E = ½p·p + ½ΣΩ̃²(x² − (k²/4)p²) + ½p_z² + ½ψ²` (the stick has Ω̃ = 0). Conserved to

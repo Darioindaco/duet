@@ -82,24 +82,29 @@ fn ten_thousand_random_hits_stay_finite() {
     assert!(peak < 100.0 * 0.36);
 }
 
-// FAILS, and that is a finding (see the stage-3 report): with the head's compliance dominating
-// the contact (K_s = 1e8 is hard) the system is almost linear until tension modulation (stage 4)
-// is in, so the brightness hardly depends on the velocity.
+// (stage 3 could not show this: with the head's compliance dominating, the system was nearly
+// linear. Tension modulation, stage 4, brings it.)
 #[test]
-#[ignore = "known: needs tension modulation (stage 4); see the stage-3 report"]
 fn harder_hits_are_brighter() {
+    // the centroid of the head's acceleration over 0.25 s, averaged over a few strike points
+    // and angles (one point alone depends too much on which modes it happens to excite)
     let fs = 48000.0;
     let m = model(fs, true);
     let mut centroids = Vec::new();
     for vel in [0.1f32, 0.4, 0.7, 1.0] {
-        let mut v = DrumVoice::new(&m);
-        v.trigger(&m, hit(vel, 0.5, 0.4));
-        let mut a = Vec::new();
-        for _ in 0..(0.25 * fs) as usize {
-            v.step(&m);
-            a.push(v.acceleration_at(&m, 0.4, 2.0));
+        let mut sum = 0.0;
+        let spots = [(0.25, 0.4), (0.5, 1.7), (0.7, 3.1), (0.4, 4.6)];
+        for (r, th) in spots {
+            let mut v = DrumVoice::new(&m);
+            v.trigger(&m, hit(vel, r, th));
+            let mut a = Vec::new();
+            for _ in 0..(0.25 * fs) as usize {
+                v.step(&m);
+                a.push(v.acceleration_at(&m, 0.4, 2.0));
+            }
+            sum += spectral_centroid(&a, fs);
         }
-        centroids.push(spectral_centroid(&a, fs));
+        centroids.push(sum / spots.len() as f64);
     }
     println!("spectral centroid of the head's acceleration, vel 0.1 / 0.4 / 0.7 / 1.0: {centroids:.0?} Hz");
     assert!(centroids.windows(2).all(|w| w[1] > w[0]), "{centroids:?}");

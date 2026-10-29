@@ -81,6 +81,10 @@ pub struct DrumModel {
     pub basis: MembraneBasis,
     // per mode, contiguous (struct of arrays), padded to a multiple of 4
     pub(crate) omega_t2: Vec<f64>,
+    /// κ² of every mode (the tension modulation's weights)
+    pub(crate) kappa2: Vec<f64>,
+    /// C of V_tm = C·G², G = Σκ²η² (§4.8a): γ_nl·E·h / (8A(1−ν²)σ²)
+    pub(crate) c_tm: f64,
     /// 1 + kσ̃ and 1 − kσ̃
     pub(crate) d_plus: Vec<f64>,
     pub(crate) d_minus: Vec<f64>,
@@ -111,7 +115,7 @@ impl DrumModel {
         }
         let k = 1.0 / fs;
         let n = modes.len().div_ceil(4) * 4;
-        let mut omega_t2 = vec![0.0; n];
+        let (mut omega_t2, mut kappa2) = (vec![0.0; n], vec![0.0; n]);
         let (mut d_plus, mut d_minus) = (vec![1.0; n], vec![1.0; n]);
         for (i, m) in modes.iter().enumerate() {
             if !(m.omega.is_finite() && m.omega > 0.0 && m.sigma >= 0.0) {
@@ -119,10 +123,14 @@ impl DrumModel {
             }
             let (st, o2) = exact_coefficients(m.omega, m.sigma, k);
             omega_t2[i] = o2;
+            kappa2[i] = basis.modes[m.basis_index].kappa.powi(2);
             d_plus[i] = 1.0 + k * st;
             d_minus[i] = 1.0 - k * st;
         }
-        Ok(DrumModel { fs, k, params: p.clone(), modes, basis, omega_t2, d_plus, d_minus })
+        let sigma_h = p.surface_density(head);
+        let c_tm = p.nonlinearity_scale * p.youngs_modulus * hp.thickness
+            / (8.0 * p.area() * (1.0 - p.poisson_ratio * p.poisson_ratio) * sigma_h * sigma_h);
+        Ok(DrumModel { fs, k, params: p.clone(), modes, basis, omega_t2, kappa2, c_tm, d_plus, d_minus })
     }
 
     /// Number of modes (degrees of freedom).

@@ -94,6 +94,43 @@ pub fn spectral_centroid(x: &[f64], fs: f64) -> f64 {
     }
 }
 
+/// The instantaneous frequency (Hz) of a decaying mode, from its state: for
+/// `x = A·e^{−σt}·cos(θ)` the phase is `θ = atan2(−(p + σx)/Ω, x)`. The phase is unwrapped
+/// and fitted by a line in windows of `win` samples (hop `win/2`); returns (centre time s, Hz).
+pub fn mode_frequency_track(x: &[f64], p: &[f64], omega: f64, sigma: f64, fs: f64, win: usize) -> Vec<(f64, f64)> {
+    let mut ph = Vec::with_capacity(x.len());
+    let mut prev = 0.0f64;
+    let mut acc = 0.0f64;
+    for i in 0..x.len() {
+        let th = (-(p[i] + sigma * x[i]) / omega).atan2(x[i]);
+        if i > 0 {
+            let mut d = th - prev;
+            while d > PI {
+                d -= 2.0 * PI;
+            }
+            while d < -PI {
+                d += 2.0 * PI;
+            }
+            acc += d;
+        }
+        prev = th;
+        ph.push(acc);
+    }
+    let mut out = Vec::new();
+    let mut s = 0;
+    while s + win <= ph.len() {
+        let t: Vec<f64> = (0..win).map(|i| (s + i) as f64 / fs).collect();
+        let y = &ph[s..s + win];
+        let (mt, my) = (t.iter().sum::<f64>() / win as f64, y.iter().sum::<f64>() / win as f64);
+        let num: f64 = t.iter().zip(y).map(|(t, y)| (t - mt) * (y - my)).sum();
+        let den: f64 = t.iter().map(|t| (t - mt).powi(2)).sum();
+        // the phase runs backwards (θ decreases as the oscillation advances): −slope
+        out.push((mt, (-num / den).abs() / (2.0 * PI)));
+        s += win / 2;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
