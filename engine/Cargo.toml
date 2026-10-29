@@ -23,8 +23,10 @@ hound = "3.5"
 # time-stretch and pitch-shift (Signalsmith Stretch, MIT): keep-pitch speed changes and transposing
 ssstretch = "0.1"
 # stem splitting: Demucs (Meta, MIT) as ONNX, run with ONNX Runtime (linked in statically)
-ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-native"] }
-realfft = "3"
+# (optional: ONNX Runtime has no ready-made build for Intel Macs; the Intel
+# build is made without it, and says so when you try to split)
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-native"], optional = true }
+realfft = { version = "3", optional = true }
 # reading MP3, M4A/AAC/ALAC (iPhone recordings), FLAC, AIFF, Ogg Vorbis
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac", "isomp4", "alac", "flac", "aiff", "pcm", "wav", "ogg", "vorbis"] }
 midir = "0.10"
@@ -39,6 +41,10 @@ dispatch2 = "0.3"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSView", "NSResponder", "NSGraphics", "NSRunningApplication", "NSApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NSThread"] }
+
+[features]
+default = ["stems"]
+stems = ["dep:ort", "dep:realfft"]
 
 [profile.release]
 opt-level = 3

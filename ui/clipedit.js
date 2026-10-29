@@ -284,6 +284,10 @@ function stemsPaint(live, c, st) {
     return w;
   };
   if (!st) { live.textContent = "…"; return; }
+  if (st.available === false) {
+    live.innerHTML = `<p class="mnote">Stem splitting isn't in this build of Duet yet: the part that runs the model (ONNX Runtime) has no ready-made version for Intel Macs. It works on Apple Silicon Macs (M1 and newer).</p>`;
+    return;
+  }
   if (st.download && !st.download.error) {
     const d = st.download, mb = (x) => Math.round(x / 1e6);
     live.append(bar(d.total ? d.done / d.total : 0, `Downloading the stem model: ${mb(d.done)} of ${mb(d.total)} MB`));

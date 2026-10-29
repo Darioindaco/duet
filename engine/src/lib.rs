@@ -1777,6 +1777,12 @@ impl Engine {
         }
     }
 
+    /// Whether this build can split into stems (the Intel Mac build can't).
+    #[staticmethod]
+    fn stems_available() -> bool {
+        stems::AVAILABLE
+    }
+
     /// The stems the model makes, in its order.
     #[staticmethod]
     fn stem_names() -> Vec<&'static str> {

@@ -9,6 +9,35 @@
 //! triangle. All of it on this machine: nothing leaves it.
 
 use std::path::Path;
+
+use crate::daw::AudioData;
+
+/// This build can split (the Intel Mac build can't: no ONNX Runtime for it).
+pub const AVAILABLE: bool = cfg!(feature = "stems");
+
+pub const SR: u32 = 44100;
+/// in the model's order
+pub const SOURCES: [&str; 4] = ["drums", "bass", "other", "vocals"];
+#[allow(dead_code)]
+const NFFT: usize = 4096;
+#[allow(dead_code)]
+const HOP: usize = 1024;
+#[allow(dead_code)]
+const BINS: usize = NFFT / 2; // the model leaves out the top bin
+/// the length the model was trained on and exported at (7.8 s)
+#[allow(dead_code)]
+const SEG: usize = 343_980;
+#[allow(dead_code)]
+const FRAMES: usize = SEG.div_ceil(HOP); // 336
+#[allow(dead_code)]
+const OVERLAP: f64 = 0.25;
+
+#[cfg(feature = "stems")]
+pub use real::Separator;
+
+#[cfg(feature = "stems")]
+mod real {
+use super::*;
 use std::sync::Arc;
 
 use ort::session::builder::GraphOptimizationLevel;
@@ -17,18 +46,7 @@ use ort::value::Tensor;
 use realfft::num_complex::Complex32;
 use realfft::RealFftPlanner;
 
-use crate::daw::{resample, AudioData};
-
-pub const SR: u32 = 44100;
-/// in the model's order
-pub const SOURCES: [&str; 4] = ["drums", "bass", "other", "vocals"];
-const NFFT: usize = 4096;
-const HOP: usize = 1024;
-const BINS: usize = NFFT / 2; // the model leaves out the top bin
-/// the length the model was trained on and exported at (7.8 s)
-const SEG: usize = 343_980;
-const FRAMES: usize = SEG.div_ceil(HOP); // 336
-const OVERLAP: f64 = 0.25;
+use crate::daw::resample;
 
 pub struct Separator {
     session: Session,
@@ -234,7 +252,7 @@ fn oerr(e: impl std::fmt::Display) -> String {
 }
 
 /// `x` with `left` / `right` samples mirrored on (torch's "reflect": the edge sample isn't repeated).
-fn reflect(x: &[f32], left: usize, right: usize) -> Vec<f32> {
+pub(super) fn reflect(x: &[f32], left: usize, right: usize) -> Vec<f32> {
     let n = x.len() as i64;
     let at = |i: i64| -> f32 {
         // fold back and forth until it's inside (for pads longer than the signal too)
@@ -248,8 +266,25 @@ fn reflect(x: &[f32], left: usize, right: usize) -> Vec<f32> {
     (-(left as i64)..n + right as i64).map(at).collect()
 }
 
-#[cfg(test)]
+}
+
+/// Without the model's runtime: says so.
+#[cfg(not(feature = "stems"))]
+pub struct Separator;
+
+#[cfg(not(feature = "stems"))]
+impl Separator {
+    pub fn load(_model: &Path) -> Result<Self, String> {
+        Err("stem splitting isn't in this build (Intel Macs, for now)".into())
+    }
+    pub fn separate(&mut self, _a: &AudioData, _progress: &mut dyn FnMut(f32) -> bool) -> Result<Vec<AudioData>, String> {
+        Err("stem splitting isn't in this build".into())
+    }
+}
+
+#[cfg(all(test, feature = "stems"))]
 mod tests {
+    use super::real::*;
     use super::*;
 
     #[test]

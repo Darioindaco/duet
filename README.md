@@ -192,7 +192,8 @@ and *Undo* takes it back.
   song takes somewhere between half a minute and a few minutes, depending on
   the computer; it runs in the background (the clip shows how far it is, and
   *Stop* stops it). Your partner gets the stems as files, like a recording,
-  and doesn't need the model.
+  and doesn't need the model. (On Apple Silicon Macs, M1 and newer: the Intel Mac build doesn't have it
+  yet, as ONNX Runtime, which runs the model, has no ready-made Intel version.)
 
 Any clip can be muted: right-click → *Mute clip* (or *Alt+M*). It stays in
 place, greyed out, and is silent for both of you.

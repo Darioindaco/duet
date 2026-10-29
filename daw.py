@@ -1088,7 +1088,12 @@ class Daw:
         with self.lock:
             dl = dict(self.stem_dl) if self.stem_dl else None
             job = {k: self.stem_job[k] for k in ("clip", "stage", "progress")} if self.stem_job else None
-            return {"model": self.stem_model().is_file(), "size": STEM_MODEL["size"], "download": dl, "job": job}
+            return {"available": self.stems_available(), "model": self.stem_model().is_file(), "size": STEM_MODEL["size"],
+                    "download": dl, "job": job}
+
+    def stems_available(self) -> bool:
+        f = getattr(type(self.e), "stems_available", None)
+        return bool(f()) if f else True
 
     def stems_get_model(self) -> dict:
         """Download the model (once), in the background."""
@@ -1143,6 +1148,8 @@ class Daw:
         with self.lock:
             if self.stem_job:
                 return {"error": "A split is already running."}
+            if not self.stems_available():
+                return {"error": "Stem splitting isn't in this build of Duet yet (Intel Macs).", "unavailable": True}
             if not self.stem_model().is_file():
                 return {"error": "The stem model isn't here yet.", "need_model": True}
             sets = STEM_SETS.get(str(which))

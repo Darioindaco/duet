@@ -47,14 +47,18 @@ jobs:
           - os: macos-14          # Apple Silicon (M1 and newer)
             arch: apple-silicon
             rustflags: ""
+            cargo_args: ""
           - os: macos-15-intel    # older Intel MacBooks
             arch: intel
             # Every Intel Mac that runs macOS 11+ is Haswell or newer, so AVX2/FMA
             # are always there; NAM's maths runs much faster with them.
             rustflags: "-C target-cpu=haswell"
+            # no ready-made ONNX Runtime for Intel Macs: built without the stem splitter
+            cargo_args: "--no-default-features"
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
+      MATURIN_PEP517_ARGS: ${{ matrix.cargo_args }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -66,10 +70,10 @@ jobs:
         run: pip install ./engine
       - name: Engine unit tests
         working-directory: engine
-        run: cargo test --release
+        run: cargo test --release ${{ matrix.cargo_args }}
       - name: Build the test VST3 plugins (for the host tests in the self-test)
         working-directory: engine
-        run: cargo build --release --example test_gain --example test_synth
+        run: cargo build --release ${{ matrix.cargo_args }} --example test_gain --example test_synth
       - name: Self-test
         run: python selftest.py
       - name: Build Duet.app

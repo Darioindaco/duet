@@ -898,6 +898,11 @@ def test_stems():
         cid = da.view()["clips"][0]["id"]
         key = da.view()["clips"][0]["file"]
         wait_for(lambda: key in da.loaded, what="the clip loaded")
+        if not da.stems_available():
+            r = da.split_stems(cid, "4")
+            assert r.get("unavailable"), r
+            print("stems: ok  (not in this build: the split says so)")
+            return
         model = os.environ.get("DUET_STEM_MODEL")
         if not model or not Path(model).is_file():
             r = da.split_stems(cid, "4")
