@@ -399,6 +399,16 @@ struct Engine {
     midi: midi::MidiThread,
     local: SocketAddrV4,
     public: Mutex<Option<SocketAddrV4>>,
+    /// splitting a clip into stems, in the background
+    stems: Mutex<Option<StemJob>>,
+}
+
+struct StemJob {
+    /// 0..1 (bits of an f32)
+    progress: Arc<std::sync::atomic::AtomicU32>,
+    stage: Arc<Mutex<&'static str>>,
+    cancel: Arc<AtomicBool>,
+    worker: std::thread::JoinHandle<Result<Vec<String>, String>>,
 }
 
 #[pymethods]
@@ -460,7 +470,7 @@ impl Engine {
                 sink_inner.note(t, ev);
             }
         }));
-        Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), midi, local: local_addr, public: Mutex::new(None) })
+        Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), midi, local: local_addr, public: Mutex::new(None), stems: Mutex::new(None) })
     }
 
     /// Start the network threads.
@@ -1670,6 +1680,107 @@ impl Engine {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         d.export = Some(ExportJob { done, total: (b - a) as u64, worker });
         Ok(())
+    }
+
+    // --- stems ---------------------------------------------------------------------
+
+    /// Split seconds offset..offset+dur of a sound file into stems with the
+    /// Demucs model at `model`, in the background. `outs` = [(WAV path,
+    /// [stems to add up into it])], stems numbered as stem_names(): e.g. all
+    /// four apart, or vocals and the rest. 32-bit float stereo WAVs at 44.1 kHz.
+    fn stems_start(&self, model: String, src: String, offset: f64, dur: f64, outs: Vec<(String, Vec<usize>)>) -> PyResult<()> {
+        let mut job = self.stems.lock().unwrap();
+        if job.as_ref().is_some_and(|j| !j.worker.is_finished()) {
+            return Err(PyRuntimeError::new_err("a split is already running"));
+        }
+        if outs.iter().any(|(_, s)| s.iter().any(|&k| k >= stems::SOURCES.len())) {
+            return Err(PyValueError::new_err("no such stem"));
+        }
+        let progress = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let stage = Arc::new(Mutex::new("loading"));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (p2, s2, c2) = (progress.clone(), stage.clone(), cancel.clone());
+        let worker = std::thread::Builder::new()
+            .name("duet-stems".into())
+            .spawn(move || -> Result<Vec<String>, String> {
+                let a = decode::read_audio(std::path::Path::new(&src))?;
+                // just the clip's stretch of the file
+                let x = ((offset.max(0.0) * a.sr as f64) as usize).min(a.samples.len());
+                let y = (((offset.max(0.0) + dur.max(0.0)) * a.sr as f64).ceil() as usize).clamp(x, a.samples.len());
+                let part = daw::AudioData { sr: a.sr, samples: a.samples[x..y].to_vec(), right: a.right.as_ref().map(|r| r[x..y].to_vec()) };
+                drop(a);
+                let mut sep = stems::Separator::load(std::path::Path::new(&model))?;
+                *s2.lock().unwrap() = "splitting";
+                let parts = sep.separate(&part, &mut |p| {
+                    p2.store(p.to_bits(), Relaxed);
+                    !c2.load(Relaxed)
+                })?;
+                *s2.lock().unwrap() = "writing";
+                let spec = hound::WavSpec { channels: 2, sample_rate: stems::SR, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+                let mut done = Vec::new();
+                for (path, which) in outs {
+                    let tmp = format!("{path}.part");
+                    let mut w = hound::WavWriter::create(&tmp, spec).map_err(|e| format!("can't write {path}: {e}"))?;
+                    let n = parts[0].samples.len();
+                    for k in 0..n {
+                        let (mut l, mut r) = (0f32, 0f32);
+                        for &s in &which {
+                            l += parts[s].samples[k];
+                            r += parts[s].right.as_ref().map_or(parts[s].samples[k], |x| x[k]);
+                        }
+                        w.write_sample(l).and_then(|_| w.write_sample(r)).map_err(|e| e.to_string())?;
+                    }
+                    w.finalize().map_err(|e| e.to_string())?;
+                    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+                    done.push(path);
+                }
+                Ok(done)
+            })
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        *job = Some(StemJob { progress, stage, cancel, worker });
+        Ok(())
+    }
+
+    /// {"running", "stage" (loading / splitting / writing), "progress" (0..1),
+    /// "result": None while running or when there was none, else {"ok",
+    /// "files"} or {"error"}}. A finished result is handed over once.
+    fn stems_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        let mut job = self.stems.lock().unwrap();
+        let running = job.as_ref().is_some_and(|j| !j.worker.is_finished());
+        d.set_item("running", running)?;
+        d.set_item("stage", job.as_ref().map(|j| *j.stage.lock().unwrap()))?;
+        d.set_item("progress", job.as_ref().map_or(0.0, |j| f32::from_bits(j.progress.load(Relaxed))))?;
+        if !running {
+            if let Some(j) = job.take() {
+                let r = PyDict::new(py);
+                match j.worker.join() {
+                    Ok(Ok(files)) => {
+                        r.set_item("ok", true)?;
+                        r.set_item("files", files)?;
+                    }
+                    Ok(Err(e)) => r.set_item("error", e)?,
+                    Err(_) => r.set_item("error", "the split failed")?,
+                }
+                d.set_item("result", r)?;
+                return Ok(d);
+            }
+        }
+        d.set_item("result", py.None())?;
+        Ok(d)
+    }
+
+    /// Stop a split that's running (it ends at the next stretch).
+    fn stems_cancel(&self) {
+        if let Some(j) = self.stems.lock().unwrap().as_ref() {
+            j.cancel.store(true, Relaxed);
+        }
+    }
+
+    /// The stems the model makes, in its order.
+    #[staticmethod]
+    fn stem_names() -> Vec<&'static str> {
+        stems::SOURCES.to_vec()
     }
 
     /// {"running", "progress" (0..1), "result": None while running / when

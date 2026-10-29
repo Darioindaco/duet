@@ -75,7 +75,7 @@ function ceRender() {
   if (body.dataset.tab !== ce.tab || !(ce.busy || song.headBusy)) {
     body.dataset.tab = ce.tab;
     body.innerHTML = "";
-    body.append(ce.tab === "clip" ? ceClipTab(c) : ce.tab === "pitch" ? cePitchTab(c) : ceChopTab(c));
+    body.append(ce.tab === "clip" ? ceClipTab(c) : ce.tab === "pitch" ? cePitchTab(c) : ce.tab === "chop" ? ceChopTab(c) : ceStemsTab(c));
   } else {
     ceRefresh(c);
   }
@@ -249,6 +249,93 @@ function ceChopTab(c) {
   hint.textContent = "Click the waveform to add a cut, drag one to move it, right-click it to take it away.";
   box.append(hint);
   return box;
+}
+
+// --- stems ------------------------------------------------------------------------
+
+// the split's state (asked for while the tab is open)
+const stemsUi = { set: "4", state: null, timer: null };
+
+function ceStemsTab(c) {
+  const box = document.createElement("div");
+  box.className = "cestems";
+  box.append(ceRow("Into", ceSeg([["4", "4 stems", "Drums, bass, vocals and the rest, each on its own track"],
+    ["2", "Vocals + instrumental", "The voice on one track, everything else on another"]], stemsUi.set, (v) => { stemsUi.set = v; ceRender(); })));
+  const st = stemsUi.state, live = document.createElement("div");
+  live.className = "cestemlive";
+  box.append(live);
+  const p = document.createElement("p");
+  p.className = "fine";
+  p.textContent = "Demucs (Meta's stem splitter) works it out on this computer: nothing is sent anywhere. The new tracks go "
+    + "under this one, each with a clip in the same place; this clip is muted (right-click it to hear it again). "
+    + "Your partner gets the stems as files, like a recording.";
+  box.append(p);
+  stemsPaint(live, c, st);
+  stemsWatch();
+  return box;
+}
+
+function stemsPaint(live, c, st) {
+  live.innerHTML = "";
+  const bar = (frac, label) => {
+    const w = document.createElement("div");
+    w.className = "cebar";
+    w.innerHTML = `<div class="exprog"><i style="width:${Math.round(frac * 100)}%"></i></div><span>${esc(label)}</span>`;
+    return w;
+  };
+  if (!st) { live.textContent = "…"; return; }
+  if (st.download && !st.download.error) {
+    const d = st.download, mb = (x) => Math.round(x / 1e6);
+    live.append(bar(d.total ? d.done / d.total : 0, `Downloading the stem model: ${mb(d.done)} of ${mb(d.total)} MB`));
+    return;
+  }
+  if (st.job) {
+    const j = st.job, mine = j.clip === c.id;
+    const label = j.stage === "loading" ? "Getting ready…" : j.stage === "writing" ? "Writing the stems…"
+      : `Splitting… ${Math.round((j.progress || 0) * 100)}%`;
+    live.append(bar(j.stage === "splitting" ? j.progress || 0 : j.stage === "writing" ? 1 : 0, mine ? label : "Another clip is being split…"),
+      ceBtn("Stop", "Stop splitting", () => api.stems_cancel()));
+    return;
+  }
+  if (st.download && st.download.error) {
+    const e = document.createElement("p");
+    e.className = "mnote bad";
+    e.textContent = st.download.error;
+    live.append(e);
+  }
+  if (!st.model) {
+    const mb = Math.round((st.size || 174e6) / 1e6);
+    live.append(ceBtn(`Download the stem model (${mb} MB)`, "Once: it's kept on this computer", async () => {
+      await api.stems_get_model(); stemsRefresh();
+    }, "btn teal"));
+    const n = document.createElement("span");
+    n.className = "fine";
+    n.textContent = "  Once, from Duet's releases on GitHub.";
+    live.append(n);
+    return;
+  }
+  live.append(ceBtn(stemsUi.set === "2" ? "Split into vocals + instrumental" : "Split into 4 stems", "", async () => {
+    const r = await api.stems_split(c.id, stemsUi.set);
+    if (r && r.error) toast(r.error, true);
+    stemsRefresh();
+  }, "btn teal"));
+}
+
+async function stemsRefresh() {
+  stemsUi.state = await api.stems_state();
+  const live = document.querySelector("#ceBody .cestemlive"), c = ceClip();
+  if (live && c) stemsPaint(live, c, stemsUi.state);
+}
+
+// while the Stems tab is open (or a split runs): ask how it's going
+function stemsWatch() {
+  if (stemsUi.timer) return;
+  stemsRefresh();
+  stemsUi.timer = setInterval(() => {
+    const open = !$("clipEd").hidden && ce.tab === "stems";
+    if (!open && !(stemsUi.state && (stemsUi.state.job || stemsUi.state.download))) { clearInterval(stemsUi.timer); stemsUi.timer = null; return; }
+    if (open) stemsRefresh();
+  }, 400);
 }
 
 // --- cuts ------------------------------------------------------------------------

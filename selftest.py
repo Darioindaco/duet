@@ -860,6 +860,93 @@ def test_clip_edit():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_stems():
+    """Splitting a clip into stems, through the shared song: four new tracks
+    under its own, each with a clip in the same place, the clip itself muted,
+    the stems adding back up to the clip; the partner gets the stem files and
+    hears the same. Needs the model: DUET_STEM_MODEL=path/to/htdemucs.onnx
+    (CI downloads it from the models-htdemucs-1 release); without it, only that
+    the split asks for it."""
+    import os
+    import shutil
+    import tempfile
+    import wave
+    from pathlib import Path
+
+    from daw import STEM_MODEL, Daw
+
+    a, b, _ = connect_pair()
+    root = Path(tempfile.mkdtemp(prefix="duet-stems-"))
+    da, db = Daw(a, root / "A", "alice"), Daw(b, root / "B", "bob")
+    try:
+        wait_for(lambda: da.p.pid == db.p.pid and da.view()["shared"] and db.view()["shared"], what="one shared song")
+        sr = 44100
+        t = np.arange(int(sr * 9.0)) / sr
+        kick = np.zeros_like(t)
+        for k in np.arange(0, 9.0, 0.5):
+            i, n = int(k * sr), int(0.2 * sr)
+            tt = np.arange(n) / sr
+            kick[i:i + n] += np.sin(2 * np.pi * (50 + 80 * np.exp(-tt / 0.03)) * tt) * np.exp(-tt / 0.1)
+        mix = 0.4 * kick + 0.3 * np.sin(2 * np.pi * 55 * t) + 0.15 * np.sin(2 * np.pi * 440 * t) * (np.sin(2 * np.pi * 2 * t) > 0)
+        src = root / "mix.wav"
+        with wave.open(str(src), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes((np.clip(mix, -1, 1) * 32767).astype("<i2").tobytes())
+        res = da.sample_clip(str(src), None, 0.0)
+        cid = da.view()["clips"][0]["id"]
+        key = da.view()["clips"][0]["file"]
+        wait_for(lambda: key in da.loaded, what="the clip loaded")
+        model = os.environ.get("DUET_STEM_MODEL")
+        if not model or not Path(model).is_file():
+            r = da.split_stems(cid, "4")
+            assert r.get("need_model"), r
+            print("stems: ok  (no model here: the split asks for it; set DUET_STEM_MODEL to run it)")
+            return
+        da.models_dir.mkdir(parents=True, exist_ok=True)
+        os.symlink(model, da.stem_model())
+        t0 = time.monotonic()
+        r = da.split_stems(cid, "4")
+        assert r.get("ok"), r
+        wait_for(lambda: da.stem_job is None, timeout=600, what="the split")
+        took = time.monotonic() - t0
+        v = da.view()
+        stems = [c for c in v["clips"] if c["id"] != cid]
+        assert len(stems) == 4 and da.p.live("clip")[cid].get("mute"), (len(stems), da.p.live("clip")[cid])
+        names = sorted(tr["name"] for tr in v["tracks"] if tr["id"] in {c["track"] for c in stems})
+        assert names == sorted(f"mix · {n}" for n in ("Drums", "Bass", "Other", "Vocals")), names
+        assert all(abs(c["start"] - 0.0) < 1e-9 and abs(c["len"] - 9.0) < 0.01 and c["offset"] == 0.0 for c in stems)
+        def left(path):  # a 32-bit float stereo WAV's left side (Python's wave can't read float)
+            raw = Path(path).read_bytes()
+            at = raw.index(b"data") + 8
+            return np.frombuffer(raw[at:at + int.from_bytes(raw[at - 4:at], "little")], dtype="<f4").reshape(-1, 2)[:, 0]
+
+        # the stems add back up to the mix (that's what the model is made to do)
+        total = None
+        for c in stems:
+            x = left(da.p.audio_dir / c["file"])
+            total = x if total is None else total + x
+        err = np.abs(total[:len(mix)] - mix[:len(total)]).max()
+        assert err < 0.05, f"the stems add up to the mix within {err}"
+        drums = [c for c in stems if "drums" in c["file"]][0]
+        d = left(da.p.audio_dir / drums["file"])
+        # the drums stem has the kick: loud where the kick hits, quiet between
+        on = np.abs(d[int(0.5 * sr):int(0.55 * sr)]).max()
+        off = np.abs(d[int(0.35 * sr):int(0.45 * sr)]).max()
+        assert on > 3 * off, (on, off)
+        # bob gets the stems and plays them
+        wait_for(lambda: all(c["file"] in db.loaded for c in stems), timeout=120, what="the stems on bob's side")
+        print(f"stems: ok  (9 s split into 4 in {took:.1f} s, they add up to the mix within {err:.3f}, the kick in the drums; "
+              f"bob has them)")
+    finally:
+        da.close()
+        db.close()
+        a.close()
+        b.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_library():
     """The sample library: the built-in sounds as WAVs, folders you make, sounds
     you import, search, nested bins; nothing outside its folders. And samples
@@ -921,7 +1008,8 @@ def test_library():
             da.edit([["track", "dk", {"name": "Drums", "order": 9.0, "owner": "alice", "inst": {"kind": "drums", "level": 0.8}}]])
             wait_for(lambda: "dk" in da.slots and "dk" in db.slots, what="the drum channel")
             assert da.sample_pad("dk", 2, kit["files"][5]["path"])["ok"]
-            wait_for(lambda: (bb.mixer()["tracks"][db.slots["dk"]]["inst"]["pads"] or [None] * 3)[2], what="bob's pad", timeout=15)
+            # (the instrument may not be there yet for a moment: wait for it too)
+            wait_for(lambda: ((bb.mixer()["tracks"][db.slots["dk"]]["inst"] or {}).get("pads") or [None] * 3)[2], what="bob's pad", timeout=15)
             # and it plays: bob's sampler, a note on its root
             slot = db.slots[ch]
             bb.note(f"T{slot}", True, 60, 120)
@@ -1444,6 +1532,7 @@ if __name__ == "__main__":
     test_automation()
     test_big_file()
     test_clip_edit()
+    test_stems()
     test_library()
     test_signals()
     test_mixer()

@@ -28,6 +28,7 @@ const ACTIONS = [
   ["nudgeRight", "Nudge right (one grid step)", "Editing", ["Alt+Right"], () => nudgeSel(1)],
   ["reverse", "Reverse the selected clips", "Editing", ["Shift+R"], () => songEdit(selClips().filter((c) => !c.pattern).map((c) => ["clip", c.id, { reverse: !c.reverse }]))],
   ["editClip", "Open the clip editor", "Editing", ["E"], () => editSelClip()],
+  ["mute", "Mute / unmute the selected clips", "Editing", ["Alt+M"], () => muteSel()],
   ["duplicate", "Duplicate", "Editing", ["Mod+D"], () => duplicateSel()],
   ["copy", "Copy", "Editing", ["Mod+C"], () => copySel()],
   ["cut", "Cut", "Editing", ["Mod+X"], () => copySel(true)],

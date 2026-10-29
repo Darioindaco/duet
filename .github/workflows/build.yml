@@ -31,6 +31,10 @@ jobs:
       - name: Build the test VST3 plugins (for the host tests in the self-test)
         working-directory: engine
         run: cargo build --release --example test_gain --example test_synth
+      - name: The stem model (for the stems self-test; skipped if it isn't published yet)
+        run: |
+          curl -fsSL -o htdemucs.onnx https://github.com/${{ github.repository }}/releases/download/models-htdemucs-1/htdemucs.onnx \
+            && echo "DUET_STEM_MODEL=$PWD/htdemucs.onnx" >> "$GITHUB_ENV" || echo "no model release yet"
       - name: Self-test
         run: python selftest.py
 

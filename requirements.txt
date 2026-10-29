@@ -1,3 +1,4 @@
 ﻿pywebview
+certifi      # HTTPS certificates for downloads (the stem model) in the packaged app
 numpy        # selftest only
 # the audio engine: pip install ./engine  (needs Rust: https://rustup.rs)

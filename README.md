@@ -182,6 +182,20 @@ and *Undo* takes it back.
   slider), or on the grid (bar, beat, 1/8, 1/16), or click your own; drag a cut
   to move it, right-click it to take it away. *Chop into clips* cuts the clip
   at every mark: each piece is its own clip, to move, copy or delete.
+- **Stems:** split the clip's sound into drums, bass, vocals and the rest (or
+  just vocals + instrumental), each on a new track under this one, with a clip
+  in the same place (same speed, pitch and fades). The clip itself is muted
+  (right-click → *Unmute clip* to hear it again). Also right-click a clip →
+  *Split into stems…*. It's Demucs, Meta's open-source stem splitter, working
+  on this computer: nothing is sent anywhere. Its model (174 MB) is downloaded
+  once, from Duet's releases on GitHub, the first time you use it. A 4-minute
+  song takes somewhere between half a minute and a few minutes, depending on
+  the computer; it runs in the background (the clip shows how far it is, and
+  *Stop* stops it). Your partner gets the stems as files, like a recording,
+  and doesn't need the model.
+
+Any clip can be muted: right-click → *Mute clip* (or *Alt+M*). It stays in
+place, greyed out, and is silent for both of you.
 
 Click in the ruler to move the playhead, drag in the ruler to mark a loop.
 *Space* plays and stops, *R* records, *Ctrl + scroll* zooms. *Click* gives you
@@ -460,6 +474,8 @@ to it through lock-free queues and atomics.
 | `engine/src/instr.rs` | Instruments: the synthesized drum kit, the synth, VST3 instruments (notes in) |
 | `engine/src/midi.rs` | MIDI keyboards (midir), on a thread of their own |
 | `engine/src/daw.rs` | Song timeline: clips (converted to the device rate as they play), the fast WAV reader, waveform peaks, take writer |
+| `engine/src/stems.rs` | The stem splitter: Demucs's spectrogram, its network in ONNX Runtime, the overlap-add (matches PyTorch Demucs to 2e-5) |
+| `tools/export_demucs.py` | Exports Demucs's network to ONNX (CI runs it for a commit with `[models]` and publishes the release `models-htdemucs-1`) |
 | `engine/src/stretch.rs` | Keep-pitch speed and transposing (Signalsmith Stretch), and finding a clip's hits, tempo and peak |
 | `ui/clipedit.js` | The clip editor (double-click an audio clip) |
 | `ui/keys.js` | Keyboard shortcuts: the actions, the sets in other programs' style, the settings window |

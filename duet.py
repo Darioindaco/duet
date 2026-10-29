@@ -251,6 +251,18 @@ class Api:
         hits are, in seconds of the file) or "tempo" (BPM or None)."""
         return self._daw.analyze(str(clip), str(what), float(sensitivity))
 
+    def stems_state(self):
+        return self._daw.stems_state()
+
+    def stems_get_model(self):
+        return self._daw.stems_get_model()
+
+    def stems_split(self, clip, which="4"):
+        return self._daw.split_stems(str(clip), str(which))
+
+    def stems_cancel(self):
+        self._daw.stems_cancel()
+
     def daw_projects(self):
         return self._daw.projects()
 

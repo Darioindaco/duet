@@ -430,3 +430,7 @@ header > .spacer { flex-shrink: 1; }
 .kchip i { color: var(--muted); font-style: normal; font-size: 12px; }
 .krow.listen .kchip { border-color: var(--me); color: var(--me); }
 #keysM .row { display: flex; align-items: center; gap: 8px; }
+.cestemlive { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0 12px; min-height: 36px; }
+.cebar { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 260px; }
+.cebar .exprog { flex: 1; margin: 0; }
+.cebar span { font-size: 12.5px; color: var(--muted); white-space: nowrap; }

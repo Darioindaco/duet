@@ -260,6 +260,7 @@ function songPaint(d) {
   }).join("");
   if (was && was.xfer && Object.keys(was.xfer).length !== names.length) songDraw();
   if (String(was && was.processing) !== String(d.processing)) { songDraw(); if (typeof ceDraw === "function") ceDraw(); }
+  if (JSON.stringify(was && was.stems && was.stems.job) !== JSON.stringify(d.stems && d.stems.job)) songDraw();
   // meters
   for (const t of song.view ? song.view.tracks : []) {
     const m = document.querySelector(`.th[data-id="${t.id}"] .lv i`);
@@ -631,6 +632,7 @@ function drawClip(ctx, c, x, y, w, h, track) {
   const col = tColor(track), sel = song.sel.has(c.id);
   const r = 6;
   ctx.save();
+  if (c.mute) ctx.globalAlpha = 0.35; // muted: still there, greyed
   ctx.beginPath();
   ctx.roundRect(x + 0.5, y + 0.5, Math.max(2, w - 1), h - 1, r);
   ctx.fillStyle = col + "26";
@@ -697,8 +699,17 @@ function drawClip(ctx, c, x, y, w, h, track) {
   ctx.fillStyle = "#121016";
   ctx.font = "700 10.5px system-ui, sans-serif";
   const g = c.gain ?? 1;
-  const label = (track ? track.name : "Clip") + (Math.abs(g - 1) > 0.001 ? `  ${fmtDb(g)}` : "") + clipBadges(c);
+  const label = (track ? track.name : "Clip") + (c.mute ? "  (muted)" : Math.abs(g - 1) > 0.001 ? `  ${fmtDb(g)}` : "") + clipBadges(c);
   ctx.fillText(label, Math.max(x, 0) + 6, y + 11);
+  // being split into stems
+  const sj = song.st && song.st.stems && song.st.stems.job;
+  if (sj && sj.clip === c.id) {
+    ctx.fillStyle = "rgba(8,7,11,0.6)";
+    ctx.fillRect(Math.max(x, 0) + 6, mid - 9, 132, 18);
+    ctx.fillStyle = "#9fe8dc";
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.fillText(sj.stage === "splitting" ? `Splitting… ${Math.round(sj.progress * 100)}%` : "Splitting into stems…", Math.max(x, 0) + 12, mid + 4);
+  }
   // a keep-pitch clip whose stretched copy is still being made: silent till then
   if (stretching(c)) {
     ctx.fillStyle = "rgba(8,7,11,0.6)";
@@ -1076,6 +1087,11 @@ function lanesDbl(e) {
   openClipEditor(c.id);
 }
 
+function muteSel(on) {
+  const sel = selClips().filter((k) => !k.pattern);
+  if (sel.length) songEdit(sel.map((k) => ["clip", k.id, { mute: on ?? !sel[0].mute }]));
+}
+
 // every clip on the track from this one on (it used to be the double-click)
 function selectFrom(c) {
   for (const k of song.view.clips) if (k.track === c.track && k.start >= c.start) song.sel.add(k.id);
@@ -1193,6 +1209,8 @@ function lanesContext(e) {
       items.push(["Open in the sequencer", "dbl-click", () => { seq.pat = c.pattern; setMainView("seq"); }]);
     } else {
       items.push(["Edit clip…", "dbl-click", () => openClipEditor(c.id)]);
+      items.push(["Split into stems…", "", () => { openClipEditor(c.id); ce.tab = "stems"; ceRender(); }]);
+      items.push([c.mute ? "Unmute clip" : "Mute clip", "Alt+M", () => muteSel(!c.mute)]);
       items.push(["Reverse", "", () => songEdit(selClips().filter((k) => !k.pattern).map((k) => ["clip", k.id, { reverse: !k.reverse }]))]);
       items.push(["Select everything after", "", () => selectFrom(c)]);
       items.push(["Remove fades", "", () => songEdit(selClips().map((k) => ["clip", k.id, { fade_in: 0, fade_out: 0 }]))]);
@@ -1522,6 +1540,10 @@ function demoSong() {
     daw_record: async () => { playing = true; recording = true; recFrom = pos; t0 = performance.now(); return { ok: true }; },
     daw_locate: async (p) => { pos = p; t0 = performance.now(); },
     daw_peaks: async (n) => pk[n] || null,
+    stems_state: async () => ({ model: false, size: 174264716, download: null, job: null }),
+    stems_get_model: async () => ({ ok: true }),
+    stems_split: async () => ({ error: "The demo has no stem model." }),
+    stems_cancel: async () => {},
     // (the demo makes up its answers: a steady beat at 96, hits every half second)
     daw_analyze: async (id, what) => {
       const c = view.clips.find((k) => k.id === id);

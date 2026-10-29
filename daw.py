@@ -60,7 +60,7 @@ FIELDS = {
     # when the speed changes; off = tape), reverse (the clip's stretch of the
     # file backwards). offset is in seconds of the file, len on the timeline.
     "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out",
-             "speed", "pitch", "stretch", "reverse", "del"},
+             "speed", "pitch", "stretch", "reverse", "mute", "del"},
     "file": {"frames", "sr", "owner", "name", "del"},
     "pattern": {"name", "len", "color", "del"},
     "note": {"pattern", "track", "start", "len", "key", "vel", "del"},
@@ -73,7 +73,7 @@ FIELD_DEFAULTS = {
     "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None,
               "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "del": False},
     "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "speed": 1.0, "pitch": 0.0,
-             "stretch": False, "reverse": False, "del": False},
+             "stretch": False, "reverse": False, "mute": False, "del": False},
     "file": {"del": False},
     "pattern": {"del": False},
     "note": {"vel": 100, "del": False},
@@ -85,6 +85,34 @@ UNDO_DEPTH = 200
 
 # ids and file names end up in paths: only plain names, whatever the partner sends
 SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
+
+
+# the stem splitter's model: Demucs htdemucs (Meta, MIT) as ONNX, published by
+# CI from tools/export_demucs.py; downloaded the first time it's needed
+STEM_MODEL = {
+    "file": "htdemucs-1.onnx",
+    "url": "https://github.com/Darioindaco/duet/releases/download/models-htdemucs-1/htdemucs.onnx",
+    "sha256": "3cd6b17e7accb6c6e1d8eca9e2b356e885ab69a15dcb903fab7cbdddce99650a",
+    "size": 174_264_716,
+}
+STEM_SETS = {
+    # stem names as the engine has them: drums, bass, other, vocals
+    "4": [("Drums", [0]), ("Bass", [1]), ("Other", [2]), ("Vocals", [3])],
+    "2": [("Vocals", [3]), ("Instrumental", [0, 1, 2])],
+}
+
+
+def https_context():
+    """Certificates for downloads: certifi's where it's there (a packaged app
+    on a Mac may not find the system's), else the system's."""
+    import ssl
+    if os.environ.get("SSL_CERT_FILE"):  # (set on purpose: a proxy's own certificates)
+        return ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 
 def num(v, default: float, lo: float, hi: float) -> float:
@@ -250,6 +278,11 @@ class Daw:
         # never with the lock held); a project switch makes older loads stale
         self.loading: set[str] = set()
         self.load_gen = 0
+        # stems: the model download, and the split running (one at a time)
+        self.models_dir = root.parent / "Models"
+        self.stem_dl: dict | None = None
+        self.stem_job: dict | None = None
+        self.last_stems = 0.0
         self.peak_cache: dict[str, str] = {}
         self.slots: dict[str, int] = {}
         self.sent_strip: dict = {}
@@ -833,7 +866,7 @@ class Daw:
             if slot is None or key not in self.loaded:
                 continue
             desc[slot].append((key, float(c.get("start", 0)) * spb, float(c.get("offset", 0)), float(c.get("len", 0)),
-                               float(c.get("gain", 1.0)), float(c.get("fade_in", 0)), float(c.get("fade_out", 0)),
+                               0.0 if c.get("mute") else float(c.get("gain", 1.0)), float(c.get("fade_in", 0)), float(c.get("fade_out", 0)),
                                num(c.get("speed"), 1.0, 0.05, 20.0), num(c.get("pitch"), 0.0, -48.0, 48.0),
                                bool(c.get("stretch")), bool(c.get("reverse"))))
         notes = self._notes(spb)
@@ -1044,6 +1077,158 @@ class Daw:
         except Exception as exc:
             return {"error": str(exc)}
         return {"error": f"Nothing called {what}."}
+
+    # --- stems ---------------------------------------------------------------------
+
+    def stem_model(self) -> Path:
+        return self.models_dir / STEM_MODEL["file"]
+
+    def stems_state(self) -> dict:
+        """For the UI: is the model here, a download or a split under way, how the last one went."""
+        with self.lock:
+            dl = dict(self.stem_dl) if self.stem_dl else None
+            job = {k: self.stem_job[k] for k in ("clip", "stage", "progress")} if self.stem_job else None
+            return {"model": self.stem_model().is_file(), "size": STEM_MODEL["size"], "download": dl, "job": job}
+
+    def stems_get_model(self) -> dict:
+        """Download the model (once), in the background."""
+        with self.lock:
+            if self.stem_model().is_file():
+                return {"ok": True}
+            if self.stem_dl and not self.stem_dl.get("error"):
+                return {"ok": True}  # already on its way
+            self.stem_dl = {"done": 0, "total": STEM_MODEL["size"], "error": None}
+        threading.Thread(target=self._stems_download, name="duet-stem-model", daemon=True).start()
+        return {"ok": True}
+
+    def _stems_download(self):
+        import urllib.request
+        dst = self.stem_model()
+        part = dst.with_name(dst.name + ".part")
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            h = hashlib.sha256()
+            req = urllib.request.Request(STEM_MODEL["url"], headers={"User-Agent": "Duet"})
+            with urllib.request.urlopen(req, timeout=60, context=https_context()) as r, open(part, "wb") as f:
+                total = int(r.headers.get("Content-Length") or STEM_MODEL["size"])
+                with self.lock:
+                    self.stem_dl["total"] = total
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    h.update(chunk)
+                    with self.lock:
+                        self.stem_dl["done"] += len(chunk)
+            want = STEM_MODEL["sha256"]
+            if want and h.hexdigest() != want:
+                raise RuntimeError("the download isn't the model it should be (its checksum is off)")
+            os.replace(part, dst)
+            with self.lock:
+                self.stem_dl = None
+                self.version += 1
+        except Exception as exc:
+            try:
+                part.unlink()
+            except OSError:
+                pass
+            with self.lock:
+                self.stem_dl = {"done": 0, "total": 0, "error": f"Couldn't download the stem model: {exc}"}
+
+    def split_stems(self, clip: str, which: str = "4") -> dict:
+        """Split an audio clip's sound into stems: new tracks under its track,
+        one clip each in the same place (same speed, pitch, fades), and the
+        clip itself muted. Runs in the background (stems_state)."""
+        with self.lock:
+            if self.stem_job:
+                return {"error": "A split is already running."}
+            if not self.stem_model().is_file():
+                return {"error": "The stem model isn't here yet.", "need_model": True}
+            sets = STEM_SETS.get(str(which))
+            c = self.p.live("clip").get(clip)
+            if not sets or not c or not c.get("file"):
+                return {"error": "That clip is gone."}
+            key = c["file"]
+            src = self.p.audio_dir / key
+            if not src.is_file():
+                return {"error": "The audio isn't here yet."}
+            offset = num(c.get("offset"), 0.0, 0.0, 1e7)
+            speed = num(c.get("speed"), 1.0, 0.05, 20.0)
+            ratio = speed if c.get("stretch") else speed * 2 ** (num(c.get("pitch"), 0.0, -48.0, 48.0) / 12)
+            dur = num(c.get("len"), 0.0, 0.0, 1e7) * ratio  # seconds of the file
+            # the same split again finds its files (and nothing is worked out twice)
+            tag = hashlib.sha1(f"{key}|{offset:.6f}|{dur:.6f}|{which}|{STEM_MODEL['file']}".encode()).hexdigest()[:12]
+            outs = [(name, ids, f"stem-{tag}-{name.lower()}.wav") for name, ids in sets]
+            self.stem_job = {"clip": clip, "pid": self.p.pid, "outs": outs, "stage": "loading", "progress": 0.0}
+            have = all((self.p.audio_dir / f).is_file() for _, _, f in outs)
+        if have:
+            with self.lock:
+                self._stems_done()
+            return {"ok": True}
+        try:
+            self.e.stems_start(str(self.stem_model()), str(src), offset, dur,
+                               [(str(self.p.audio_dir / f), ids) for _, ids, f in outs])
+        except Exception as exc:
+            with self.lock:
+                self.stem_job = None
+            return {"error": str(exc)}
+        return {"ok": True}
+
+    def stems_cancel(self):
+        self.e.stems_cancel()
+
+    def _stems_poll(self):
+        """(lock held) How the engine's split is going; once it's done, the tracks."""
+        st = self.e.stems_status()
+        job = self.stem_job
+        job["stage"], job["progress"] = st["stage"] or job["stage"], float(st["progress"])
+        res = st["result"]
+        if res is None:
+            if not st["running"] and job["stage"] != "loading":
+                self.stem_job = None  # (lost: nothing to hand over)
+            return
+        if res.get("error"):
+            self.stem_job = None
+            if res["error"] != "stopped":
+                self.notices.append(f"The split didn't work: {res['error']}")
+            self.version += 1
+            return
+        self._stems_done()
+
+    def _stems_done(self):
+        """(lock held) The stems are files in the project: into the song."""
+        job, self.stem_job = self.stem_job, None
+        if job["pid"] != self.p.pid:
+            return  # another song by now (the files stay with that one)
+        c = self.p.live("clip").get(job["clip"])
+        tracks = self.p.live("track")
+        t = tracks.get(c.get("track")) if c else None
+        if not c or not t:
+            return
+        files = self.p.live("file")
+        changes = []
+        for name, _, f in job["outs"]:
+            if f not in files:
+                frames, sr, _ch = type(self.e).wav_header(str(self.p.audio_dir / f))
+                changes.append(["file", f, {"frames": frames, "sr": sr, "owner": self.me, "name": name}])
+        # the new tracks right under the clip's (after its other stems or lanes)
+        here = float(t.get("order", 0))
+        later = sorted(float(x.get("order", 0)) for x in tracks.values() if float(x.get("order", 0)) > here)
+        nxt = later[0] if later else here + len(job["outs"]) + 1
+        keep = {k: c[k] for k in ("start", "len", "gain", "fade_in", "fade_out", "speed", "pitch", "stretch", "reverse") if k in c}
+        for i, (name, _, f) in enumerate(job["outs"]):
+            tid = new_id("t")
+            changes.append(["track", tid, {"name": f"{t.get('name') or 'Track'} · {name}"[:60],
+                                           "order": here + (i + 1) * (nxt - here) / (len(job["outs"]) + 1),
+                                           "owner": self.me, "src": 0, "arm": False, "vol": 0.8, "pan": 0.0, "rack": []}])
+            changes.append(["clip", new_id("c"), {**keep, "track": tid, "file": f, "offset": 0.0}])
+        changes.append(["clip", job["clip"], {"mute": True}])
+        self._do(changes)
+        for _, _, f in job["outs"]:
+            self._load(f, self.p.audio_dir / f)
+        self.notices.append(f"Split into {len(job['outs'])} stems. The clip itself is muted (right-click it to hear it again).")
+        self.version += 1
 
     def sample_pad(self, track: str, pad: int, path: str | None) -> dict:
         """A library sample onto a drum pad of a song channel (pad 0 of a
@@ -1316,6 +1501,9 @@ class Daw:
             if self.outbox and now - self.last_flush >= 0.08:
                 self._flush()
             self._files(now)
+            if self.stem_job and now - self.last_stems > 0.25:
+                self.last_stems = now
+                self._stems_poll()
             if conn and self.partner_pid == self.p.pid and now - self.last_sum > 5:
                 self.last_sum = now
                 self._send({"t": "sum", "d": self.p.digest()})
@@ -1459,7 +1647,9 @@ class Daw:
                     "recFrom": self.rec["punch"] / spb if self.rec else None,
                     "levels": levels, "xfer": xfer, "notices": notices,
                     "partnerHere": self._partner_here(), "partnerNotes": live,
-                    "processing": self.e.daw_processing()}
+                    "processing": self.e.daw_processing(),
+                    "stems": {"job": {k: self.stem_job[k] for k in ("clip", "stage", "progress")} if self.stem_job else None,
+                              "download": dict(self.stem_dl) if self.stem_dl else None}}
 
     def close(self):
         self._running = False
