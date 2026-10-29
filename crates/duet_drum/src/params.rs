@@ -112,6 +112,9 @@ pub struct DrumParams {
     pub mic: MicParams,
     /// gain of the contact force's dipole term in the close mic
     pub attack_gain: f64,
+    /// EXPERIMENT (not in the spec): radius a (m) of the stick's contact patch. The strike vector
+    /// is weighted by `exp(−(κa)²/2)`, a Gaussian patch instead of a point. 0 = a point (the spec).
+    pub contact_radius: f64,
     /// SAV gauge ε (J)
     pub sav_epsilon: f64,
     /// SAV drift control λ (0 = off)
@@ -145,6 +148,7 @@ impl Default for DrumParams {
             stick: StickParams { mass: 0.02, stiffness: 1.0e8, exponent: 1.5, v_min: 0.2, v_max: 6.0, velocity_gamma: 1.5 },
             mic: MicParams { close_radius: 0.5, close_angle: 0.0, close_height: 0.06, far_distance: 1.5 },
             attack_gain: 1.0,
+            contact_radius: 0.0,
             sav_epsilon: 1e-12,
             sav_drift: 0.0,
             gain_close_db: 0.0,

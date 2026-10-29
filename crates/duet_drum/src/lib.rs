@@ -20,4 +20,4 @@ pub mod voice;
 pub use modes::{MembraneBasis, MembraneMode, MembraneParams, RADIAL_POINTS};
 pub use params::{DrumParams, Head, HeadParams, MicParams, StickParams};
 pub use prepare::{DrumModel, ModeInfo, PrepareError};
-pub use voice::DrumVoice;
+pub use voice::{DrumVoice, Hit};
