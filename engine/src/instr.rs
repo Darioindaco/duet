@@ -152,7 +152,7 @@ impl DrumKit {
         let mut err = None;
         let samples = (0..PADS.len())
             .map(|i| match own.get(i).cloned().flatten() {
-                Some(path) => match crate::daw::read_wav(std::path::Path::new(&path)) {
+                Some(path) => match crate::decode::read_audio(std::path::Path::new(&path)) {
                     Ok(a) => crate::daw::resample(&a.to_mono(), a.sr, sr as u32),
                     Err(e) => {
                         err = Some(format!("{}: {e}", PADS[i].1));
@@ -540,7 +540,7 @@ impl Sampler {
     pub fn new(sr: f32, path: Option<String>) -> (Sampler, Option<String>) {
         let mut s = Sampler { l: vec![], r: None, voices: Vec::with_capacity(SAMPLER_VOICES), sr, sustain: false };
         let Some(path) = path else { return (s, None) };
-        match crate::daw::read_wav(std::path::Path::new(&path)) {
+        match crate::decode::read_audio(std::path::Path::new(&path)) {
             Ok(a) => {
                 s.l = crate::daw::resample(&a.samples, a.sr, sr as u32);
                 s.r = a.right.as_ref().map(|r| crate::daw::resample(r, a.sr, sr as u32));

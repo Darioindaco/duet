@@ -7,6 +7,7 @@
 
 mod audio;
 mod daw;
+mod decode;
 mod dsp;
 mod fx;
 mod instr;
@@ -888,7 +889,7 @@ impl Engine {
         let data = match path {
             None => None,
             Some(p) => {
-                let a = py.allow_threads(|| daw::read_wav(std::path::Path::new(&p))).map_err(PyRuntimeError::new_err)?;
+                let a = py.allow_threads(|| decode::read_audio(std::path::Path::new(&p))).map_err(PyRuntimeError::new_err)?;
                 let right = a.right.as_ref().map(|r| daw::resample(r, a.sr, sr));
                 Some(Arc::new(daw::AudioData { sr, samples: daw::resample(&a.samples, a.sr, sr), right }))
             }
@@ -905,13 +906,20 @@ impl Engine {
         if pos >= len { (0, 0) } else { (pos, len) }
     }
 
-    /// What's in a WAV: (frames, sample rate, channels, waveform peaks: a signed
+    /// What's in a sound file (WAV, MP3, M4A, FLAC, AIFF, Ogg): (frames, sample rate, channels, waveform peaks: a signed
     /// min/max byte pair per 512 frames).
     #[staticmethod]
     fn wav_info<'py>(py: Python<'py>, path: String) -> PyResult<(usize, u32, u8, Bound<'py, PyBytes>)> {
-        let a = py.allow_threads(|| daw::read_wav(std::path::Path::new(&path))).map_err(PyRuntimeError::new_err)?;
-        let peaks = daw::peaks(&a.to_mono());
-        Ok((a.samples.len(), a.sr, if a.right.is_some() { 2 } else { 1 }, PyBytes::new(py, &peaks)))
+        // read straight through: an hour-long file needs no memory for this
+        let (frames, sr, ch, peaks) = py.allow_threads(|| decode::audio_peaks(std::path::Path::new(&path))).map_err(PyRuntimeError::new_err)?;
+        Ok((frames, sr, ch.min(2) as u8, PyBytes::new(py, &peaks)))
+    }
+
+    /// A sound file's (frames, sample rate, channels), from its header where it can.
+    #[staticmethod]
+    fn wav_header(path: String) -> PyResult<(usize, u32, u8)> {
+        let (frames, sr, ch) = decode::audio_header(std::path::Path::new(&path)).map_err(PyRuntimeError::new_err)?;
+        Ok((frames, sr, ch.min(2) as u8))
     }
 
     /// The built-in drum kit's sound for pad `pad` (0..15), as a 24-bit WAV.
@@ -1267,9 +1275,17 @@ impl Engine {
 
     /// Load a WAV for the timeline under `key`. Returns (frames, sample rate,
     /// waveform peaks: a signed min/max byte pair per 512 frames).
+    /// Reading and the waveform happen here with nothing locked (a long file
+    /// takes a moment): call it off the thread the UI waits on. The audio stays
+    /// at its own rate; it's converted to the device rate as it plays.
     fn daw_load<'py>(&self, py: Python<'py>, key: String, path: String) -> PyResult<(usize, u32, Bound<'py, PyBytes>)> {
-        let data = py.allow_threads(|| daw::read_wav(std::path::Path::new(&path))).map_err(PyRuntimeError::new_err)?;
-        let (frames, sr, peaks) = (data.samples.len(), data.sr, daw::peaks(&data.samples));
+        let (frames, sr, peaks, data) = py
+            .allow_threads(|| -> Result<_, String> {
+                let a = decode::read_audio(std::path::Path::new(&path))?;
+                let (frames, sr, peaks) = (a.samples.len(), a.sr, daw::audio_peaks(&a));
+                Ok((frames, sr, peaks, a))
+            })
+            .map_err(PyRuntimeError::new_err)?;
         self.inner.daw.lock().unwrap().cache.insert(&key, data);
         Ok((frames, sr, PyBytes::new(py, &peaks)))
     }
@@ -1640,10 +1656,10 @@ impl Engine {
     }
 
     /// Send a file to the partner under `name` (a plain file name).
-    fn file_send(&self, py: Python<'_>, name: String, path: String) -> PyResult<()> {
-        let data = py.allow_threads(|| transfer::read_file(std::path::Path::new(&path))).map_err(PyRuntimeError::new_err)?;
-        self.inner.files.lock().unwrap().send(&name, data);
-        Ok(())
+    /// Instant: the file is read a chunk at a time as it goes (and asking
+    /// again while it's on its way changes nothing).
+    fn file_send(&self, name: String, path: String) -> PyResult<()> {
+        self.inner.files.lock().unwrap().send_file(&name, std::path::Path::new(&path)).map_err(PyRuntimeError::new_err)
     }
 
     /// {"out": [(name, bytes done, total)], "in": [...], "rate": bytes/s}

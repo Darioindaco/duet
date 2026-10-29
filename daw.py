@@ -35,6 +35,8 @@ import random
 import re
 import shutil
 import string
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -78,6 +80,18 @@ UNDO_DEPTH = 200
 
 # ids and file names end up in paths: only plain names, whatever the partner sends
 SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
+
+
+def copy_file(src: Path, dst: Path):
+    """A copy of a (maybe huge) file. On a Mac, an APFS clone first: instant,
+    and it takes no space until one of the two changes."""
+    if sys.platform == "darwin":
+        try:
+            if subprocess.run(["/bin/cp", "-c", str(src), str(dst)], capture_output=True, timeout=600).returncode == 0:
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    shutil.copy2(src, dst)
 
 
 def safe(name) -> bool:
@@ -218,6 +232,10 @@ class Daw:
         self.wanted: dict[str, float] = {}
         self.loaded: set[str] = set()
         self.load_failed: set[str] = set()
+        # files being read in the background (an hour of audio takes seconds:
+        # never with the lock held); a project switch makes older loads stale
+        self.loading: set[str] = set()
+        self.load_gen = 0
         self.peak_cache: dict[str, str] = {}
         self.slots: dict[str, int] = {}
         self.sent_strip: dict = {}
@@ -308,6 +326,8 @@ class Daw:
             self.e.daw_unload(key)
         self.loaded.clear()
         self.load_failed.clear()
+        self.loading.clear()
+        self.load_gen += 1
         self.wanted.clear()
         self.sent_desc = None
         self.pattern_mode = None
@@ -943,16 +963,24 @@ class Daw:
         with open(src, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
-        key = f"s-{h.hexdigest()[:14]}.wav"
+        # its own kind kept (an M4A from a phone stays small, also on its way to the partner)
+        ext = src.suffix.lower() if re.fullmatch(r"\.[a-z0-9]{2,5}", src.suffix.lower()) else ".wav"
+        key = f"s-{h.hexdigest()[:14]}{ext}"
         with self.lock:
             dst = self.p.audio_dir / key
-            if not dst.exists():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
+        if not dst.exists():
+            # copied with nothing locked (a big file takes a while), then put in place at once
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dst.with_name(f".{key}.{os.getpid()}.{threading.get_ident()}.tmp")
+            copy_file(src, tmp)
+            os.replace(tmp, dst)
+        frames, sr, _ch = type(self.e).wav_header(str(dst))
+        with self.lock:
+            if self.p.audio_dir / key != dst:
+                return key  # another project by now
             if key not in self.loaded:
                 self._load(key, dst)
             if key not in self.p.live("file"):
-                frames, sr, _ch, _peaks = type(self.e).wav_info(str(dst))
                 self._do([["file", key, {"frames": frames, "sr": sr, "owner": self.me, "name": src.stem[:80]}]], undoable=False)
         return key
 
@@ -1276,9 +1304,10 @@ class Daw:
             if not path.exists() and (self.incoming / name).exists():
                 self._adopt_file(name, self.incoming / name)
             if path.exists():
-                if name not in self.loaded and name not in self.load_failed:
+                # a couple at a time: each one wants its memory and a core
+                if name not in self.loaded and name not in self.load_failed and name not in self.loading \
+                        and len(self.loading) < 2:
                     self._load(name, path)
-                    return  # one per round: loading big takes takes a moment
             elif self.connected and self.partner_pid == self.p.pid and now - self.wanted.get(name, -1e9) > 30:
                 self.wanted[name] = now
                 self._send({"t": "want", "file": name})
@@ -1294,16 +1323,33 @@ class Daw:
         self._load(name, dst)
 
     def _load(self, name: str, path: Path):
-        try:
-            _frames, _sr, peaks = self.e.daw_load(name, str(path))
-        except Exception as exc:
-            self.load_failed.add(name)
-            self.notices.append(f"Couldn't read {name}: {exc}")
+        """Read a file into the engine, in the background (called with the lock held)."""
+        if name in self.loading or name in self.loaded:
             return
-        self.peak_cache[name] = base64.b64encode(peaks).decode()
-        self.loaded.add(name)
-        self.version += 1
-        self._push()
+        self.loading.add(name)
+        self.version += 1  # the UI shows it as loading
+        threading.Thread(target=self._load_bg, args=(name, path, self.load_gen), name="duet-load", daemon=True).start()
+
+    def _load_bg(self, name: str, path: Path, gen: int):
+        err = None
+        try:
+            _frames, _sr, peaks = self.e.daw_load(name, str(path))  # seconds for a long file, nothing locked
+        except Exception as exc:
+            err = exc
+        with self.lock:
+            if gen != self.load_gen:
+                if err is None and name not in self.loaded:
+                    self.e.daw_unload(name)  # another project by now
+                return
+            self.loading.discard(name)
+            self.version += 1
+            if err is not None:
+                self.load_failed.add(name)
+                self.notices.append(f"Couldn't read {name}: {err}")
+                return
+            self.peak_cache[name] = base64.b64encode(peaks).decode()
+            self.loaded.add(name)
+            self._push()
 
     # --- for the UI ------------------------------------------------------------------
 
@@ -1332,7 +1378,8 @@ class Daw:
                     t["autoBad"] = t["id"] in self.auto_bad
             files = {}
             for name, f in p.live("file").items():
-                files[name] = {**f, "here": name in self.loaded, "mine": f.get("owner") == self.me}
+                files[name] = {**f, "here": name in self.loaded, "loading": name in self.loading,
+                               "mine": f.get("owner") == self.me}
             return {
                 "pid": p.pid, "meta": p.meta(), "tracks": [t for t in tracks if not t["bus"]],
                 "buses": [t for t in tracks if t["bus"]],

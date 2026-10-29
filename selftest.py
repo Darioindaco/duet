@@ -666,6 +666,77 @@ def test_automation():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_big_file():
+    """A long file into the song: the project never stops answering while it
+    loads (the UI asks it something every frame), and a 44.1k file plays at the
+    right pitch on a 48k device (converted as it plays)."""
+    import shutil
+    import tempfile
+    import threading
+    import wave
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-big-"))
+    d = Daw(e, root / "P", "me")
+    try:
+        sr, secs, hz = 44100, 240, 1000.0
+        src = root / "long.wav"
+        with wave.open(str(src), "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            for k in range(secs // 10):
+                t = np.arange(k * 10 * sr, (k + 1) * 10 * sr) / sr
+                x = (0.5 * np.sin(2 * np.pi * hz * t) * 32767).astype("<i2")
+                w.writeframes(np.repeat(x, 2).tobytes())
+        worst, stop = [0.0], [False]
+
+        def poll():
+            while not stop[0]:
+                t0 = time.monotonic()
+                d.view()
+                d.status(e.state())
+                worst[0] = max(worst[0], time.monotonic() - t0)
+                time.sleep(0.01)
+
+        th = threading.Thread(target=poll)
+        th.start()
+        t0 = time.monotonic()
+        res = d.sample_clip(str(src), None, 0.0)
+        assert res.get("ok"), res
+        key = d.view()["clips"][0]["file"]
+        wait_for(lambda: key in d.loaded, timeout=60, what="the long file loaded")
+        took = time.monotonic() - t0
+        stop[0] = True
+        th.join()
+        assert worst[0] < 0.25, f"the project didn't answer for {worst[0]:.2f} s while loading"
+        f = d.view()["files"][key]
+        assert f["here"] and not f["loading"] and f["frames"] == secs * sr
+        wait_for(lambda: d.sent_desc and any(d.sent_desc), what="the clip on the timeline")
+        # 1 kHz in, 1 kHz out at the device's 48k: count the zero crossings
+        e.daw_play(5.0)
+        x = [0.0] * N
+        out = []
+        for _ in range(100):
+            out += e.process(x)
+        e.daw_stop()
+        left = np.array(out[N * 10:])  # (the left channel)
+        dev = e.state()["samplerate"]
+        cross = np.count_nonzero(np.diff(np.signbit(left)))
+        got = cross / 2 / (len(left) / dev)
+        assert abs(got - hz) < 5, f"plays at {got:.1f} Hz instead of {hz}"
+        print(f"big file: ok  ({secs // 60} min stereo at 44.1k loaded in {took:.1f} s, longest wait for an answer "
+              f"{worst[0] * 1000:.0f} ms, plays at {got:.0f} Hz on {dev} Hz)")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_library():
     """The sample library: the built-in sounds as WAVs, folders you make, sounds
     you import, search, nested bins; nothing outside its folders. And samples
@@ -1248,6 +1319,7 @@ if __name__ == "__main__":
     test_live()
     test_routing()
     test_automation()
+    test_big_file()
     test_library()
     test_signals()
     test_mixer()

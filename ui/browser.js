@@ -271,7 +271,10 @@ function brTarget(el, ev) {
 const DRUM_PADS = Array.from({ length: 16 }, (_, i) => 36 + i);
 
 async function brToSong(f, track, beat) {
+  // a big file takes a moment to copy into the project: say so
+  const slow = setTimeout(() => toast(`Adding ${f.name}…`), 400);
   const res = await api.lib_to_song(f.path, track, beat);
+  clearTimeout(slow);
   if (res && res.error) toast(res.error, true);
   else setSongView(await api.daw_project());
 }

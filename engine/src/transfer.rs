@@ -6,8 +6,12 @@
 //! never swamps the uplink the live audio needs. The receiver acks with a
 //! cumulative count plus a bitmap of what it has beyond that; the sender
 //! resends what stays unacked for too long. One file goes out at a time.
+//!
+//! Files are read and written in place, a chunk at a time, on both sides: an
+//! hour-long take (a gigabyte or more) never has to fit in memory.
 
 use std::collections::{HashMap, VecDeque};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -22,16 +26,24 @@ const MAX_RATE: f64 = 1_500_000.0; // ~12 Mbit/s: plenty for takes, leaves room 
 const STEP_UP: f64 = 40_000.0; // per clean 100 ms
 const META_EVERY: Duration = Duration::from_millis(300);
 const GIVE_UP: Duration = Duration::from_secs(20); // nothing acked for this long
+const MAX_SIZE: u64 = 16_000_000_000; // what a partner may announce
 
 // payload kinds
 const K_META: u8 = 0; // T_FILE: size u64, name; T_FILEACK: got the meta
 const K_DATA: u8 = 1; // T_FILE: index u32, bytes; T_FILEACK: cumulative u32, bitmap
 const K_DONE: u8 = 2; // T_FILEACK: all there and saved
 
+/// What goes out: bytes in memory (tests), or a file read as it's sent.
+enum Source {
+    Mem(Vec<u8>),
+    File(File),
+}
+
 struct Outgoing {
     id: u32,
     name: String,
-    data: Vec<u8>,
+    src: Source,
+    size: u64,
     chunks: u32,
     acked: Vec<bool>,
     n_acked: u32,
@@ -44,10 +56,12 @@ struct Outgoing {
 
 struct Incoming {
     name: String,
-    size: usize,
+    size: u64,
     got: Vec<bool>,
     n_got: u32,
-    data: Vec<u8>,
+    /// written as chunks come in; renamed to `name` once it's whole
+    part: PathBuf,
+    file: File,
     unacked: u32,
     last_ack: Instant,
 }
@@ -77,8 +91,39 @@ pub struct Transfers {
     loss_since_raise: bool,
 }
 
-fn n_chunks(size: usize) -> u32 {
-    size.div_ceil(CHUNK).max(1) as u32
+fn n_chunks(size: u64) -> u32 {
+    size.div_ceil(CHUNK as u64).max(1) as u32
+}
+
+#[cfg(unix)]
+fn read_at(f: &File, buf: &mut [u8], at: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(f, buf, at)
+}
+#[cfg(unix)]
+fn write_at(f: &File, buf: &[u8], at: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(f, buf, at)
+}
+#[cfg(windows)]
+fn read_at(f: &File, buf: &mut [u8], at: u64) -> std::io::Result<()> {
+    let mut done = 0;
+    while done < buf.len() {
+        match std::os::windows::fs::FileExt::seek_read(f, &mut buf[done..], at + done as u64)? {
+            0 => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            n => done += n,
+        }
+    }
+    Ok(())
+}
+#[cfg(windows)]
+fn write_at(f: &File, buf: &[u8], at: u64) -> std::io::Result<()> {
+    let mut done = 0;
+    while done < buf.len() {
+        match std::os::windows::fs::FileExt::seek_write(f, &buf[done..], at + done as u64)? {
+            0 => return Err(std::io::ErrorKind::WriteZero.into()),
+            n => done += n,
+        }
+    }
+    Ok(())
 }
 
 /// Keep incoming names to plain file names: no paths from the other side.
@@ -116,15 +161,37 @@ impl Transfers {
         !self.queue.is_empty() || !self.incoming.is_empty()
     }
 
+    /// Already on its way (or waiting to go)?
+    pub fn sending(&self, name: &str) -> bool {
+        self.queue.iter().any(|o| o.name == name)
+    }
+
     pub fn send(&mut self, name: &str, data: Vec<u8>) {
-        if self.queue.iter().any(|o| o.name == name) {
+        let size = data.len() as u64;
+        self.push(name, Source::Mem(data), size);
+    }
+
+    /// A file on disk: read a chunk at a time as it goes.
+    pub fn send_file(&mut self, name: &str, path: &Path) -> Result<(), String> {
+        if self.sending(name) {
+            return Ok(());
+        }
+        let f = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let size = f.metadata().map_err(|e| e.to_string())?.len();
+        self.push(name, Source::File(f), size);
+        Ok(())
+    }
+
+    fn push(&mut self, name: &str, src: Source, size: u64) {
+        if self.sending(name) {
             return; // already on its way
         }
-        let chunks = n_chunks(data.len());
+        let chunks = n_chunks(size);
         self.queue.push_back(Outgoing {
             id: rand::random::<u32>(),
             name: name.to_string(),
-            data,
+            src,
+            size,
             chunks,
             acked: vec![false; chunks as usize],
             n_acked: 0,
@@ -141,19 +208,22 @@ impl Transfers {
         for o in self.queue.drain(..) {
             self.failed.push(o.name);
         }
-        self.incoming.clear();
+        for (_, inc) in self.incoming.drain() {
+            drop(inc.file);
+            let _ = std::fs::remove_file(&inc.part);
+        }
     }
 
     pub fn progress(&self) -> (Vec<Progress>, Vec<Progress>) {
         let out = self
             .queue
             .iter()
-            .map(|o| Progress { name: o.name.clone(), done: (o.n_acked as u64 * CHUNK as u64).min(o.data.len() as u64), total: o.data.len() as u64 })
+            .map(|o| Progress { name: o.name.clone(), done: (o.n_acked as u64 * CHUNK as u64).min(o.size), total: o.size })
             .collect();
         let inc = self
             .incoming
             .values()
-            .map(|i| Progress { name: i.name.clone(), done: (i.n_got as u64 * CHUNK as u64).min(i.size as u64), total: i.size as u64 })
+            .map(|i| Progress { name: i.name.clone(), done: (i.n_got as u64 * CHUNK as u64).min(i.size), total: i.size })
             .collect();
         (out, inc)
     }
@@ -200,7 +270,7 @@ impl Transfers {
         if !o.meta_acked {
             if o.meta_sent.is_none_or(|t| now.duration_since(t) >= META_EVERY) {
                 let mut body = vec![K_META];
-                body.extend_from_slice(&(o.data.len() as u64).to_be_bytes());
+                body.extend_from_slice(&o.size.to_be_bytes());
                 body.extend_from_slice(o.name.as_bytes());
                 let mut p = Vec::new();
                 net::pack(net::T_FILE, o.id, &body, &mut p);
@@ -216,7 +286,8 @@ impl Transfers {
         while i < o.next_new && self.tokens >= CHUNK as f64 {
             let k = i as usize;
             if !o.acked[k] && o.sent_at[k].is_some_and(|t| now.duration_since(t) >= rto) {
-                out.push(data_packet(o, i));
+                let Some(p) = data_packet(o, i) else { return self.drop_front(out) };
+                out.push(p);
                 o.sent_at[k] = Some(now);
                 self.tokens -= (CHUNK + 16) as f64;
                 lost = true;
@@ -225,7 +296,8 @@ impl Transfers {
         }
         // then new ones, within the window the acks can describe
         while o.next_new < o.chunks && o.next_new < base + MAX_INFLIGHT && self.tokens >= CHUNK as f64 {
-            out.push(data_packet(o, o.next_new));
+            let Some(p) = data_packet(o, o.next_new) else { return self.drop_front(out) };
+            out.push(p);
             o.sent_at[o.next_new as usize] = Some(now);
             o.next_new += 1;
             self.tokens -= (CHUNK + 16) as f64;
@@ -240,6 +312,14 @@ impl Transfers {
         out
     }
 
+    /// The file going out can't be read any more: give up on it.
+    fn drop_front(&mut self, out: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        if let Some(o) = self.queue.pop_front() {
+            self.failed.push(o.name);
+        }
+        out
+    }
+
     /// A T_FILE packet arrived. Returns a reply to send right away, if any.
     pub fn on_file(&mut self, id: u32, body: &[u8]) -> Option<Vec<u8>> {
         let (&kind, rest) = body.split_first()?;
@@ -248,21 +328,32 @@ impl Transfers {
         }
         match kind {
             K_META if rest.len() >= 8 => {
-                let size = u64::from_be_bytes(rest[..8].try_into().unwrap()) as usize;
-                if size > 2_000_000_000 {
+                let size = u64::from_be_bytes(rest[..8].try_into().unwrap());
+                if size > MAX_SIZE {
                     return None;
                 }
-                let name = safe_name(&String::from_utf8_lossy(&rest[8..]));
-                let chunks = n_chunks(size);
-                self.incoming.entry(id).or_insert_with(|| Incoming {
-                    name,
-                    size,
-                    got: vec![false; chunks as usize],
-                    n_got: 0,
-                    data: vec![0; size],
-                    unacked: 0,
-                    last_ack: Instant::now(),
-                });
+                if !self.incoming.contains_key(&id) {
+                    let name = safe_name(&String::from_utf8_lossy(&rest[8..]));
+                    let _ = std::fs::create_dir_all(&self.dir);
+                    let part = self.dir.join(format!("{name}.{id:08x}.part"));
+                    // the whole size up front: a disk that's too full says so now
+                    let file = File::create(&part).and_then(|f| f.set_len(size).map(|_| f));
+                    let Ok(file) = file else {
+                        let _ = std::fs::remove_file(&part);
+                        return None; // (the sender gives up after a while)
+                    };
+                    let chunks = n_chunks(size);
+                    self.incoming.insert(id, Incoming {
+                        name,
+                        size,
+                        got: vec![false; chunks as usize],
+                        n_got: 0,
+                        part,
+                        file,
+                        unacked: 0,
+                        last_ack: Instant::now(),
+                    });
+                }
                 let mut p = Vec::new();
                 net::pack(net::T_FILEACK, id, &[K_META], &mut p);
                 Some(p)
@@ -275,9 +366,11 @@ impl Transfers {
                     inc.unacked += 1;
                     return None;
                 }
-                let at = idx * CHUNK;
-                let end = (at + bytes.len()).min(inc.size);
-                inc.data[at..end].copy_from_slice(&bytes[..end - at]);
+                let at = idx as u64 * CHUNK as u64;
+                let end = (at + bytes.len() as u64).min(inc.size);
+                if end > at && write_at(&inc.file, &bytes[..(end - at) as usize], at).is_err() {
+                    return None; // not saved: it'll be sent again
+                }
                 inc.got[idx] = true;
                 inc.n_got += 1;
                 inc.unacked += 1;
@@ -299,12 +392,16 @@ impl Transfers {
 
     fn finish(&mut self, id: u32, inc: Incoming) {
         self.finished_ids.insert(id, Instant::now());
-        let _ = std::fs::create_dir_all(&self.dir);
         let path = self.dir.join(&inc.name);
-        let part = self.dir.join(format!("{}.part", inc.name));
-        match std::fs::write(&part, &inc.data).and_then(|_| std::fs::rename(&part, &path)) {
-            Ok(()) => self.received.push((inc.name, path)),
-            Err(_) => self.failed.push(inc.name),
+        let Incoming { name, part, file, .. } = inc;
+        let saved = file.sync_all();
+        drop(file);
+        match saved.and_then(|_| std::fs::rename(&part, &path)) {
+            Ok(()) => self.received.push((name, path)),
+            Err(_) => {
+                let _ = std::fs::remove_file(&part);
+                self.failed.push(name)
+            }
         }
     }
 
@@ -351,16 +448,20 @@ impl Transfers {
     }
 }
 
-fn data_packet(o: &Outgoing, i: u32) -> Vec<u8> {
-    let at = i as usize * CHUNK;
-    let end = (at + CHUNK).min(o.data.len());
-    let mut body = Vec::with_capacity(5 + end - at);
-    body.push(K_DATA);
-    body.extend_from_slice(&i.to_be_bytes());
-    body.extend_from_slice(&o.data[at..end]);
+/// Chunk `i`, ready to send (None: the file can't be read any more).
+fn data_packet(o: &Outgoing, i: u32) -> Option<Vec<u8>> {
+    let at = i as u64 * CHUNK as u64;
+    let n = ((at + CHUNK as u64).min(o.size).saturating_sub(at)) as usize;
+    let mut body = vec![0u8; 5 + n];
+    body[0] = K_DATA;
+    body[1..5].copy_from_slice(&i.to_be_bytes());
+    match &o.src {
+        Source::Mem(d) => body[5..].copy_from_slice(&d[at as usize..at as usize + n]),
+        Source::File(f) => read_at(f, &mut body[5..], at).ok()?,
+    }
     let mut p = Vec::new();
     net::pack(net::T_FILE, o.id, &body, &mut p);
-    p
+    Some(p)
 }
 
 fn ack_packet(id: u32, inc: &Incoming) -> Vec<u8> {
@@ -387,10 +488,6 @@ fn done_packet(id: u32) -> Vec<u8> {
     let mut p = Vec::new();
     net::pack(net::T_FILEACK, id, &[K_DONE], &mut p);
     p
-}
-
-pub fn read_file(path: &Path) -> Result<Vec<u8>, String> {
-    std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -452,6 +549,40 @@ mod tests {
         assert_eq!(got.len(), size);
         assert!(got.iter().enumerate().all(|(i, v)| *v == (i * 7 + i / 300) as u8));
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn a_file_goes_from_disk_to_disk() {
+        let dir = std::env::temp_dir().join(format!("duet-xfer-disk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.bin");
+        let data: Vec<u8> = (0..123_457usize).map(|i| (i * 13 + i / 977) as u8).collect();
+        std::fs::write(&src, &data).unwrap();
+        let mut a = Transfers::new(dir.join("a"));
+        let mut b = Transfers::new(dir.join("b"));
+        a.send_file("take-2.wav", &src).unwrap();
+        a.send_file("take-2.wav", &src).unwrap(); // asked again: still one
+        assert_eq!(a.queue.len(), 1);
+        for _ in 0..20_000 {
+            if !a.sent.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            let mut to_a = b.tick(Some(10.0));
+            for p in a.tick(Some(10.0)) {
+                let (_, id, body) = net::unpack(&p).unwrap();
+                to_a.extend(b.on_file(id, body));
+            }
+            for p in to_a {
+                let (_, id, body) = net::unpack(&p).unwrap();
+                a.on_ack(id, body);
+            }
+        }
+        assert_eq!(a.sent, vec!["take-2.wav".to_string()]);
+        assert_eq!(std::fs::read(&b.received[0].1).unwrap(), data);
+        // nothing half-done left behind
+        assert!(std::fs::read_dir(dir.join("b")).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".part")));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

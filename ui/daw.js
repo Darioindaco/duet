@@ -51,6 +51,21 @@ function decodePeaks(b64) {
   for (let i = 0; i < bin.length; i++) out[i] = (bin.charCodeAt(i) << 24) >> 24;
   return out;
 }
+// the same peaks at ever coarser steps (512, 1024, 2048... frames each), so a
+// long file zoomed out draws from a few thousand values instead of millions
+function peakLevels(pk) {
+  const levels = [pk];
+  while (pk.length > 4096) {
+    const n = pk.length >> 2, next = new Int8Array(2 * n);
+    for (let i = 0; i < n; i++) {
+      next[2 * i] = Math.min(pk[4 * i], pk[4 * i + 2]);
+      next[2 * i + 1] = Math.max(pk[4 * i + 1], pk[4 * i + 3]);
+    }
+    levels.push(next);
+    pk = next;
+  }
+  return levels;
+}
 function newId(prefix) { return prefix + Math.random().toString(36).slice(2, 12); }
 
 // ---------- edits (applied here right away, then by Python, which answers with the song) ----------
@@ -629,9 +644,12 @@ function drawClip(ctx, c, x, y, w, h, track) {
   const file = song.view.files[c.file];
   const wy = y + 17, wh = h - 19, mid = wy + wh / 2;
   if (file && file.here) {
-    const pk = song.peaks[c.file];
-    if (pk) {
-      const sr = file.sr || 48000, per = 512, secPerPx = spb() / song.ppb;
+    const levels = song.peaks[c.file];
+    if (levels) {
+      const sr = file.sr || 48000, secPerPx = spb() / song.ppb;
+      let k = 0;
+      while (k + 1 < levels.length && (512 << (k + 1)) <= secPerPx * sr) k++;
+      const pk = levels[k], per = 512 << k;
       const lv = document.querySelector("#lanes").clientWidth;
       const px0 = Math.max(0, Math.floor(-x)), px1 = Math.min(Math.ceil(w), Math.ceil(lv - x));
       ctx.fillStyle = col + "e0";
@@ -649,7 +667,7 @@ function drawClip(ctx, c, x, y, w, h, track) {
       }
     } else if (!song.peakReq[c.file]) {
       song.peakReq[c.file] = true;
-      api.daw_peaks(c.file).then((b) => { if (b) { song.peaks[c.file] = decodePeaks(b); songDraw(); } else song.peakReq[c.file] = false; });
+      api.daw_peaks(c.file).then((b) => { if (b) { song.peaks[c.file] = peakLevels(decodePeaks(b)); songDraw(); } else song.peakReq[c.file] = false; });
     }
   } else {
     // audio still on its way from the partner
@@ -657,7 +675,8 @@ function drawClip(ctx, c, x, y, w, h, track) {
     ctx.lineWidth = 6;
     for (let k = -wh; k < w; k += 16) { ctx.beginPath(); ctx.moveTo(x + k, wy + wh); ctx.lineTo(x + k + wh, wy); ctx.stroke(); }
     const xf = (song.st && song.st.xfer || {})[c.file];
-    const label = xf && xf[1] ? `Receiving ${Math.round(xf[0] / xf[1] * 100)}%` : song.view.shared ? "Waiting for the audio…" : "Audio is with your partner";
+    const label = file && file.loading ? "Loading…" : xf && xf[1] ? `Receiving ${Math.round(xf[0] / xf[1] * 100)}%`
+      : song.view.shared ? "Waiting for the audio…" : "Audio is with your partner";
     ctx.fillStyle = "#cfc8da";
     ctx.font = "600 11px system-ui, sans-serif";
     ctx.fillText(label, Math.max(x, 0) + 8, mid + 4);

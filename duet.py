@@ -470,7 +470,7 @@ class Api:
         if not self._window:
             return None
         picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=True,
-                                                 file_types=("Audio (*.wav)", "All files (*.*)"))
+                                                 file_types=("Audio (*.wav;*.mp3;*.m4a;*.aac;*.flac;*.aif;*.aiff;*.ogg)", "All files (*.*)"))
         return self._lib.import_files(list(picked or []), dest)
 
     def lib_copy(self, path, dest):
@@ -534,7 +534,7 @@ class Api:
         if not self._window:
             return None
         picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
-                                                 file_types=("Audio (*.wav)", "All files (*.*)"))
+                                                 file_types=("Audio (*.wav;*.mp3;*.m4a;*.aac;*.flac;*.aif;*.aiff;*.ogg)", "All files (*.*)"))
         return picked[0] if picked else None
 
     def note(self, target, on, key, vel=100):

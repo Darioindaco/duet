@@ -321,6 +321,16 @@ library, like FL Studio's:
 A sound you use in the song is copied into the project, so your partner gets
 it too and hears the same.
 
+- **Kinds of files:** WAV, AIFF, FLAC, MP3, M4A (AAC or Apple Lossless, as an
+  iPhone records them) and Ogg Vorbis. A file stays the kind it is in the
+  project, so an M4A stays small on its way to your partner.
+- **Long files** (an hour-long recording, a whole mix) load in the
+  background: the clip says *Loading…* until it's ready, and Duet keeps
+  answering meanwhile. On a Mac the copy into the project is an instant APFS
+  clone that takes no extra space. A file at another sample rate (44.1 kHz on
+  a 48 kHz interface) is converted as it plays, so there's no waiting for a
+  converted copy either.
+
 ## Instruments
 
 A strip of yours can play an **instrument** instead of an input: in the strip's
@@ -412,7 +422,8 @@ to it through lock-free queues and atomics.
 | `engine/src/signal.rs` | Reliable side channel for the video call setup |
 | `engine/src/instr.rs` | Instruments: the synthesized drum kit, the synth, VST3 instruments (notes in) |
 | `engine/src/midi.rs` | MIDI keyboards (midir), on a thread of their own |
-| `engine/src/daw.rs` | Song timeline: clips, audio files (WAV in/out, rate conversion, waveform peaks), take writer |
+| `engine/src/daw.rs` | Song timeline: clips (converted to the device rate as they play), the fast WAV reader, waveform peaks, take writer |
+| `engine/src/decode.rs` | Every other kind of sound file (MP3, M4A/AAC/ALAC, FLAC, AIFF, Ogg) through symphonia |
 | `engine/src/transfer.rs` | Reliable, paced file transfer to the partner (recorded takes) over the audio socket |
 | `engine/src/livenotes.rs` | Notes played live on a song track, to the partner: tiny packets with the last few events repeated, so loss can't leave a note hanging |
 | `engine/src/lib.rs` | Network threads (receive, punching, ping, files) and the Python API |
@@ -433,6 +444,9 @@ to it through lock-free queues and atomics.
 
 Live audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.
 Recorded takes are 24-bit WAV; they go to the partner after recording at up to
-about 12 Mbit/s, slowing down by themselves when the line gets busy. The wire
+about 12 Mbit/s, slowing down by themselves when the line gets busy. Files are
+read and written a chunk at a time on both sides, so a file of any size goes
+across without having to fit in memory (an hour of 24-bit stereo, about 1 GB,
+takes 10 to 15 minutes at full speed). The wire
 format hasn't changed since the first (Python) version, so old and new builds
 can still talk to each other.

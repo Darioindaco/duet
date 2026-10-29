@@ -23,7 +23,8 @@ import time
 import uuid
 from pathlib import Path
 
-AUDIO = (".wav", ".wave")
+# what Duet reads (the engine decodes all of these)
+AUDIO = (".wav", ".wave", ".mp3", ".m4a", ".aac", ".mp4", ".flac", ".aif", ".aiff", ".aifc", ".ogg", ".oga")
 NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 MAX_SEARCH = 400
 

@@ -243,7 +243,7 @@ function samplerBox(t, inst) {
   const box = document.createElement("div");
   box.className = "smpbox";
   box.dataset.t = t;
-  box.innerHTML = `<b>${own ? esc(own.split(/[\\/]/).pop().replace(/\.wav$/i, "").replace(/^s-[0-9a-f]+$/, "Sample")) : "No sound yet"}</b>
+  box.innerHTML = `<b>${own ? esc(own.split(/[\\/]/).pop().replace(/\.(wav|wave|mp3|m4a|aac|mp4|flac|aif|aiff|aifc|ogg|oga)$/i, "").replace(/^s-[0-9a-f]+$/, "Sample")) : "No sound yet"}</b>
     <span>${own ? "Drag another one here from the browser" : "Drag one here from the browser, or"}</span><button class="mb">Load a sample…</button>`;
   box.querySelector("button").onclick = async () => {
     const path = await api.inst_pad_open();
@@ -262,7 +262,7 @@ function padGrid(t, inst) {
     const pad = document.createElement("button");
     pad.className = "pad" + (own ? " own" : "");
     pad.dataset.t = t; pad.dataset.pad = i; // (a sound from the browser can be dropped on it)
-    pad.innerHTML = `<b>${esc(own ? own.split(/[\\/]/).pop().replace(/\.wav$/i, "") : name)}</b><span>${note}</span><i class="pmenu" title="Your own sound for this pad">⋯</i>`;
+    pad.innerHTML = `<b>${esc(own ? own.split(/[\\/]/).pop().replace(/\.(wav|wave|mp3|m4a|aac|mp4|flac|aif|aiff|aifc|ogg|oga)$/i, "") : name)}</b><span>${note}</span><i class="pmenu" title="Your own sound for this pad">⋯</i>`;
     pad.title = (own ? `${name} (note ${note}): ${own}` : `${name} (note ${note})`) + ". The higher you click, the harder it hits.";
     pad.onpointerdown = (e) => {
       if (e.target.classList.contains("pmenu")) return;

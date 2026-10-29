@@ -51,8 +51,12 @@ impl AudioData {
 #[derive(Clone)]
 pub struct ClipRt {
     pub start: i64,  // timeline position of the clip's first sample
-    pub offset: i64, // where in the audio that first sample is
+    pub offset: i64, // where in the audio that first sample is (in the audio's own samples)
     pub len: i64,
+    /// audio samples per timeline sample: 1 when the file is at the device
+    /// rate, else it's converted as it plays (no converted copy to make first:
+    /// an hour-long file is ready as soon as it's read)
+    pub step: f64,
     pub gain: f32,
     pub fade_in: i64,
     pub fade_out: i64,
@@ -167,12 +171,27 @@ impl Timeline {
             let src_r = c.data.right.as_ref().unwrap_or(src);
             let fi = c.fade_in.max(DECLICK) as f32;
             let fo = c.fade_out.max(DECLICK) as f32;
+            let last = src.len() as i64 - 1;
             for x in a..b {
                 let rel = x - c.start;
-                let si = c.offset + rel;
-                if si < 0 || si as usize >= src.len() {
-                    continue;
-                }
+                let (sl, sr) = if c.step == 1.0 {
+                    let si = c.offset + rel;
+                    if si < 0 || si > last {
+                        continue;
+                    }
+                    (src[si as usize], src_r[si as usize])
+                } else {
+                    // Catmull-Rom between the audio's own samples
+                    let p = c.offset as f64 + rel as f64 * c.step;
+                    let i = p.floor() as i64;
+                    if i < 0 || i > last {
+                        continue;
+                    }
+                    let t = (p - i as f64) as f32;
+                    let ix = |d: i64| (i + d).clamp(0, last) as usize;
+                    let (i0, i1, i2, i3) = (ix(-1), ix(0), ix(1), ix(2));
+                    (cubic(src[i0], src[i1], src[i2], src[i3], t), cubic(src_r[i0], src_r[i1], src_r[i2], src_r[i3], t))
+                };
                 let mut g = c.gain;
                 let left = (c.len - rel) as f32;
                 if (rel as f32) < fi {
@@ -182,11 +201,19 @@ impl Timeline {
                     g *= (left - 0.5) / fo;
                 }
                 let k = (x - pos) as usize;
-                l[k] += src[si as usize] * g;
-                r[k] += src_r[si as usize] * g;
+                l[k] += sl * g;
+                r[k] += sr * g;
             }
         }
     }
+}
+
+#[inline]
+fn cubic(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
+    let a = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
+    let b = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+    let c = -0.5 * y0 + 0.5 * y2;
+    ((a * t + b) * t + c) * t + y1
 }
 
 /// A clip as the project describes it, in seconds.
@@ -228,20 +255,20 @@ pub struct NoteDesc {
     pub vel: u8,
 }
 
-/// Loaded audio, by file key, plus copies converted to the device rate.
+/// Loaded audio, by file key: one copy each, at the file's own rate (an hour
+/// of stereo is 1.4 GB as floats: no second, converted copy).
 #[derive(Default)]
 pub struct AudioCache {
     files: HashMap<String, Arc<AudioData>>,
-    converted: HashMap<(String, u32), Arc<AudioData>>,
 }
 
 impl AudioCache {
     pub fn insert(&mut self, key: &str, data: AudioData) -> Arc<AudioData> {
-        self.converted.retain(|(k, _), _| k != key);
         let a = Arc::new(data);
         self.files.insert(key.to_string(), a.clone());
         a
     }
+
 
     pub fn get(&self, key: &str) -> Option<&Arc<AudioData>> {
         self.files.get(key)
@@ -249,23 +276,8 @@ impl AudioCache {
 
     pub fn remove(&mut self, key: &str) {
         self.files.remove(key);
-        self.converted.retain(|(k, _), _| k != key);
     }
 
-    /// The file at `sr` (converted once and kept).
-    pub fn at_rate(&mut self, key: &str, sr: u32) -> Option<Arc<AudioData>> {
-        let a = self.files.get(key)?;
-        if a.sr == sr {
-            return Some(a.clone());
-        }
-        let k = (key.to_string(), sr);
-        if let Some(c) = self.converted.get(&k) {
-            return Some(c.clone());
-        }
-        let c = Arc::new(AudioData { sr, samples: resample(&a.samples, a.sr, sr), right: a.right.as_ref().map(|r| resample(r, a.sr, sr)) });
-        self.converted.insert(k, c.clone());
-        Some(c)
-    }
 
     /// Build the audio thread's timeline from the project's description.
     pub fn build(&mut self, desc: &[Vec<ClipDesc>], notes: &[Vec<NoteDesc>], sr: u32) -> Timeline {
@@ -273,15 +285,16 @@ impl AudioCache {
         let mut tl = Timeline::empty();
         for (t, clips) in desc.iter().enumerate().take(MAX_TRACKS) {
             for c in clips {
-                let Some(data) = self.at_rate(&c.key, sr) else { continue }; // not here (yet)
+                let Some(data) = self.files.get(&c.key).cloned() else { continue }; // not here (yet)
                 let len = s(c.len);
                 if len <= 0 {
                     continue;
                 }
                 tl.tracks[t].push(ClipRt {
                     start: s(c.start),
-                    offset: s(c.offset),
+                    offset: (c.offset * data.sr as f64).round() as i64,
                     len,
+                    step: data.sr as f64 / sr as f64,
                     gain: c.gain,
                     fade_in: s(c.fade_in),
                     fade_out: s(c.fade_out),
@@ -313,19 +326,52 @@ pub fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
     }
     let step = from as f64 / to as f64;
     let n = ((x.len() as f64) / step).floor() as usize;
-    let at = |i: isize| -> f32 { x[i.clamp(0, x.len() as isize - 1) as usize] };
-    (0..n)
-        .map(|k| {
-            let p = k as f64 * step;
-            let i = p.floor() as isize;
-            let t = (p - i as f64) as f32;
-            let (y0, y1, y2, y3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
-            let a = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
-            let b = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-            let c = -0.5 * y0 + 0.5 * y2;
-            ((a * t + b) * t + c) * t + y1
-        })
-        .collect()
+    let mut out = vec![0f32; n];
+    // an hour of audio is a few hundred million samples: every core takes a stretch
+    let cores = std::thread::available_parallelism().map_or(1, |c| c.get()).clamp(1, 16);
+    let per = n.div_ceil(cores).max(1 << 16);
+    std::thread::scope(|sc| {
+        for (j, chunk) in out.chunks_mut(per).enumerate() {
+            sc.spawn(move || resample_into(x, step, j * per, chunk));
+        }
+    });
+    out
+}
+
+/// Output samples k0.. of a Catmull-Rom conversion into `out`.
+fn resample_into(x: &[f32], step: f64, k0: usize, out: &mut [f32]) {
+    let last = x.len() as isize - 1;
+    let at = |i: isize| -> f32 { x[i.clamp(0, last) as usize] };
+    for (k, o) in out.iter_mut().enumerate() {
+        let p = (k0 + k) as f64 * step;
+        let i = p as isize;
+        let t = (p - i as f64) as f32;
+        let (y0, y1, y2, y3) = if i >= 1 && i + 2 <= last {
+            let i = i as usize;
+            (x[i - 1], x[i], x[i + 1], x[i + 2])
+        } else {
+            (at(i - 1), at(i), at(i + 1), at(i + 2))
+        };
+        let a = -0.5 * y0 + 1.5 * y1 - 1.5 * y2 + 0.5 * y3;
+        let b = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+        let c = -0.5 * y0 + 0.5 * y2;
+        *o = ((a * t + b) * t + c) * t + y1;
+    }
+}
+
+/// Peaks of both sides mixed (a stereo file's waveform).
+pub fn audio_peaks(a: &AudioData) -> Vec<u8> {
+    let Some(r) = &a.right else { return peaks(&a.samples) };
+    let mut out = Vec::with_capacity(2 * a.samples.len() / PEAK_BUCKET + 2);
+    for (cl, cr) in a.samples.chunks(PEAK_BUCKET).zip(r.chunks(PEAK_BUCKET)) {
+        let (lo, hi) = cl.iter().zip(cr).fold((0f32, 0f32), |(lo, hi), (a, b)| {
+            let v = 0.5 * (a + b);
+            (lo.min(v), hi.max(v))
+        });
+        out.push((lo.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
+        out.push((hi.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
+    }
+    out
 }
 
 /// Waveform overview: a (min, max) pair of i8 per PEAK_BUCKET samples.
@@ -342,22 +388,168 @@ pub fn peaks(x: &[f32]) -> Vec<u8> {
 /// Any PCM or float WAV: mono stays mono, two channels or more come in as
 /// stereo (the first two).
 pub fn read_wav(path: &Path) -> Result<AudioData, String> {
-    let mut r = hound::WavReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let spec = r.spec();
-    let ch = spec.channels.max(1) as usize;
-    let inter: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => r.samples::<f32>().collect::<Result<_, _>>().map_err(|e| e.to_string())?,
-        hound::SampleFormat::Int => {
-            let scale = 1.0 / (1u64 << (spec.bits_per_sample.clamp(8, 32) - 1)) as f32;
-            r.samples::<i32>().map(|s| s.map(|v| v as f32 * scale)).collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    let (frames, _, ch) = wav_header(path)?;
+    let mut l = Vec::with_capacity(frames);
+    let mut r = Vec::with_capacity(if ch > 1 { frames } else { 0 });
+    let (sr, _) = wav_blocks(path, |block, ch| {
+        if ch == 1 {
+            l.extend_from_slice(block);
+        } else {
+            for f in block.chunks_exact(ch) {
+                l.push(f[0]);
+                r.push(f[1]);
+            }
+        }
+    })?;
+    Ok(AudioData { sr, samples: l, right: (ch > 1).then_some(r) })
+}
+
+/// (frames, sample rate, channels), from the header alone.
+pub fn wav_header(path: &Path) -> Result<(usize, u32, usize), String> {
+    let rd = hound::WavReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let spec = rd.spec();
+    Ok((rd.duration() as usize, spec.sample_rate, spec.channels.max(1) as usize))
+}
+
+/// Read a WAV in big blocks of whole frames (interleaved floats, and the
+/// channel count): fast, and nothing but the block is kept. Returns (sample
+/// rate, channels). Plain PCM (8/16/24/32-bit) and float (32/64-bit), also in
+/// the "extensible" header; anything else goes through hound, slower.
+fn wav_blocks(path: &Path, mut block: impl FnMut(&[f32], usize)) -> Result<(u32, usize), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    let mut f = std::fs::File::open(path).map_err(err)?;
+    let mut h = [0u8; 12];
+    f.read_exact(&mut h).map_err(err)?;
+    if &h[0..4] != b"RIFF" || &h[8..12] != b"WAVE" {
+        return Err(format!("{}: not a WAV file", path.display()));
+    }
+    let (mut fmt, mut ch, mut sr, mut bits) = (0u16, 0usize, 0u32, 0u16);
+    let data_len = loop {
+        let mut c = [0u8; 8];
+        if f.read_exact(&mut c).is_err() {
+            return Err(format!("{}: no audio in this WAV", path.display()));
+        }
+        let size = u32::from_le_bytes([c[4], c[5], c[6], c[7]]) as u64;
+        match &c[0..4] {
+            b"fmt " => {
+                let mut b = vec![0u8; size as usize];
+                f.read_exact(&mut b).map_err(err)?;
+                if b.len() < 16 {
+                    return Err(format!("{}: broken WAV header", path.display()));
+                }
+                fmt = u16::from_le_bytes([b[0], b[1]]);
+                ch = u16::from_le_bytes([b[2], b[3]]).max(1) as usize;
+                sr = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
+                bits = u16::from_le_bytes([b[14], b[15]]);
+                if fmt == 0xFFFE && b.len() >= 26 {
+                    fmt = u16::from_le_bytes([b[24], b[25]]); // the subformat
+                }
+                if size % 2 == 1 {
+                    f.seek(SeekFrom::Current(1)).map_err(err)?;
+                }
+            }
+            b"data" => break size,
+            _ => {
+                f.seek(SeekFrom::Current((size + size % 2) as i64)).map_err(err)?;
+            }
         }
     };
-    if ch == 1 {
-        return Ok(AudioData::mono(spec.sample_rate, inter));
+    let bps = (bits as usize).div_ceil(8);
+    let known = matches!((fmt, bps), (1, 1..=4) | (3, 4) | (3, 8));
+    if !known || sr == 0 {
+        return wav_blocks_hound(path, block);
     }
-    let l = inter.chunks_exact(ch).map(|f| f[0]).collect();
-    let r = inter.chunks_exact(ch).map(|f| f[1]).collect();
-    Ok(AudioData { sr: spec.sample_rate, samples: l, right: Some(r) })
+    let frame = bps * ch;
+    // a header that says 0 or "unknown" (some recorders): up to the end of the file
+    let avail = f.metadata().map_err(err)?.len().saturating_sub(f.stream_position().map_err(err)?);
+    let mut left = if data_len == 0 || data_len == u32::MAX as u64 { avail } else { data_len.min(avail) };
+    left -= left % frame as u64;
+    let frames_per = (1 << 20) / frame;
+    let mut raw = vec![0u8; frames_per * frame];
+    let mut out = vec![0f32; frames_per * ch];
+    while left > 0 {
+        let n = (left as usize).min(raw.len());
+        f.read_exact(&mut raw[..n]).map_err(err)?;
+        left -= n as u64;
+        let m = n / bps;
+        let src = &raw[..n];
+        let dst = &mut out[..m];
+        match (fmt, bps) {
+            (1, 1) => dst.iter_mut().zip(src).for_each(|(o, &b)| *o = (b as f32 - 128.0) / 128.0),
+            (1, 2) => dst.iter_mut().zip(src.chunks_exact(2)).for_each(|(o, b)| *o = i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0),
+            (1, 3) => dst.iter_mut().zip(src.chunks_exact(3)).for_each(|(o, b)| {
+                *o = (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32 / 8_388_608.0
+            }),
+            (1, 4) => dst.iter_mut().zip(src.chunks_exact(4)).for_each(|(o, b)| {
+                *o = i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0
+            }),
+            (3, 4) => dst.iter_mut().zip(src.chunks_exact(4)).for_each(|(o, b)| *o = f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+            _ => dst.iter_mut().zip(src.chunks_exact(8)).for_each(|(o, b)| {
+                *o = f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as f32
+            }),
+        }
+        block(&out[..m], ch);
+    }
+    Ok((sr, ch))
+}
+
+/// The slow, general way (hound), for WAVs the fast reader doesn't know.
+fn wav_blocks_hound(path: &Path, mut block: impl FnMut(&[f32], usize)) -> Result<(u32, usize), String> {
+    let mut rd = hound::WavReader::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let spec = rd.spec();
+    let ch = spec.channels.max(1) as usize;
+    let mut buf = Vec::with_capacity(4096 * ch);
+    let mut flush = |buf: &mut Vec<f32>, all: bool| {
+        if buf.len() >= 4096 * ch || (all && !buf.is_empty()) {
+            let whole = buf.len() - buf.len() % ch;
+            block(&buf[..whole], ch);
+            buf.clear();
+        }
+    };
+    match spec.sample_format {
+        hound::SampleFormat::Float => {
+            for v in rd.samples::<f32>() {
+                buf.push(v.map_err(|e| e.to_string())?);
+                flush(&mut buf, false);
+            }
+        }
+        hound::SampleFormat::Int => {
+            let scale = 1.0 / (1u64 << (spec.bits_per_sample.clamp(8, 32) - 1)) as f32;
+            for v in rd.samples::<i32>() {
+                buf.push(v.map_err(|e| e.to_string())? as f32 * scale);
+                flush(&mut buf, false);
+            }
+        }
+    }
+    flush(&mut buf, true);
+    Ok((spec.sample_rate, ch))
+}
+
+/// A WAV's (frames, sample rate, channels, waveform peaks of both sides mixed),
+/// read straight through without keeping the audio.
+pub fn wav_peaks(path: &Path) -> Result<(usize, u32, usize, Vec<u8>), String> {
+    let mut out = Vec::new();
+    let (mut lo, mut hi, mut n, mut frames) = (0f32, 0f32, 0usize, 0usize);
+    let (sr, ch) = wav_blocks(path, |block, ch| {
+        for f in block.chunks_exact(ch) {
+            let v = if ch > 1 { 0.5 * (f[0] + f[1]) } else { f[0] };
+            lo = lo.min(v);
+            hi = hi.max(v);
+            n += 1;
+            frames += 1;
+            if n == PEAK_BUCKET {
+                out.push((lo.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
+                out.push((hi.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
+                (lo, hi, n) = (0.0, 0.0, 0);
+            }
+        }
+    })?;
+    if n > 0 {
+        out.push((lo.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
+        out.push((hi.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
+    }
+    Ok((frames, sr, ch, out))
 }
 
 /// What one recorded source turned into.
@@ -542,6 +734,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fast_wav_reader_matches_hound() {
+        let dir = std::env::temp_dir().join(format!("duet-wav-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (ch, bits, float) in [(1u16, 16u16, false), (2, 16, false), (2, 24, false), (1, 32, false), (2, 32, true), (3, 24, false)] {
+            let p = dir.join(format!("t{ch}-{bits}-{float}.wav"));
+            let spec = hound::WavSpec { channels: ch, sample_rate: 44100, bits_per_sample: bits,
+                                        sample_format: if float { hound::SampleFormat::Float } else { hound::SampleFormat::Int } };
+            let mut w = hound::WavWriter::create(&p, spec).unwrap();
+            let n = 300_000; // more than one block
+            for k in 0..n * ch as usize {
+                let v = ((k as f32) * 0.001).sin() * 0.7;
+                if float {
+                    w.write_sample(v).unwrap();
+                } else {
+                    w.write_sample((v * ((1i64 << (bits - 1)) - 1) as f32) as i32).unwrap();
+                }
+            }
+            w.finalize().unwrap();
+            let a = read_wav(&p).unwrap();
+            let mut slow = Vec::new();
+            wav_blocks_hound(&p, |b, c| slow.extend(b.chunks_exact(c).map(|f| f[0]))).unwrap();
+            assert_eq!(a.sr, 44100);
+            assert_eq!(a.samples.len(), n, "{ch}ch {bits}bit");
+            assert_eq!(a.right.is_some(), ch > 1);
+            let worst = a.samples.iter().zip(&slow).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+            assert!(worst < 1e-6, "{ch}ch {bits}bit float={float}: off by {worst}");
+            let (frames, sr, c, pk) = wav_peaks(&p).unwrap();
+            assert_eq!((frames, sr, c), (n, 44100, ch as usize));
+            assert_eq!(pk.len(), 2 * n.div_ceil(PEAK_BUCKET));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// DUET_BENCH_WAV=file.wav cargo test --release bench_load -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_load() {
+        let p = std::env::var("DUET_BENCH_WAV").expect("DUET_BENCH_WAV");
+        let t = std::time::Instant::now();
+        let a = read_wav(Path::new(&p)).unwrap();
+        println!("read {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let pk = audio_peaks(&a);
+        println!("peaks {:?} ({})", t.elapsed(), pk.len());
+    }
+
+    #[test]
+    fn parallel_resample_is_seamless() {
+        let x: Vec<f32> = (0..400_000).map(|k| (k as f32 * 0.01).sin()).collect();
+        let y = resample(&x, 44100, 48000);
+        assert_eq!(y.len(), (400_000f64 * 48000.0 / 44100.0).floor() as usize);
+        // a sine stays a sine across the stretches the cores did (no jumps)
+        let step = 0.01 * 44100.0 / 48000.0;
+        let worst = y.iter().enumerate().skip(2).take(y.len() - 8).map(|(k, v)| (v - (k as f32 * step).sin()).abs()).fold(0f32, f32::max);
+        assert!(worst < 1e-3, "{worst}");
+    }
+
+    #[test]
     fn automation_lines_between_points() {
         let lane = &auto_lanes(&[AutoDesc { target: AutoTarget::Pan(0), pts: vec![(1.0, 0.2), (0.0, 0.0), (2.0, 1.0)] }], 100)[0];
         assert_eq!(lane.pts[0], (0, 0.0)); // sorted
@@ -554,7 +804,7 @@ mod tests {
     }
 
     fn clip(start: i64, offset: i64, len: i64, data: &Arc<AudioData>) -> ClipRt {
-        ClipRt { start, offset, len, gain: 1.0, fade_in: 0, fade_out: 0, data: data.clone() }
+        ClipRt { start, offset, len, step: 1.0, gain: 1.0, fade_in: 0, fade_out: 0, data: data.clone() }
     }
 
     #[test]
@@ -592,8 +842,11 @@ mod tests {
         let desc = vec![vec![ClipDesc { key: "a".into(), start: 1.0, offset: 0.0, len: 0.5, gain: 1.0, fade_in: 0.0, fade_out: 0.0 }]];
         let tl = cache.build(&desc, &[], 48000);
         let c = &tl.tracks[0][0];
-        assert_eq!((c.start, c.len, c.data.sr), (48000, 24000, 48000));
-        assert!((c.data.samples.len() as i64 - 48000).abs() <= 1);
+        // the audio stays at its own rate and is read at half speed
+        assert_eq!((c.start, c.len, c.data.sr, c.step), (48000, 24000, 24000, 0.5));
+        let (mut l, mut r) = (vec![0f32; 256], vec![0f32; 256]);
+        tl.render(0, 48000 + 1000, &mut l, &mut r);
+        assert!(l.iter().chain(&r).all(|v| (v - 0.5).abs() < 1e-5), "{:?}", &l[..4]);
         // a missing file just isn't there yet
         let desc = vec![vec![ClipDesc { key: "b".into(), ..desc[0][0].clone() }]];
         assert!(cache.build(&desc, &[], 48000).tracks[0].is_empty());
