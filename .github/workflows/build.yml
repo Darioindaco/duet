@@ -87,6 +87,36 @@ jobs:
           name: Duet-mac-${{ matrix.arch }}
           path: Duet-mac-${{ matrix.arch }}.zip
 
+  # the stem splitter's model (Demucs htdemucs as ONNX), made once from Meta's
+  # published weights and kept as a release of its own: a commit with [models]
+  # in its message makes it again (the app checks the file's SHA-256)
+  model:
+    if: contains(github.event.head_commit.message, '[models]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install demucs==4.0.1 onnx
+      - name: Export
+        run: |
+          python tools/export_demucs.py htdemucs.onnx
+          sha256sum htdemucs.onnx | tee htdemucs.onnx.sha256
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete models-htdemucs-1 --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create models-htdemucs-1 htdemucs.onnx htdemucs.onnx.sha256 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Stem splitter model (htdemucs)" --prerelease \
+            --notes "Demucs htdemucs (Meta, MIT licence) exported to ONNX for Duet's stem splitter by tools/export_demucs.py. Duet downloads it by itself the first time you split a clip into stems."
+
   # a manual run (Actions -> build -> Run workflow), a version tag (v1.2.3) or a
   # commit with [release] in its message also publishes the Mac apps as a release, on the Releases page
   release:

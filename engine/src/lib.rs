@@ -17,6 +17,7 @@ mod midi;
 mod mix;
 mod net;
 mod signal;
+mod stems;
 mod stretch;
 mod transfer;
 mod vst;
