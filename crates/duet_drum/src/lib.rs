@@ -5,13 +5,19 @@
 //! physics (tension modulation, the stick's contact) is integrated with an
 //! explicit, energy-stable scalar auxiliary variable scheme, O(N) per sample.
 //!
-//! Built stage by stage (see the spec): this is stage 1, the Bessel functions
-//! and the in-vacuo membrane mode basis.
+//! Built stage by stage (see the spec): stage 1 is the Bessel functions and the
+//! in-vacuo membrane mode basis; stage 2 the linear single head with the exact
+//! modal discretisation.
 
+pub mod analysis;
 pub mod bessel;
 pub mod modes;
+pub mod prepare;
 pub mod params;
 pub mod quad;
+pub mod voice;
 
 pub use modes::{MembraneBasis, MembraneMode, MembraneParams, RADIAL_POINTS};
 pub use params::{DrumParams, Head, HeadParams, MicParams, StickParams};
+pub use prepare::{DrumModel, ModeInfo, PrepareError};
+pub use voice::DrumVoice;
