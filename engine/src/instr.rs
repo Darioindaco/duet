@@ -5,8 +5,6 @@
 //! on the control side, handed to the audio thread in a Box, handed back to be
 //! freed. Output is mono, like every strip.
 
-use std::f32::consts::PI;
-
 use crate::fx::VstRef;
 
 pub const DRUMS: usize = 0;
@@ -16,23 +14,48 @@ pub const VSTI: usize = 2;
 /// sample is `pads[0]`
 pub const SAMPLER: usize = 3;
 pub const KINDS: [&str; 4] = ["drums", "synth", "vst", "sampler"];
-pub const N_PARAMS: usize = 6;
+pub const N_PARAMS: usize = 96;
 
-/// Knobs per kind (0..1), and where they start.
+/// The drum kit's knobs: the kit's own, then five per pad (see drums.rs).
+pub const DRUM_PARAMS: [&str; 85] = [
+    "level", "tune", "decay", "kit", "drive", "p0_tune", "p0_decay", "p0_tone",
+    "p0_level", "p0_pan", "p1_tune", "p1_decay", "p1_tone", "p1_level", "p1_pan", "p2_tune",
+    "p2_decay", "p2_tone", "p2_level", "p2_pan", "p3_tune", "p3_decay", "p3_tone", "p3_level",
+    "p3_pan", "p4_tune", "p4_decay", "p4_tone", "p4_level", "p4_pan", "p5_tune", "p5_decay",
+    "p5_tone", "p5_level", "p5_pan", "p6_tune", "p6_decay", "p6_tone", "p6_level", "p6_pan",
+    "p7_tune", "p7_decay", "p7_tone", "p7_level", "p7_pan", "p8_tune", "p8_decay", "p8_tone",
+    "p8_level", "p8_pan", "p9_tune", "p9_decay", "p9_tone", "p9_level", "p9_pan", "p10_tune",
+    "p10_decay", "p10_tone", "p10_level", "p10_pan", "p11_tune", "p11_decay", "p11_tone", "p11_level",
+    "p11_pan", "p12_tune", "p12_decay", "p12_tone", "p12_level", "p12_pan", "p13_tune", "p13_decay",
+    "p13_tone", "p13_level", "p13_pan", "p14_tune", "p14_decay", "p14_tone", "p14_level", "p14_pan",
+    "p15_tune", "p15_decay", "p15_tone", "p15_level", "p15_pan",
+];
+
+/// Knobs per kind (0..1), and where they start. By name in the song, so a
+/// kind can gain knobs and old songs still load.
 pub const PARAMS: [&[&str]; 4] = [
-    &["level", "tune", "decay"],
-    &["wave", "cutoff", "resonance", "attack", "release", "detune"],
+    &DRUM_PARAMS,
+    &crate::synth::NAMES,
     &[],
     // root: the key that plays the sample as it is (0.5 = C4); oneshot: play to
     // the end whatever the note's length (drum hits)
     &["level", "tune", "attack", "release", "root", "oneshot"],
 ];
-pub const DEFAULTS: [[f32; N_PARAMS]; 4] = [
-    [0.8, 0.5, 0.5, 0.0, 0.0, 0.0],
-    [0.3, 0.55, 0.25, 0.05, 0.3, 0.2],
-    [0.0; N_PARAMS],
-    [0.8, 0.5, 0.0, 0.15, 0.5, 0.0],
-];
+pub const DEFAULTS: [[f32; N_PARAMS]; 4] = [crate::drums::defaults(), crate::synth::defaults(), [0.0; N_PARAMS], sampler_defaults()];
+
+const fn sampler_defaults() -> [f32; N_PARAMS] {
+    let mut p = [0f32; N_PARAMS];
+    p[0] = 0.8;
+    p[1] = 0.5;
+    p[3] = 0.15;
+    p[4] = 0.5;
+    p
+}
+
+/// A built-in drum sound, as a sample (the Browser's "Duet sounds").
+pub fn drum_sound(i: usize, sr: f32) -> Vec<f32> {
+    crate::drums::render_pad(i, sr)
+}
 
 pub fn kind_index(name: &str) -> Option<usize> {
     KINDS.iter().position(|k| *k == name)
@@ -100,11 +123,11 @@ impl InstSlot {
         cfg.error = None;
         let inst: Box<dyn Instrument> = match cfg.kind {
             DRUMS => {
-                let (kit, err) = DrumKit::new(sr, &cfg.pads);
+                let (kit, err) = crate::drums::DrumKit::new(sr, &cfg.pads);
                 cfg.error = err;
                 Box::new(kit)
             }
-            SYNTH => Box::new(Synth::new(sr)),
+            SYNTH => Box::new(crate::synth::Synth::new(sr)),
             VSTI => {
                 let v = cfg.vst.clone().ok_or("no plugin chosen")?;
                 let state = v.state.as_deref().and_then(crate::vst::State::decode);
@@ -127,388 +150,6 @@ impl InstSlot {
             k => return Err(format!("no instrument kind {k}")),
         };
         Ok(Box::new(InstSlot { cfg, inst }))
-    }
-}
-
-// --- the drum kit -------------------------------------------------------------------
-
-struct Voice {
-    pad: usize,
-    pos: usize,
-    gain: f32,
-    choke: f32, // 1 = playing; falls to 0 once choked
-}
-
-pub struct DrumKit {
-    samples: Vec<Vec<f32>>,
-    voices: Vec<Voice>,
-    sr: f32,
-}
-
-const MAX_DRUM_VOICES: usize = 32;
-
-impl DrumKit {
-    pub fn new(sr: f32, own: &[Option<String>]) -> (DrumKit, Option<String>) {
-        let mut err = None;
-        let samples = (0..PADS.len())
-            .map(|i| match own.get(i).cloned().flatten() {
-                Some(path) => match crate::decode::read_audio(std::path::Path::new(&path)) {
-                    Ok(a) => crate::daw::resample(&a.to_mono(), a.sr, sr as u32),
-                    Err(e) => {
-                        err = Some(format!("{}: {e}", PADS[i].1));
-                        drum_sound(i, sr)
-                    }
-                },
-                None => drum_sound(i, sr),
-            })
-            .collect();
-        (DrumKit { samples, voices: Vec::with_capacity(MAX_DRUM_VOICES), sr }, err)
-    }
-
-    pub fn pad_for(key: u8) -> usize {
-        // GM notes 36..51 are the pads; anything else wraps onto them
-        (key as i32 - 36).rem_euclid(PADS.len() as i32) as usize
-    }
-}
-
-impl Instrument for DrumKit {
-    fn note(&mut self, ev: NoteEv) {
-        let NoteEv::On(key, vel) = ev else {
-            if ev == NoteEv::AllOff {
-                self.voices.clear();
-            }
-            return;
-        };
-        let pad = Self::pad_for(key);
-        // hi-hats share one "pedal": a closed or pedal hat cuts an open one
-        if matches!(PADS[pad].0, 42 | 44) {
-            for v in self.voices.iter_mut().filter(|v| PADS[v.pad].0 == 46) {
-                v.choke = v.choke.min(0.999);
-            }
-        }
-        if self.voices.len() >= MAX_DRUM_VOICES {
-            self.voices.remove(0); // the oldest makes room (capacity is reserved: no allocation)
-        }
-        let g = vel as f32 / 127.0;
-        self.voices.push(Voice { pad, pos: 0, gain: g * g, choke: 1.0 });
-    }
-
-    fn process(&mut self, p: &[f32; N_PARAMS], out: &mut [f32], r: &mut [f32]) {
-        out.fill(0.0);
-        let level = p[0] * p[0] * 1.6;
-        // tune: ±6 semitones by stepping through the sample faster or slower
-        let rate = 2f32.powf((p[1] - 0.5) * 12.0 / 12.0);
-        // decay: shortens (or keeps) every sound
-        let decay_s = 0.05 + p[2] * 4.0;
-        let fade_per = 1.0 / (decay_s * self.sr);
-        for v in self.voices.iter_mut() {
-            let s = &self.samples[v.pad];
-            for o in out.iter_mut() {
-                let idx = v.pos as f32 * rate;
-                let i = idx as usize;
-                if i + 1 >= s.len() {
-                    v.gain = 0.0;
-                    break;
-                }
-                let t = idx - i as f32;
-                let x = s[i] + (s[i + 1] - s[i]) * t;
-                let env = (1.0 - v.pos as f32 * fade_per).max(0.0);
-                *o += x * v.gain * level * env * v.choke;
-                if v.choke < 1.0 {
-                    v.choke *= 0.995; // ~5 ms fade when choked
-                }
-                v.pos += 1;
-            }
-            if v.choke < 1e-3 || (1.0 - v.pos as f32 * fade_per) <= 0.0 {
-                v.gain = 0.0;
-            }
-        }
-        self.voices.retain(|v| v.gain > 0.0);
-        r.copy_from_slice(out); // the kit sits in the middle
-    }
-}
-
-/// Small deterministic noise source for the synthesized kit.
-struct Noise(u32);
-impl Noise {
-    fn next(&mut self) -> f32 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 17;
-        self.0 ^= self.0 << 5;
-        (self.0 as f32 / u32::MAX as f32) * 2.0 - 1.0
-    }
-}
-
-/// RBJ biquad, for shaping noise.
-struct Biquad {
-    b: [f32; 3],
-    a: [f32; 2],
-    z: [f32; 2],
-}
-impl Biquad {
-    fn new(kind: &str, f: f32, q: f32, sr: f32) -> Self {
-        let w = 2.0 * PI * f / sr;
-        let (s, c) = w.sin_cos();
-        let alpha = s / (2.0 * q);
-        let (b, a0, a) = match kind {
-            "hp" => ([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], 1.0 + alpha, [-2.0 * c, 1.0 - alpha]),
-            "bp" => ([alpha, 0.0, -alpha], 1.0 + alpha, [-2.0 * c, 1.0 - alpha]),
-            _ => ([(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0], 1.0 + alpha, [-2.0 * c, 1.0 - alpha]),
-        };
-        Biquad { b: [b[0] / a0, b[1] / a0, b[2] / a0], a: [a[0] / a0, a[1] / a0], z: [0.0; 2] }
-    }
-    fn run(&mut self, x: f32) -> f32 {
-        let y = self.b[0] * x + self.z[0];
-        self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
-        self.z[1] = self.b[2] * x - self.a[1] * y;
-        y
-    }
-}
-
-/// An 808-style "metal" tone: six detuned square waves (hats, cymbals, cowbell).
-fn metal(t: f32, base: f32) -> f32 {
-    const R: [f32; 6] = [1.0, 1.4471, 1.6170, 1.9265, 2.5028, 2.6637];
-    R.iter().map(|r| if (t * base * r).fract() < 0.5 { 1.0 } else { -1.0 }).sum::<f32>() / 6.0
-}
-
-/// A tom: a sine that drops in pitch, plus a little noise.
-fn tom(sr: f32, f: f32, n: usize, noise: &mut Noise) -> Vec<f32> {
-    let mut ph = 0.0f32;
-    (0..n)
-        .map(|i| {
-            let t = i as f32 / sr;
-            ph += 2.0 * PI * f * (1.0 + 0.6 * (-t / 0.05).exp()) / sr;
-            (ph.sin() + 0.06 * noise.next()) * (-t / 0.32).exp()
-        })
-        .collect()
-}
-
-/// The built-in sound of pad `i`, rendered at `sr`.
-pub fn drum_sound(i: usize, sr: f32) -> Vec<f32> {
-    let len = |s: f32| (s * sr) as usize;
-    let mut noise = Noise(0x9E37_79B9 ^ (i as u32 + 1).wrapping_mul(2_654_435_761));
-    let mut out: Vec<f32> = match PADS[i].0 {
-        36 => {
-            // kick: a sine sweeping down, a click on top, softly saturated
-            let mut ph = 0.0f32;
-            (0..len(0.9))
-                .map(|k| {
-                    let t = k as f32 / sr;
-                    ph += 2.0 * PI * (45.0 + 115.0 * (-t / 0.032).exp()) / sr;
-                    let click = if t < 0.004 { noise.next() * 0.35 * (1.0 - t / 0.004) } else { 0.0 };
-                    ((ph.sin() * (-t / 0.30).exp() + click) * 1.6).tanh()
-                })
-                .collect()
-        }
-        37 => {
-            // rim: two short tones and a click
-            (0..len(0.12))
-                .map(|k| {
-                    let t = k as f32 / sr;
-                    ((2.0 * PI * 1720.0 * t).sin() * 0.6 + (2.0 * PI * 820.0 * t).sin() * 0.5) * (-t / 0.012).exp()
-                        + noise.next() * 0.3 * (-t / 0.003).exp()
-                })
-                .collect()
-        }
-        38 | 40 => {
-            // snares: a body tone and a burst of bright noise
-            let (f, nd, td) = if PADS[i].0 == 38 { (185.0, 0.17, 0.09) } else { (230.0, 0.10, 0.06) };
-            let mut hp = Biquad::new("hp", 1400.0, 0.7, sr);
-            (0..len(0.45))
-                .map(|k| {
-                    let t = k as f32 / sr;
-                    let tone = ((2.0 * PI * f * t).sin() + 0.5 * (2.0 * PI * f * 1.78 * t).sin()) * (-t / td).exp() * 0.55;
-                    tone + hp.run(noise.next()) * (-t / nd).exp() * 0.9
-                })
-                .collect()
-        }
-        39 => {
-            // clap: three quick bursts of band-passed noise, then a tail
-            let mut bp = Biquad::new("bp", 1150.0, 1.4, sr);
-            (0..len(0.4))
-                .map(|k| {
-                    let t = k as f32 / sr;
-                    let bursts: f32 = [0.0, 0.011, 0.022].iter().map(|s| if t >= *s { (-(t - s) / 0.007).exp() } else { 0.0 }).sum();
-                    let env = bursts.max((-(t - 0.022).max(0.0) / 0.13).exp() * if t > 0.022 { 0.7 } else { 0.0 });
-                    bp.run(noise.next()) * env * 2.2
-                })
-                .collect()
-        }
-        41 => tom(sr, 82.0, len(0.8), &mut noise),
-        43 => tom(sr, 100.0, len(0.75), &mut noise),
-        45 => tom(sr, 122.0, len(0.7), &mut noise),
-        47 => tom(sr, 145.0, len(0.65), &mut noise),
-        48 => tom(sr, 172.0, len(0.6), &mut noise),
-        50 => tom(sr, 205.0, len(0.55), &mut noise),
-        42 | 44 | 46 => {
-            // hats: metal through a high-pass; closed, pedal, open
-            let d = match PADS[i].0 { 42 => 0.045, 44 => 0.075, _ => 0.42 };
-            let mut hp = Biquad::new("hp", 7000.0, 0.8, sr);
-            (0..len(d * 5.0))
-                .map(|k| {
-                    let t = k as f32 / sr;
-                    hp.run(metal(t, 320.0) * 0.7 + noise.next() * 0.4) * (-t / d).exp() * 1.4
-                })
-                .collect()
-        }
-        49 => {
-            let mut hp = Biquad::new("hp", 4200.0, 0.7, sr);
-            (0..len(2.6))
-                .map(|k| {
-                    let t = k as f32 / sr;
-                    hp.run(metal(t, 410.0) * 0.5 + noise.next() * 0.6) * (-t / 0.75).exp() * 1.3
-                })
-                .collect()
-        }
-        _ => {
-            // ride: a bell ping over a washy cymbal
-            let mut bp = Biquad::new("bp", 5200.0, 0.9, sr);
-            (0..len(2.2))
-                .map(|k| {
-                    let t = k as f32 / sr;
-                    bp.run(metal(t, 520.0) * 0.6 + noise.next() * 0.3) * (-t / 0.6).exp() * 1.5
-                        + (2.0 * PI * 3300.0 * t).sin() * (-t / 0.35).exp() * 0.12
-                })
-                .collect()
-        }
-    };
-    let peak = out.iter().fold(0f32, |a, v| a.max(v.abs())).max(1e-6);
-    let g = 0.9 / peak;
-    // and a short fade at the very end, so no sound ever stops with a click
-    let tail = len(0.03).min(out.len());
-    let n = out.len();
-    for (k, v) in out.iter_mut().enumerate() {
-        let fade = if k + tail >= n { (n - k) as f32 / tail as f32 } else { 1.0 };
-        *v *= g * fade;
-    }
-    out
-}
-
-// --- the synth -----------------------------------------------------------------------
-
-#[derive(Clone, Copy)]
-struct SVoice {
-    key: u8,
-    on: bool,     // key still down (or held by the pedal)
-    held: bool,   // released while the pedal was down
-    vel: f32,
-    ph: [f32; 2], // two oscillators, the second detuned
-    env: f32,
-    age: u64,
-    ic1: [f32; 2], // filter state, per side
-    ic2: [f32; 2],
-}
-
-pub struct Synth {
-    voices: [Option<SVoice>; 8],
-    sr: f32,
-    sustain: bool,
-    clock: u64,
-}
-
-impl Synth {
-    pub fn new(sr: f32) -> Self {
-        Synth { voices: [None; 8], sr, sustain: false, clock: 0 }
-    }
-}
-
-fn poly_blep(t: f32, dt: f32) -> f32 {
-    if t < dt {
-        let x = t / dt;
-        x + x - x * x - 1.0
-    } else if t > 1.0 - dt {
-        let x = (t - 1.0) / dt;
-        x * x + x + x + 1.0
-    } else {
-        0.0
-    }
-}
-
-impl Instrument for Synth {
-    fn note(&mut self, ev: NoteEv) {
-        match ev {
-            NoteEv::On(key, vel) => {
-                self.clock += 1;
-                let v = SVoice { key, on: true, held: false, vel: vel as f32 / 127.0, ph: [0.0, 0.0], env: 0.0, age: self.clock, ic1: [0.0; 2], ic2: [0.0; 2] };
-                // same key again, a free voice, or steal the oldest
-                let slot = self.voices.iter().position(|x| x.is_some_and(|x| x.key == key))
-                    .or_else(|| self.voices.iter().position(|x| x.is_none()))
-                    .unwrap_or_else(|| (0..8).min_by_key(|&i| self.voices[i].map_or(0, |x| x.age)).unwrap());
-                self.voices[slot] = Some(v);
-            }
-            NoteEv::Off(key) => {
-                for v in self.voices.iter_mut().flatten().filter(|v| v.key == key && v.on) {
-                    if self.sustain { v.held = true } else { v.on = false }
-                }
-            }
-            NoteEv::Sustain(down) => {
-                self.sustain = down;
-                if !down {
-                    for v in self.voices.iter_mut().flatten().filter(|v| v.held) {
-                        v.held = false;
-                        v.on = false;
-                    }
-                }
-            }
-            NoteEv::Release => {
-                self.sustain = false;
-                for v in self.voices.iter_mut().flatten() {
-                    v.on = false;
-                    v.held = false;
-                }
-            }
-            NoteEv::AllOff => self.voices = [None; 8],
-        }
-    }
-
-    /// The two oscillators lean left and right, so detune makes it wide.
-    fn process(&mut self, p: &[f32; N_PARAMS], out: &mut [f32], out_r: &mut [f32]) {
-        out.fill(0.0);
-        out_r.fill(0.0);
-        let sr = self.sr;
-        let wave = p[0];
-        let cutoff = 60.0 * 2f32.powf(p[1] * 8.4); // 60 Hz .. ~20 kHz
-        let k = 2.0 - 1.9 * p[2]; // resonance
-        let attack = 0.001 * 2000f32.powf(p[3]); // 1 ms .. 2 s
-        let release = 0.01 * 400f32.powf(p[4]); // 10 ms .. 4 s
-        let detune = 1.0 + 0.012 * p[5];
-        let a_step = 1.0 / (attack * sr);
-        let r_mul = (-1.0 / (release * sr)).exp();
-        for slot in self.voices.iter_mut() {
-            let Some(v) = slot else { continue };
-            let f = 440.0 * 2f32.powf((v.key as f32 - 69.0) / 12.0);
-            let dts = [f / sr, f * detune / sr];
-            let fc = (cutoff * (1.0 + v.env * 0.5)).min(sr * 0.45);
-            let g = (PI * fc / sr).tan();
-            let (a1, a2) = (1.0 / (1.0 + g * (g + k)), g / (1.0 + g * (g + k)));
-            let a3 = g * a2;
-            for (o, o_r) in out.iter_mut().zip(out_r.iter_mut()) {
-                let mut osc = [0.0f32; 2];
-                for (i, (ph, dt)) in v.ph.iter_mut().zip(dts).enumerate() {
-                    // a falling saw: its fundamental is in phase with the square's,
-                    // so blending the two never cancels the note itself
-                    let saw = 1.0 - 2.0 * *ph + poly_blep(*ph, dt);
-                    let sq = (if *ph < 0.5 { 1.0 } else { -1.0 }) + poly_blep(*ph, dt) - poly_blep((*ph + 0.5).fract(), dt);
-                    osc[i] = saw * (1.0 - wave) + sq * wave;
-                    *ph = (*ph + dt).fract();
-                }
-                let sides = [0.7 * osc[0] + 0.3 * osc[1], 0.3 * osc[0] + 0.7 * osc[1]];
-                v.env = if v.on { (v.env + a_step).min(1.0) } else { v.env * r_mul };
-                let g = v.env * v.vel * 0.6;
-                for (side, (xs, dst)) in sides.into_iter().zip([&mut *o, &mut *o_r]).enumerate() {
-                    // trapezoidal state-variable low-pass
-                    let v3 = xs - v.ic2[side];
-                    let v1 = a1 * v.ic1[side] + a2 * v3;
-                    let v2 = v.ic2[side] + a2 * v.ic1[side] + a3 * v3;
-                    v.ic1[side] = 2.0 * v1 - v.ic1[side];
-                    v.ic2[side] = 2.0 * v2 - v.ic2[side];
-                    *dst += v2 * g;
-                }
-            }
-            if !v.on && v.env < 1e-4 {
-                *slot = None;
-            }
-        }
     }
 }
 
@@ -709,6 +350,9 @@ impl Instrument for VstInst {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::drums::DrumKit;
+    use crate::synth::Synth;
+    use std::f32::consts::PI;
 
     fn run(inst: &mut dyn Instrument, p: &[f32; N_PARAMS], blocks: usize) -> Vec<f32> {
         run2(inst, p, blocks).0

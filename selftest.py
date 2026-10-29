@@ -8,6 +8,7 @@ The engine's own unit tests (jitter buffer, effects, codes) run with
 from __future__ import annotations
 
 import math
+import re
 import sys
 import time
 
@@ -248,9 +249,20 @@ def test_instruments():
         wait_packets(b, base + k + 1)
         heard = max(heard, max(abs(v) for v in b.process(x)))
     assert played > 0.2 and heard > 0.2, (played, heard)
-    # the synth, then back to the input
-    a.inst_set("L0", "synth", None, {"cutoff": 0.9})
-    assert abs(a.mixer()["local"][0]["inst"]["cutoff"] - 0.9) < 1e-6
+    # the kit's knobs by name: the kit itself, and every pad's own (an old song's
+    # three knobs still load, the rest start at their defaults)
+    a.inst_set("L0", "drums", None, {"level": 0.8, "tune": 0.5, "decay": 1.0})
+    m = a.mixer()["local"][0]["inst"]
+    assert sum(1 for k in m if re.fullmatch(r"p\d+_[a-z]+", k)) == 80 and "kit" in m and m["decay"] == 1.0, sorted(m)
+    a.inst_param("L0", "p0_level", 0.0)
+    a.inst_param("L0", "kit", 0.1)  # the 808
+    a.note("L0", True, 36, 120)
+    assert max(max(abs(v) for v in a.process(x)) for _ in range(10)) < 1e-3, "the kick's own level at 0"
+    a.note("L0", True, 38, 120)
+    assert max(max(abs(v) for v in a.process(x)) for _ in range(10)) > 0.1, "the snare still"
+    # the synth (unison on), then back to the input
+    a.inst_set("L0", "synth", None, {"cutoff": 0.9, "sub": 0.5})
+    assert abs(a.mixer()["local"][0]["inst"]["cutoff"] - 0.9) < 1e-6 and "lfo_rate" in a.mixer()["local"][0]["inst"]
     a.note("L0", True, 60, 100)
     out = []
     for _ in range(30):
@@ -258,6 +270,11 @@ def test_instruments():
     spec = np.abs(np.fft.rfft(np.array(out[-2048:]) * np.hanning(2048)))
     f0 = np.argmax(spec[:200]) * SR / 2048
     assert abs(f0 - 261.6) < 25, f"middle C, not {f0:.0f} Hz"
+    a.inst_param("L0", "unison", 1.0)  # 7 voices, wide
+    out = []
+    for _ in range(10):
+        out += a.process(x)
+    assert a.mixer()["local"][0]["inst"]["unison"] == 1.0 and max(abs(v) for v in out) > 0.05
     a.inst_set("L0", None)
     assert a.mixer()["local"][0]["inst"] is None
     a.close()
@@ -366,7 +383,11 @@ def test_patterns():
         assert any(c.get("pattern") == takes[0]["id"] for c in v["clips"]), "placed in the playlist"
         wait_for(lambda: len(db.view()["patterns"]) == 2, what="the recorded pattern on bob's side")
 
-        # pattern mode: just "Beat", looped, whatever else is in the song
+        # pattern mode: just "Beat", looped, whatever else is in the song (once
+        # the snares played above have rung out)
+        for _ in range(int(4 * SR / N)):
+            if max(abs(v) for v in a.process(x)) < 1e-3:
+                break
         da.play_pattern("p1")
         assert da.view()["patternMode"] == "p1"
         out = []

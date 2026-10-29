@@ -7,10 +7,8 @@
 .strip .src optgroup { color: var(--muted); }
 
 .rack .pedal.instp { width: 300px; }
-.rack .pedal.instp.drums { width: 700px; }
-.instp.drums .instbody { flex-direction: row; align-items: center; }
-.instp.drums .knobs { width: auto; flex: none; flex-wrap: nowrap; gap: 4px; }
-.rack .pedal.instp.synth { width: 400px; }
+.rack .pedal.instp.drums { width: 920px; }
+.rack .pedal.instp.synth { width: 880px; }
 .instp .instbody { display: flex; flex-direction: column; gap: 10px; width: 100%; align-items: center; }
 .instp .knobs { flex-wrap: wrap; }
 .insthint { font-size: 11px; color: color-mix(in srgb, var(--c) 35%, var(--muted)); width: 100%; text-align: center; }
@@ -28,3 +26,46 @@
 .pad .pmenu { position: absolute; right: 2px; bottom: 1px; font-style: normal; font-size: 13px; line-height: 1; color: rgba(255,255,255,0.35); padding: 1px 3px; border-radius: 4px; opacity: 0; }
 .pad:hover .pmenu { opacity: 1; }
 .pad .pmenu:hover { color: #fff; background: rgba(0,0,0,0.35); }
+
+/* the segmented choices (filter kind, kit) */
+.instp .seg { display: flex; gap: 0; border: 1px solid rgba(0,0,0,0.5); border-radius: 8px; overflow: hidden; background: rgba(0,0,0,0.25); }
+.instp .seg button { flex: 1; border: 0; background: none; color: var(--muted); font-size: 10.5px; font-weight: 750; padding: 4px 7px; cursor: pointer; white-space: nowrap; }
+.instp .seg button + button { border-left: 1px solid rgba(0,0,0,0.45); }
+.instp .seg button.on { background: color-mix(in srgb, var(--c) 30%, transparent); color: #fff; }
+.instp .knob .kl { font-size: 9.5px; letter-spacing: 0.04em; }
+.instp .knob .kv { font-size: 10px; white-space: nowrap; }
+
+/* the synth: presets, then its sections */
+.synb { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.synbar { display: flex; gap: 6px; align-items: center; }
+.synbar select { flex: 1; max-width: 260px; background: rgba(0,0,0,0.3); color: var(--text); border: 1px solid rgba(255,255,255,0.12); border-radius: 7px; padding: 4px 6px; font-size: 12px; font-weight: 650; }
+.synsecs { display: grid; grid-template-columns: repeat(12, 1fr); gap: 7px; }
+.synsec { grid-column: span 4; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 6px 6px 7px; border-radius: 10px;
+  background: rgba(0,0,0,0.18); border: 1px solid rgba(255,255,255,0.05); min-width: 0; }
+.synsec:nth-child(1) { grid-column: span 6; }
+.synsec:nth-child(2) { grid-column: span 3; }
+.synsec:nth-child(3) { grid-column: span 3; }
+.synsec .synt { align-self: flex-start; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: color-mix(in srgb, var(--c) 70%, var(--muted)); }
+.synsec .knobs { gap: 2px; flex-wrap: nowrap; }
+.synsec .knob { width: 50px; }
+.synsec .seg { align-self: stretch; }
+.envsvg { display: block; }
+.envsvg path { stroke: var(--c); filter: drop-shadow(0 0 3px color-mix(in srgb, var(--c) 50%, transparent)); }
+.synsec .mono.on { border-color: var(--c); color: #fff; background: color-mix(in srgb, var(--c) 30%, transparent); }
+
+/* the drum kit: kit and its knobs | pads | the chosen pad's knobs */
+.drumb { display: flex; gap: 12px; align-items: stretch; width: 100%; }
+.drumkit, .padside { flex: none; display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center; padding: 6px; border-radius: 10px; background: rgba(0,0,0,0.18); }
+.drumkit { width: 200px; }
+.drumkit .knobs { flex-wrap: wrap; gap: 2px; }
+.drumkit .knob, .padside .knob { width: 48px; }
+.padside { width: 140px; }
+.padside .knobs { flex-wrap: wrap; gap: 2px; }
+.padside .padt { display: flex; gap: 6px; align-items: center; justify-content: space-between; width: 100%; }
+.padside .padt b { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.padside .mnote { color: var(--muted); text-align: center; }
+.drumb .pads { align-self: center; }
+.pad.sel { outline: 2px solid var(--c); outline-offset: 1px; }
+.pad.edited::after { content: ""; position: absolute; right: 5px; top: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--c); }
+.synsec.mono { grid-column: span 12; flex-direction: row; justify-content: center; gap: 18px; }
+.synsec.mono .synt { align-self: center; }

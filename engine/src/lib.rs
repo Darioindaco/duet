@@ -8,6 +8,7 @@
 mod audio;
 mod daw;
 mod decode;
+mod drums;
 mod dsp;
 mod fx;
 mod instr;
@@ -19,6 +20,7 @@ mod net;
 mod signal;
 mod stems;
 mod stretch;
+mod synth;
 mod tune;
 mod transfer;
 mod vst;

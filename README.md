@@ -414,10 +414,25 @@ as usual, and a song track set to that strip records it.
 
 - **Drum kit** (built in): 16 pads on the General MIDI drum notes (36–51: kick,
   snares, clap, hats, toms, crash, ride), so drum parts and pad controllers land
-  on the right sound. Click a pad to hit it (higher up = harder). *⋯* on a pad
-  loads your own WAV onto it. Knobs: level, tune, decay.
-- **Synth** (built in): 8 voices, saw/square blend, a resonant filter, attack,
-  release and detune. Sustain pedal works.
+  on the right sound. The sounds are **synthesized as they play**, the way a
+  TR-808 or 909 makes them: no two hits are quite alike, and a harder hit is
+  brighter as well as louder. Pick a **kit**: *808*, *909*, *Punchy* (modern and
+  tight) or *Lo-fi* (the 808 through a bit-crusher). Knobs for the whole kit:
+  level, tune, decay, drive. Click a pad to hit it (higher up = harder) and to
+  show **its own knobs**: tune (±12 semitones), decay, tone, level and pan; a dot
+  marks the pads you changed, *Reset* puts one back. A closed hat cuts an open
+  one. *⋯* on a pad loads your own sample onto it (its tune and decay still work).
+- **Synth** (built in): 16 voices. Two oscillators (each from saw to square; the
+  second with its own pitch, ±12 semitones), a sub an octave down and noise;
+  **unison** up to 7 voices, detuned and spread across the stereo field; a
+  **filter** (low-pass 24 or 12 dB, band-pass, high-pass) with its own envelope,
+  key tracking and velocity; an ADSR for the level; an **LFO** for vibrato,
+  filter sweeps and tremolo; glide, **mono / legato** and drive. The envelopes
+  are drawn as you turn them. **Presets** to start from (*Warm pad*, *Supersaw
+  lead*, *Sub bass*, *Acid bass*, *Pluck*, *Keys*, *Brass*, *Wobble bass*,
+  *Strings*, *Chip lead*, *Noise riser*), and *Save sound…* keeps your own (on
+  this computer). The sustain pedal works. Songs made with the old synth and kit
+  still load (their knobs keep their names).
 - **VST3 instruments**: the instruments in your VST3 folder; *Open window* shows
   their own controls. Like VST effects in a song, your partner only needs the
   plugin for a song track's effects, not to hear you play it live.
@@ -494,7 +509,9 @@ to it through lock-free queues and atomics.
 | `engine/src/fx.rs` | FX racks (stereo): EQ, compressor with sidechain, look-ahead limiter, overdrive, chorus, tremolo, delay, Freeverb, NAM amp (nam-rs) |
 | `engine/src/net.rs` | Packet format, connect codes, STUN |
 | `engine/src/signal.rs` | Reliable side channel for the video call setup |
-| `engine/src/instr.rs` | Instruments: the synthesized drum kit, the synth, VST3 instruments (notes in) |
+| `engine/src/instr.rs` | Instruments: kinds, knobs, the sampler, VST3 instruments (notes in) |
+| `engine/src/drums.rs` | The drum kit, synthesized as it plays: four kits, five knobs per pad |
+| `engine/src/synth.rs` | The synth: two oscillators, sub, noise, unison, filter with envelope, LFO, glide, mono |
 | `engine/src/midi.rs` | MIDI keyboards (midir), on a thread of their own |
 | `engine/src/daw.rs` | Song timeline: clips (converted to the device rate as they play), the fast WAV reader, waveform peaks, take writer |
 | `engine/src/stems.rs` | The stem splitter: Demucs's spectrogram, its network in ONNX Runtime, the overlap-add (matches PyTorch Demucs to 2e-5) |
@@ -515,7 +532,7 @@ to it through lock-free queues and atomics.
 | `ui/wm.js` | The workspace: windows that move, size and snap, layouts |
 | `ui/daw.js`, `ui/daw.css` | The playlist: transport, track headers, timeline with waveforms, song menu |
 | `ui/seq.js`, `ui/seq.css` | The sequencer: patterns, channel rack with steps, piano roll with velocities |
-| `ui/instr.js`, `ui/instr.css` | Instruments: the panel with pads and knobs, the computer keyboard, MIDI keyboards |
+| `ui/instr.js`, `ui/instr.css` | Instruments: the synth panel (sections, presets, envelopes), the drum kit (kits, pads, per-pad knobs), the computer keyboard, MIDI keyboards |
 | `ui/presence.js` | Seeing each other work: the partner's pointer, selection, view and live notes; Follow |
 | `library.py` | The sample library: folders, bins, search, import |
 | `ui/auto.js` | Automation lanes in the playlist: drawing them, *Automate* on knobs and faders |
