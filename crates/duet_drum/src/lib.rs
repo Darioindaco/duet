@@ -12,6 +12,7 @@
 
 pub mod analysis;
 pub mod bessel;
+pub mod lugs;
 pub mod modes;
 pub mod prepare;
 pub mod params;

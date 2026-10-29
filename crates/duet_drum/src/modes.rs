@@ -11,6 +11,7 @@
 use std::f64::consts::PI;
 
 use crate::bessel::{bessel_j_dj, ZeroTable};
+use crate::quad::gauss_legendre_on;
 use crate::params::{DrumParams, Head};
 
 /// Points in a radial table, r = 0 ..= R.
@@ -112,6 +113,21 @@ impl MembraneMode {
     /// ρ(r) evaluated exactly (a Bessel evaluation: prepare-time and tests only).
     pub fn radial_exact(&self, r: f64) -> f64 {
         self.norm * bessel_j_dj(self.m, self.kappa * r).0
+    }
+
+    /// The radial integrals of §4.5, by Gauss–Legendre quadrature of the exact Bessel functions:
+    /// `I1 = ∫ρ'² r dr`, `I2 = ∫m²ρ²/r dr`. (`π(I1 + I2) = κ²/σ` for m ≥ 1.) Prepare-time only.
+    pub fn radial_integrals(&self) -> (f64, f64) {
+        let n = 64.max(self.j as usize + 40);
+        let (rs, ws) = gauss_legendre_on(n, 0.0, self.radius);
+        let (mut i1, mut i2) = (0.0, 0.0);
+        for (r, w) in rs.iter().zip(&ws) {
+            let (jv, dj) = bessel_j_dj(self.m, self.kappa * r);
+            let (rho, drho) = (self.norm * jv, self.norm * self.kappa * dj);
+            i1 += w * drho * drho * r;
+            i2 += w * (self.m * self.m) as f64 * rho * rho / r;
+        }
+        (i1, i2)
     }
 
     /// Φ(r, θ) for the cos (or sin) member of the pair; m = 0 has only the cos one.

@@ -14,6 +14,7 @@ use std::f64::consts::PI;
 
 use nalgebra::{DMatrix, SymmetricEigen};
 
+use crate::lugs::LugProfile;
 use crate::modes::{MembraneBasis, MembraneParams};
 use crate::params::{DrumParams, Head};
 
@@ -88,6 +89,8 @@ pub struct ModeInfo {
     pub vol_weight_batter: f64,
     /// the pair's `1/√(1+μ)`
     pub scale: f64,
+    /// the lugs rotate a pair: its members are the (cos, sin) pair turned by φ in the mθ angle (0 without lugs)
+    pub phi: f64,
 }
 
 impl ModeInfo {
@@ -153,6 +156,10 @@ pub struct DrumModel {
     pub(crate) c_tm: [f64; 2],
 }
 
+fn omega_floor(lam: f64) -> bool {
+    !(lam > 0.0 && lam.is_finite())
+}
+
 fn head_index(h: Head) -> usize {
     match h {
         Head::Batter => 0,
@@ -183,9 +190,17 @@ impl DrumModel {
         let mut warnings = Vec::new();
         // the in-vacuo bases, with 1.6·f_max of headroom: air loading lowers frequencies
         let mut bases: [Option<MembraneBasis>; 2] = [None, None];
+        let mut lugs: [Option<LugProfile>; 2] = [None, None];
         for &h in &heads {
-            let mp = MembraneParams::from_drum(p, h);
-            bases[head_index(h)] = Some(MembraneBasis::build(&mp, 1.6 * p.head(h).f_max));
+            let hp = p.head(h);
+            if !hp.lug_deviations.is_empty() && hp.lug_deviations.len() != p.lug_count {
+                return Err(PrepareError::InvalidParams(format!("the {h:?} head has {} lug deviations for {} lugs", hp.lug_deviations.len(), p.lug_count)));
+            }
+            lugs[head_index(h)] = LugProfile::new(hp.tension, &hp.lug_deviations, p.lug_count, p.lug_angle_offset, p.lug_sharpness);
+            let mut mp = MembraneParams::from_drum(p, h);
+            // the lugs' mean tension shift (c_0) is a shift of every mode of the head
+            mp.tension += lugs[head_index(h)].as_ref().map_or(0.0, |l| l.c0);
+            bases[head_index(h)] = Some(MembraneBasis::build(&mp, 1.6 * hp.f_max));
         }
         // air mass loading per head mode: μ = β·ρ_a/(σ_h κ)
         let mu = |hi: usize, kappa: f64| -> f64 {
@@ -273,6 +288,7 @@ impl DrumModel {
                 vol_weight: vol,
                 vol_weight_batter: vol_b,
                 scale: 1.0,
+                phi: 0.0,
             });
             t_cols.push(t);
         }
@@ -286,17 +302,38 @@ impl DrumModel {
             let basis = bases[hi].as_ref().unwrap();
             for (bi, bm) in basis.modes.iter().enumerate().filter(|(_, m)| m.m >= 1) {
                 let mu_k = mu(hi, bm.kappa);
-                let omega = bm.omega_vac / (1.0 + mu_k).sqrt();
-                if omega / (2.0 * PI) > f_keep(hi) {
-                    continue;
+                // the pair's stiffness: ω_vac²·I + ΔK_lug, in the (cos, sin) basis, over the air-loaded mass:
+                // ΔK_cc = −ΔK_ss = (π/2)·c_2m·(I1 − I2), ΔK_cs = (π/2)·s_2m·(I1 − I2)
+                let (mut d_c, mut d_s) = (0.0, 0.0);
+                if let Some(l) = &lugs[hi] {
+                    let (c, s) = l.harmonic(2 * bm.m);
+                    if c != 0.0 || s != 0.0 {
+                        let (i1, i2) = bm.radial_integrals();
+                        let check = PI * (i1 + i2) * basis.params.sigma / (bm.kappa * bm.kappa);
+                        if (check - 1.0).abs() > 1e-6 {
+                            warnings.push(format!("lug integrals of ({},{}) of the {h:?} head: π(I1+I2)σ/κ² = {check}", bm.m, bm.n));
+                        }
+                        d_c = 0.5 * PI * c * (i1 - i2);
+                        d_s = 0.5 * PI * s * (i1 - i2);
+                    }
                 }
-                let mut part = [0.0; 2];
-                part[hi] = 1.0;
-                let sigma = sigma_of(part, omega);
-                for sin in [false, true] {
+                let mean = bm.omega_vac * bm.omega_vac / (1.0 + mu_k);
+                let half = (d_c * d_c + d_s * d_s).sqrt() / (1.0 + mu_k);
+                let phi = 0.5 * d_s.atan2(d_c);
+                if omega_floor(mean - half) {
+                    return Err(PrepareError::InvalidParams(format!("lugs make the ({},{}) pair of the {h:?} head unstable", bm.m, bm.n)));
+                }
+                for (sin, lam) in [(false, mean + half), (true, mean - half)] {
+                    let omega = lam.sqrt();
+                    if omega / (2.0 * PI) > f_keep(hi) {
+                        continue;
+                    }
+                    let mut part = [0.0; 2];
+                    part[hi] = 1.0;
+                    let sigma = sigma_of(part, omega);
                     modes.push(ModeInfo {
                         head: h, block: Block::Pair, basis_index: bi, sin, m: bm.m, n: bm.n, omega, sigma, sigma_int: sigma, sigma_rad: 0.0,
-                        participation: part, vol_weight: 0.0, vol_weight_batter: 0.0, scale: 1.0 / (1.0 + mu_k).sqrt(),
+                        participation: part, vol_weight: 0.0, vol_weight_batter: 0.0, scale: 1.0 / (1.0 + mu_k).sqrt(), phi,
                     });
                     pair_w2.push(bm.kappa * bm.kappa / (1.0 + mu_k));
                     pair_head.push(hi);
@@ -402,7 +439,8 @@ impl DrumModel {
         for i in self.n_a..self.len() {
             let md = &self.modes[i];
             out[i] = if md.head == Head::Batter {
-                let a = md.m as f64 * theta;
+                // the pair, turned by φ: cos(mθ − φ) and sin(mθ − φ)
+                let a = md.m as f64 * theta - md.phi;
                 md.scale * basis.modes[md.basis_index].radial(r) * if md.sin { a.sin() } else { a.cos() }
             } else {
                 0.0

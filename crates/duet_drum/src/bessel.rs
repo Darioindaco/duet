@@ -57,6 +57,20 @@ pub fn bessel_j_dj(m: usize, x: f64) -> (f64, f64) {
     (v[m], d)
 }
 
+/// The modified Bessel function `I_0(x)` (power series; x ≥ 0 up to a few hundred).
+pub fn bessel_i0(x: f64) -> f64 {
+    let q = 0.25 * x * x;
+    let (mut term, mut sum) = (1.0, 1.0);
+    for k in 1..500 {
+        term *= q / (k * k) as f64;
+        sum += term;
+        if term < 1e-17 * sum {
+            break;
+        }
+    }
+    sum
+}
+
 /// The one zero of `J_m` inside `(a, b)` (`J_m` must change sign there).
 fn zero_in(m: usize, a: f64, b: f64) -> f64 {
     let (mut lo, mut hi) = (a, b);
@@ -149,6 +163,13 @@ mod tests {
         assert!((bessel_j(5, 10.0) - -0.2340615281867936).abs() < 1e-15);
         assert_eq!(bessel_j(3, 0.0), 0.0);
         assert_eq!(bessel_j(0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn i0_known_values() {
+        assert!((bessel_i0(0.0) - 1.0).abs() < 1e-16);
+        assert!((bessel_i0(4.0) - 11.301921952136330).abs() < 1e-13);
+        assert!((bessel_i0(1.0) - 1.2660658777520082).abs() < 1e-15);
     }
 
     #[test]
