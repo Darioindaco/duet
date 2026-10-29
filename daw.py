@@ -60,7 +60,7 @@ FIELDS = {
     # when the speed changes; off = tape), reverse (the clip's stretch of the
     # file backwards). offset is in seconds of the file, len on the timeline.
     "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out",
-             "speed", "pitch", "stretch", "reverse", "mute", "del"},
+             "speed", "pitch", "stretch", "reverse", "mute", "tune", "del"},
     "file": {"frames", "sr", "owner", "name", "del"},
     "pattern": {"name", "len", "color", "del"},
     "note": {"pattern", "track", "start", "len", "key", "vel", "del"},
@@ -73,13 +73,13 @@ FIELD_DEFAULTS = {
     "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None,
               "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "del": False},
     "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "speed": 1.0, "pitch": 0.0,
-             "stretch": False, "reverse": False, "mute": False, "del": False},
+             "stretch": False, "reverse": False, "mute": False, "tune": None, "del": False},
     "file": {"del": False},
     "pattern": {"del": False},
     "note": {"vel": 100, "del": False},
 }
 # controls you turn rather than click: a run of turns is one undo step
-CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel", "sends", "master_rack", "points", "speed", "pitch"}
+CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel", "sends", "master_rack", "points", "speed", "pitch", "tune"}
 MAX_SENDS = 4
 UNDO_DEPTH = 200
 
@@ -100,6 +100,43 @@ STEM_SETS = {
     "4": [("Drums", [0]), ("Bass", [1]), ("Other", [2]), ("Vocals", [3])],
     "2": [("Vocals", [3]), ("Instrumental", [0, 1, 2])],
 }
+
+
+def tune_moves(tune) -> list:
+    """A clip's tune (the Tune tab) for the engine: [(start, end, centre,
+    shift, drift)], seconds of the file; whatever the partner sent, in range."""
+    if not isinstance(tune, dict) or not isinstance(tune.get("notes"), list):
+        return []
+    out = []
+    for n in tune["notes"][:20000]:
+        if not isinstance(n, (list, tuple)) or len(n) < 5:
+            continue
+        a, b = num(n[0], -1, 0, 1e7), num(n[1], -1, 0, 1e7)
+        if a < 0 or b <= a:
+            continue
+        out.append((a, b, num(n[2], 60.0, 0.0, 140.0), num(n[3], 0.0, -24.0, 24.0), num(n[4], 0.0, 0.0, 1.0)))
+    return out
+
+
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+# Krumhansl & Kessler's key profiles: how much each degree of a key is heard in music in it
+KEY_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88]
+KEY_MINOR = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
+
+
+def key_of(chroma: list) -> list:
+    """The keys a pitch-class profile fits, best first: [(name, correlation)]."""
+    def corr(a, b):
+        ma, mb = sum(a) / 12, sum(b) / 12
+        num_ = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+        den = math.sqrt(sum((x - ma) ** 2 for x in a) * sum((y - mb) ** 2 for y in b))
+        return num_ / den if den > 0 else 0.0
+    out = []
+    for root in range(12):
+        for mode, prof in (("major", KEY_MAJOR), ("minor", KEY_MINOR)):
+            rot = [prof[(k - root) % 12] for k in range(12)]
+            out.append((f"{NOTE_NAMES[root]} {mode}", corr(chroma, rot)))
+    return sorted(out, key=lambda x: -x[1])
 
 
 def https_context():
@@ -868,7 +905,7 @@ class Daw:
             desc[slot].append((key, float(c.get("start", 0)) * spb, float(c.get("offset", 0)), float(c.get("len", 0)),
                                0.0 if c.get("mute") else float(c.get("gain", 1.0)), float(c.get("fade_in", 0)), float(c.get("fade_out", 0)),
                                num(c.get("speed"), 1.0, 0.05, 20.0), num(c.get("pitch"), 0.0, -48.0, 48.0),
-                               bool(c.get("stretch")), bool(c.get("reverse"))))
+                               bool(c.get("stretch")), bool(c.get("reverse")), tune_moves(c.get("tune"))))
         notes = self._notes(spb)
         if desc != self.sent_desc or notes != self.sent_notes:
             e.daw_timeline(desc, notes)
@@ -1074,6 +1111,10 @@ class Daw:
                 return {"hits": self.e.daw_transients(key, offset, dur, min(1.0, max(0.0, sensitivity)))}
             if what == "tempo":
                 return {"bpm": self.e.daw_tempo(key, offset, dur)}
+            if what == "pitch":
+                return {"pitch": self.e.daw_pitch(key, offset, dur), "offset": offset, "dur": dur}
+            if what == "key":
+                return self.song_key(clip)
         except Exception as exc:
             return {"error": str(exc)}
         return {"error": f"Nothing called {what}."}
@@ -1236,6 +1277,57 @@ class Daw:
             self._load(f, self.p.audio_dir / f)
         self.notices.append(f"Split into {len(job['outs'])} stems. The clip itself is muted (right-click it to hear it again).")
         self.version += 1
+
+    def song_key(self, clip: str | None = None) -> dict:
+        """The song's key, from everything in it but `clip` (the voice being
+        tuned): the other audio clips (not drums), the notes in patterns, and
+        a little of the voice itself. {"key", "confidence" 0..1, "others": [...]}."""
+        with self.lock:
+            clips = [(cid, c) for cid, c in self.p.live("clip").items() if c.get("file") and not c.get("mute")]
+            tracks = self.p.live("track")
+            regions = []
+            for cid, c in clips:
+                t = tracks.get(c.get("track")) or {}
+                drums = "drum" in str(t.get("name", "")).lower() or "drum" in str(c.get("file", ""))
+                if c["file"] not in self.loaded or drums:
+                    continue
+                speed = num(c.get("speed"), 1.0, 0.05, 20.0)
+                pitch = num(c.get("pitch"), 0.0, -48.0, 48.0)
+                ratio = speed if c.get("stretch") else speed * 2 ** (pitch / 12)
+                regions.append((cid == clip, c["file"], num(c.get("offset"), 0.0, 0.0, 1e7),
+                                num(c.get("len"), 0.0, 0.0, 1e7) * ratio, round(pitch) % 12))
+            # notes in patterns, on channels that aren't drum kits
+            pat = [0.0] * 12
+            for n in self.p.live("note").values():
+                t = tracks.get(n.get("track")) or {}
+                if (t.get("inst") or {}).get("kind") == "drums":
+                    continue
+                pat[int(num(n.get("key"), 60, 0, 127)) % 12] += num(n.get("len"), 0.25, 0.0, 64.0)
+        total = [0.0] * 12
+        heard = 0.0
+        for own, key, offset, dur, shift in regions:  # (nothing locked: a few seconds for a long song)
+            try:
+                ch = self.e.daw_chroma(key, offset, dur)
+            except Exception:
+                continue
+            sm = sum(ch)
+            if sm <= 0:
+                continue
+            w = (0.3 if own else 1.0) * min(dur, 600.0)
+            for k in range(12):
+                total[(k + shift) % 12] += w * ch[k] / sm  # (a transposed clip sounds in another key)
+            heard += w
+        ps = sum(pat)
+        if ps > 0:
+            for k in range(12):
+                total[k] += max(heard, 30.0) * pat[k] / ps
+            heard += 1
+        if heard <= 0 or sum(total) <= 0:
+            return {"key": None, "confidence": 0.0, "others": []}
+        ranked = key_of(total)
+        (best, r1), (_, r2) = ranked[0], ranked[1]
+        conf = max(0.0, min(1.0, (r1 - r2) / 0.12 * 0.6 + max(0.0, r1 - 0.5)))
+        return {"key": best, "confidence": round(conf, 2), "others": [k for k, _ in ranked[1:4]]}
 
     def sample_pad(self, track: str, pad: int, path: str | None) -> dict:
         """A library sample onto a drum pad of a song channel (pad 0 of a

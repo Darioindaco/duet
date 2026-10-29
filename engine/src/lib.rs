@@ -19,6 +19,7 @@ mod net;
 mod signal;
 mod stems;
 mod stretch;
+mod tune;
 mod transfer;
 mod vst;
 
@@ -1339,6 +1340,35 @@ impl Engine {
         Ok(hits.into_iter().map(|h| h as f64 / a.sr as f64).collect())
     }
 
+    /// A voice's pitch and notes in a loaded file, seconds offset..offset+dur
+    /// (for the Tune tab): {"hop" (seconds per step), "start" (seconds of the
+    /// first step), "midi" [MIDI number or None per step], "rms" [loudness per
+    /// step], "notes" [(start, end, centre)] in seconds of the file}.
+    fn daw_pitch<'py>(&self, py: Python<'py>, key: &str, offset: f64, dur: f64) -> PyResult<Bound<'py, PyDict>> {
+        let a = self.loaded_file(key)?;
+        let (x, y) = frames_of(&a, offset, dur);
+        let (t, notes) = py.allow_threads(|| {
+            let t = tune::track(&a, x, y);
+            let n = tune::notes(&t);
+            (t, n)
+        });
+        let d = PyDict::new(py);
+        d.set_item("hop", tune::HOP as f64 / a.sr as f64)?;
+        d.set_item("start", t.from as f64 / a.sr as f64)?;
+        d.set_item("midi", t.midi.iter().map(|m| m.is_finite().then_some((*m * 1000.0).round() / 1000.0)).collect::<Vec<_>>())?;
+        let peak = t.rms.iter().cloned().fold(1e-9f32, f32::max);
+        d.set_item("rms", t.rms.iter().map(|r| ((r / peak) * 1000.0).round() / 1000.0).collect::<Vec<_>>())?;
+        d.set_item("notes", notes.iter().map(|n| (n.start, n.end, n.center)).collect::<Vec<_>>())?;
+        Ok(d)
+    }
+
+    /// How much of each pitch class (C..B) a loaded file has in seconds offset..offset+dur.
+    fn daw_chroma(&self, py: Python<'_>, key: &str, offset: f64, dur: f64) -> PyResult<Vec<f32>> {
+        let a = self.loaded_file(key)?;
+        let (x, y) = frames_of(&a, offset, dur);
+        Ok(py.allow_threads(|| tune::chroma(&a, x, y)).to_vec())
+    }
+
     /// The tempo of a loaded file in seconds offset..offset+dur (BPM), if it has a beat.
     fn daw_tempo(&self, py: Python<'_>, key: &str, offset: f64, dur: f64) -> PyResult<Option<f64>> {
         let a = self.loaded_file(key)?;
@@ -1354,7 +1384,7 @@ impl Engine {
     /// pitch in semitones, keep pitch, reverse).
     #[pyo3(signature = (tracks, notes=None))]
     #[allow(clippy::type_complexity)]
-    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, f64, f64, f64, f32, bool, bool)>>,
+    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, f64, f64, f64, f32, bool, bool, Vec<(f64, f64, f32, f32, f32)>)>>,
                     notes: Option<Vec<Vec<(f64, f64, u8, u8)>>>) {
         let notes: Vec<Vec<NoteDesc>> = notes
             .unwrap_or_default()
@@ -1369,11 +1399,21 @@ impl Engine {
             .map(|clips| {
                 clips
                     .into_iter()
-                    .map(|(key, start, offset, len, gain, fade_in, fade_out, speed, pitch, stretch, reverse)| ClipDesc {
-                        key, start, offset, len, gain, fade_in, fade_out,
-                        speed: if speed.is_finite() { speed.clamp(0.05, 20.0) } else { 1.0 },
-                        pitch: if pitch.is_finite() { pitch.clamp(-48.0, 48.0) } else { 0.0 },
-                        stretch, reverse,
+                    .map(|(key, start, offset, len, gain, fade_in, fade_out, speed, pitch, stretch, reverse, tune)| {
+                        let moves: Vec<tune::TuneNote> = tune
+                            .into_iter()
+                            .filter(|m| m.0.is_finite() && m.1.is_finite() && m.2.is_finite() && m.3.is_finite() && m.4.is_finite() && m.1 > m.0)
+                            .map(|(start, end, center, shift, drift)| tune::TuneNote { start, end, center, shift: shift.clamp(-24.0, 24.0), drift: drift.clamp(0.0, 1.0) })
+                            .filter(|m| m.shift.abs() > 1e-4 || m.drift > 1e-4)
+                            .collect();
+                        let tune_hash = if moves.is_empty() { 0 } else { tune::tune_hash(&moves) };
+                        ClipDesc {
+                            key, start, offset, len, gain, fade_in, fade_out,
+                            speed: if speed.is_finite() { speed.clamp(0.05, 20.0) } else { 1.0 },
+                            pitch: if pitch.is_finite() { pitch.clamp(-48.0, 48.0) } else { 0.0 },
+                            stretch, reverse,
+                            tune: Arc::new(moves), tune_hash,
+                        }
                     })
                     .collect()
             })
@@ -1650,10 +1690,10 @@ impl Engine {
             return Err(PyRuntimeError::new_err("an export is already running"));
         }
         // stretched copies not made yet are made first, by the export itself
-        let missing: Vec<(daw::StretchKey, Arc<daw::AudioData>)> = {
+        let missing: Vec<daw::CopyJob> = {
             let DawCtl { cache, desc, notes, .. } = &mut *d;
             cache.build(desc, notes, sr);
-            cache.missing.iter().filter_map(|k| cache.file(&k.key).map(|f| (k.clone(), f))).collect()
+            cache.missing.iter().filter_map(|k| cache.job(k)).collect()
         };
         let inner = self.inner.clone();
         let s = |x: f64| (x * sr as f64).round() as i64;
@@ -1664,7 +1704,7 @@ impl Engine {
         let worker = std::thread::Builder::new()
             .name("duet-export".into())
             .spawn(move || {
-                let made: Vec<_> = missing.into_iter().map(|(k, f)| { let st = stretch::stretch(&f, k.speed(), k.semis()); (k, st) }).collect();
+                let made: Vec<_> = missing.iter().flat_map(daw::make_copy).collect();
                 let tl = {
                     let mut d = inner.daw.lock().unwrap();
                     let DawCtl { cache, desc, notes, autos, .. } = &mut *d;
@@ -2121,10 +2161,10 @@ fn rebuild(inner: &Arc<Inner>, dsp: &Arc<Mutex<Dsp>>) {
             let job = {
                 let mut d = inner.daw.lock().unwrap();
                 let next = d.cache.missing.last().cloned();
-                match next.and_then(|k| d.cache.file(&k.key).map(|f| (k, f))) {
-                    Some((k, f)) => {
-                        d.stretch_now = Some(k.clone());
-                        (k, f)
+                match next.and_then(|k| d.cache.job(&k)) {
+                    Some(j) => {
+                        d.stretch_now = Some(j.key.clone());
+                        j
                     }
                     None => {
                         d.stretching = false;
@@ -2133,11 +2173,12 @@ fn rebuild(inner: &Arc<Inner>, dsp: &Arc<Mutex<Dsp>>) {
                     }
                 }
             };
-            let (k, f) = job;
-            let made = stretch::stretch(&f, k.speed(), k.semis());
+            let made = daw::make_copy(&job);
             {
                 let mut d = inner.daw.lock().unwrap();
-                d.cache.add_stretched(k, made);
+                for (k, a) in made {
+                    d.cache.add_stretched(k, a);
+                }
                 d.stretch_now = None;
             }
             rebuild(inner, dsp); // (the worker is still marked running: no second one)

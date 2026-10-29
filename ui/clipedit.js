@@ -69,13 +69,18 @@ function ceRender() {
   $("ceTitle").textContent = (t ? t.name : "Clip") + clipBadges(c);
   $("ceSub").textContent = `${f.name || "Audio"} · ${ceTime(ceFileDur(c))} file · ${ceTime(c.len)} in the song`;
   for (const b of $("ceTabs").querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === ce.tab);
+  // the Tune tab has its piano roll where the waveform is
+  const tuning = ce.tab === "tune";
+  $("ceWave").hidden = tuning; $("tuneCv").hidden = !tuning;
+  document.querySelector("#clipEd .cehint").hidden = tuning;
   $("cePlay").classList.toggle("on", !!(song.st && song.st.playing));
   const body = $("ceBody");
   // rebuilt, unless one of its sliders is being dragged (then just the values)
   if (body.dataset.tab !== ce.tab || !(ce.busy || song.headBusy)) {
     body.dataset.tab = ce.tab;
     body.innerHTML = "";
-    body.append(ce.tab === "clip" ? ceClipTab(c) : ce.tab === "pitch" ? cePitchTab(c) : ce.tab === "chop" ? ceChopTab(c) : ceStemsTab(c));
+    body.append(ce.tab === "clip" ? ceClipTab(c) : ce.tab === "pitch" ? cePitchTab(c) : ce.tab === "chop" ? ceChopTab(c)
+      : ce.tab === "tune" ? tuneTab(c) : ceStemsTab(c));
   } else {
     ceRefresh(c);
   }
@@ -372,6 +377,7 @@ function ceChop(c) {
 // --- the waveform -------------------------------------------------------------------
 
 function ceDraw() {
+  if (ce.tab === "tune") { tuneDraw(); return; }
   const c = ceClip(), cv = $("ceWave");
   if (!c || !cv || $("clipEd").hidden) return;
   const w = cv.clientWidth, h = cv.clientHeight;
@@ -459,6 +465,7 @@ function ceHit(c, px, w) {
 
 function ceSetup() {
   const cv = $("ceWave");
+  tuneSetup();
   $("ceX").onclick = closeClipEditor;
   $("clipEd").onclick = (e) => e.target === $("clipEd") && closeClipEditor();
   for (const b of $("ceTabs").querySelectorAll("button")) b.onclick = () => { ce.tab = b.dataset.v; ceRender(); };
@@ -470,7 +477,7 @@ function ceSetup() {
   };
   addEventListener("keydown", (e) => {
     if ($("clipEd").hidden) return;
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeClipEditor(); }
+    if (e.key === "Escape" && !(ce.tab === "tune" && tn.sel.size)) { e.preventDefault(); e.stopPropagation(); closeClipEditor(); }
   }, true);
   cv.addEventListener("pointermove", (e) => {
     const c = ceClip();

@@ -182,7 +182,29 @@ and *Undo* takes it back.
   slider), or on the grid (bar, beat, 1/8, 1/16), or click your own; drag a cut
   to move it, right-click it to take it away. *Chop into clips* cuts the clip
   at every mark: each piece is its own clip, to move, copy or delete.
-- **Stems:** split the clip's sound into drums, bass, vocals and the rest (or
+- **Tune** (for a voice, or any one instrument playing one note at a time),
+  like Melodyne. The voice is shown as notes on a piano roll: each note a
+  blob shaped by how loud it is, the pitch line running through it, the rows
+  of the song's key lighter. Notes that are off are amber.
+  - **The key** is found by itself, from the rest of the song (the other
+    clips, drums left out, and the notes in patterns), and says how sure it
+    is (C major and A minor have the same notes: either works). Or pick one.
+  - **✦ Snap to key** puts every note that's off into the key (or just the
+    selected ones), but not like Auto-Tune: *Strength* says how far (85%
+    leaves it human), *Smooth drift* takes out a note's slow wandering while
+    its vibrato stays, *Leave within ±N cents* doesn't touch notes that are
+    close enough, and short notes (slides, ornaments) and notes outside the
+    key that were clearly sung on purpose are left alone.
+  - **By hand:** drag a note up or down (it snaps to the key, or to
+    semitones; *Alt* for free), double-click it to put it in key, ↑ ↓ a
+    semitone, *Delete* puts it back as sung, drag on empty space to select
+    several. *Back to how it was sung* undoes it all.
+  - The voice keeps its character (its formants) and its timing: notes are
+    moved by PSOLA (cut at the voice's own periods and laid down again), and
+    whatever isn't moved stays exactly as it was. It's part of the song:
+    your partner's Duet makes the same tuned voice (the clip says *Tuning…*
+    for the moment it takes). Works well after *Stems* on a mixed song.
+ bass, vocals and the rest (or
   just vocals + instrumental), each on a new track under this one, with a clip
   in the same place (same speed, pitch and fades). The clip itself is muted
   (right-click → *Unmute clip* to hear it again). Also right-click a clip →
@@ -477,6 +499,8 @@ to it through lock-free queues and atomics.
 | `engine/src/daw.rs` | Song timeline: clips (converted to the device rate as they play), the fast WAV reader, waveform peaks, take writer |
 | `engine/src/stems.rs` | The stem splitter: Demucs's spectrogram, its network in ONNX Runtime, the overlap-add (matches PyTorch Demucs to 2e-5) |
 | `tools/export_demucs.py` | Exports Demucs's network to ONNX (CI runs it for a commit with `[models]` and publishes the release `models-htdemucs-1`) |
+| `engine/src/tune.rs` | Tune: a voice's pitch (YIN), its notes, a mix's pitch classes for the key, and moving notes by PSOLA |
+| `ui/tune.js` | The clip editor's Tune tab: the notes on a piano roll, the key, Snap to key |
 | `engine/src/stretch.rs` | Keep-pitch speed and transposing (Signalsmith Stretch), and finding a clip's hits, tempo and peak |
 | `ui/clipedit.js` | The clip editor (double-click an audio clip) |
 | `ui/keys.js` | Keyboard shortcuts: the actions, the sets in other programs' style, the settings window |

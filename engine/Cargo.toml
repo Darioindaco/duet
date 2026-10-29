@@ -26,7 +26,7 @@ ssstretch = "0.1"
 # (optional: ONNX Runtime has no ready-made build for Intel Macs; the Intel
 # build is made without it, and says so when you try to split)
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-native"], optional = true }
-realfft = { version = "3", optional = true }
+realfft = "3"
 # reading MP3, M4A/AAC/ALAC (iPhone recordings), FLAC, AIFF, Ogg Vorbis
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac", "isomp4", "alac", "flac", "aiff", "pcm", "wav", "ogg", "vorbis"] }
 midir = "0.10"
@@ -44,7 +44,7 @@ objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString", "NST
 
 [features]
 default = ["stems"]
-stems = ["dep:ort", "dep:realfft"]
+stems = ["dep:ort"]
 
 [profile.release]
 opt-level = 3

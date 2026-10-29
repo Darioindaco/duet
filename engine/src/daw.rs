@@ -239,12 +239,16 @@ pub struct ClipDesc {
     pub stretch: bool,
     /// the clip's stretch of the file, backwards
     pub reverse: bool,
+    /// notes moved in the file (the Tune tab), with their identity; empty = none
+    pub tune: crate::tune::Moves,
+    pub tune_hash: u64,
 }
 
 impl ClipDesc {
     /// A plain clip: as the file is.
     pub fn plain(key: &str, start: f64, offset: f64, len: f64) -> Self {
-        ClipDesc { key: key.into(), start, offset, len, gain: 1.0, fade_in: 0.0, fade_out: 0.0, speed: 1.0, pitch: 0.0, stretch: false, reverse: false }
+        ClipDesc { key: key.into(), start, offset, len, gain: 1.0, fade_in: 0.0, fade_out: 0.0, speed: 1.0, pitch: 0.0, stretch: false, reverse: false,
+                   tune: Default::default(), tune_hash: 0 }
     }
 
     /// File seconds per timeline second.
@@ -252,10 +256,19 @@ impl ClipDesc {
         if self.stretch { self.speed } else { self.speed * 2f64.powf(self.pitch as f64 / 12.0) }
     }
 
-    /// Which stretched copy it needs, if any.
+    /// Which made copy it plays, if any: the tuned file (notes moved), and/or
+    /// stretched (keep pitch). The tuned file alone plays like the file (at
+    /// the clip's ratio, tape style); a stretched one in timeline time.
     pub fn stretch_key(&self) -> Option<StretchKey> {
-        let k = StretchKey::new(&self.key, self.speed, self.pitch);
-        (self.stretch && (k.speed != 10_000 || k.cents != 0)).then_some(k)
+        let k = StretchKey::new(&self.key, self.speed, self.pitch, self.tune_hash);
+        let stretched = self.stretch && !k.plain();
+        if stretched {
+            Some(k)
+        } else if self.tune_hash != 0 {
+            Some(StretchKey::new(&self.key, 1.0, 0.0, self.tune_hash))
+        } else {
+            None
+        }
     }
 }
 
@@ -265,11 +278,17 @@ pub struct StretchKey {
     pub key: String,
     pub speed: u32,
     pub cents: i32,
+    /// the tune it starts from (0: the file as it is)
+    pub tune: u64,
 }
 
 impl StretchKey {
-    pub fn new(key: &str, speed: f64, pitch: f32) -> Self {
-        StretchKey { key: key.into(), speed: (speed.clamp(0.05, 20.0) * 10_000.0).round() as u32, cents: (pitch * 100.0).round() as i32 }
+    pub fn new(key: &str, speed: f64, pitch: f32, tune: u64) -> Self {
+        StretchKey { key: key.into(), speed: (speed.clamp(0.05, 20.0) * 10_000.0).round() as u32, cents: (pitch * 100.0).round() as i32, tune }
+    }
+    /// no stretching (only the tune, if any)
+    pub fn plain(&self) -> bool {
+        self.speed == 10_000 && self.cents == 0
     }
     pub fn speed(&self) -> f64 {
         self.speed as f64 / 10_000.0
@@ -315,6 +334,41 @@ pub struct AudioCache {
     stretched: HashMap<StretchKey, Arc<AudioData>>,
     /// stretched copies the last build wanted and didn't have
     pub missing: Vec<StretchKey>,
+    /// the tunes the clips use, by their identity
+    tunes: HashMap<u64, crate::tune::Moves>,
+}
+
+/// What it takes to make a copy (see `make_copy`): the file, and the tune and
+/// the tuned file if there's a tune.
+pub struct CopyJob {
+    pub key: StretchKey,
+    pub file: Arc<AudioData>,
+    pub moves: Option<crate::tune::Moves>,
+    pub tuned: Option<Arc<AudioData>>,
+}
+
+/// Make a copy: the tune first (unless it's made already), then the stretch.
+/// Returns every copy made (the tuned one too, to keep).
+pub fn make_copy(job: &CopyJob) -> Vec<(StretchKey, AudioData)> {
+    let k = &job.key;
+    let mut out = Vec::new();
+    let base: Arc<AudioData> = match (&job.moves, &job.tuned) {
+        (_, Some(t)) => t.clone(),
+        (Some(m), None) => {
+            let t = crate::tune::render(&job.file, m);
+            if k.plain() {
+                return vec![(k.clone(), t)];
+            }
+            let t = Arc::new(t);
+            out.push((StretchKey::new(&k.key, 1.0, 0.0, k.tune), AudioData { sr: t.sr, samples: t.samples.clone(), right: t.right.clone() }));
+            t
+        }
+        (None, None) => job.file.clone(),
+    };
+    if !k.plain() {
+        out.push((k.clone(), crate::stretch::stretch(&base, k.speed(), k.semis())));
+    }
+    out
 }
 
 impl AudioCache {
@@ -338,6 +392,17 @@ impl AudioCache {
         self.files.get(key).cloned()
     }
 
+    /// What making copy `k` takes (None: its file isn't here any more).
+    pub fn job(&self, k: &StretchKey) -> Option<CopyJob> {
+        let file = self.files.get(&k.key)?.clone();
+        let moves = (k.tune != 0).then(|| self.tunes.get(&k.tune).cloned()).flatten();
+        if k.tune != 0 && moves.is_none() {
+            return None;
+        }
+        let tuned = (k.tune != 0 && !k.plain()).then(|| self.stretched.get(&StretchKey::new(&k.key, 1.0, 0.0, k.tune)).cloned()).flatten();
+        Some(CopyJob { key: k.clone(), file, moves, tuned })
+    }
+
     pub fn add_stretched(&mut self, k: StretchKey, data: AudioData) {
         if self.files.contains_key(&k.key) {
             self.stretched.insert(k, Arc::new(data));
@@ -351,6 +416,12 @@ impl AudioCache {
         let mut tl = Timeline::empty();
         let mut used = std::collections::HashSet::new();
         self.missing.clear();
+        self.tunes.clear();
+        for c in desc.iter().flatten() {
+            if c.tune_hash != 0 {
+                self.tunes.insert(c.tune_hash, c.tune.clone());
+            }
+        }
         for (t, clips) in desc.iter().enumerate().take(MAX_TRACKS) {
             for c in clips {
                 let Some(file) = self.files.get(&c.key).cloned() else { continue }; // not here (yet)
@@ -367,10 +438,17 @@ impl AudioCache {
                             }
                             continue; // being made
                         };
-                        used.insert(k);
-                        // the stretched copy is in timeline time: read as it is
-                        let at = c.offset / c.speed.clamp(0.05, 20.0);
-                        (d, at, 1.0)
+                        let plain = k.plain();
+                        used.insert(k.clone());
+                        if k.tune != 0 && !plain {
+                            used.insert(StretchKey::new(&k.key, 1.0, 0.0, k.tune)); // (kept: re-stretching is quicker)
+                        }
+                        if plain {
+                            (d, c.offset, c.ratio()) // the tuned file: like the file
+                        } else {
+                            // the stretched copy is in timeline time: read as it is
+                            (d, c.offset / c.speed.clamp(0.05, 20.0), 1.0)
+                        }
                     }
                     None => (file, c.offset, c.ratio()),
                 };
@@ -965,9 +1043,9 @@ mod tests {
         // keep pitch: left out until the stretched copy is there, then read from it
         let c = ClipDesc { speed: 2.0, stretch: true, ..ClipDesc::plain("r", 0.0, 0.1, 0.4) };
         assert!(cache.build(&[vec![c.clone()]], &[], 48000).tracks[0].is_empty());
-        assert_eq!(cache.missing, vec![StretchKey::new("r", 2.0, 0.0)]);
+        assert_eq!(cache.missing, vec![StretchKey::new("r", 2.0, 0.0, 0)]);
         let half: Vec<f32> = (0..24000).map(|k| k as f32 / 24000.0).collect(); // (a stand-in for the stretched copy)
-        cache.add_stretched(StretchKey::new("r", 2.0, 0.0), AudioData::mono(48000, half));
+        cache.add_stretched(StretchKey::new("r", 2.0, 0.0, 0), AudioData::mono(48000, half));
         assert!((read(&mut cache, c.clone(), 4800) - 0.3).abs() < 1e-3);
         assert!(cache.missing.is_empty());
         // not used any more: let go

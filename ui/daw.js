@@ -617,6 +617,7 @@ function songDraw() {
 // what's been done to a clip, after its name: ◀ backwards, ±semitones, the speed
 function clipBadges(c) {
   let out = "";
+  if (c.tune && (c.tune.notes || []).length) out += "  ♪ tuned";
   if (c.reverse) out += "  ◀";
   const p = c.pitch || 0;
   if (Math.abs(p) >= 0.005) out += `  ${p > 0 ? "+" : ""}${Number.isInteger(+p.toFixed(2)) ? p.toFixed(0) : p.toFixed(2)} st`;
@@ -624,8 +625,8 @@ function clipBadges(c) {
   if (Math.abs(sp - 1) >= 0.0005) out += `  ${Math.round(sp * 1000) / 10}%`;
   return out;
 }
-const stretching = (c) => !!(c.stretch && (Math.abs((c.speed ?? 1) - 1) > 1e-4 || Math.abs(c.pitch || 0) > 0.005)
-  && (song.st?.processing || []).includes(c.file));
+const stretching = (c) => !!(((c.stretch && (Math.abs((c.speed ?? 1) - 1) > 1e-4 || Math.abs(c.pitch || 0) > 0.005))
+  || (c.tune && (c.tune.notes || []).length)) && (song.st?.processing || []).includes(c.file));
 
 function drawClip(ctx, c, x, y, w, h, track) {
   if (c.pattern) { drawPatternClip(ctx, c, x, y, w, h); return; }
@@ -716,7 +717,7 @@ function drawClip(ctx, c, x, y, w, h, track) {
     ctx.fillRect(Math.max(x, 0) + 6, mid - 9, 92, 18);
     ctx.fillStyle = "#ffe2a3";
     ctx.font = "600 11px system-ui, sans-serif";
-    ctx.fillText("Stretching…", Math.max(x, 0) + 12, mid + 4);
+    ctx.fillText(c.tune && (c.tune.notes || []).length && !c.stretch ? "Tuning…" : "Stretching…", Math.max(x, 0) + 12, mid + 4);
   }
   // fade handles on the clip you're pointing at (or that's selected)
   if ((song.hover === c.id || sel) && w > 30) {
@@ -1550,6 +1551,24 @@ function demoSong() {
       if (!c) return { error: "That clip is gone." };
       if (what === "peak") return { peak: 0.5 };
       if (what === "tempo") return { bpm: 96 * clipRatio(c) };
+      if (what === "key") return { key: "A minor", confidence: 0.7, others: ["C major", "E minor"] };
+      if (what === "pitch") {
+        // a made-up voice: a phrase in A minor, some notes a little off, with vibrato
+        const hop = 0.0058, o = c.offset || 0, L = c.len * clipRatio(c), midi = [], rms = [], notes = [];
+        const plan = [[69.2, 0.5], [71.7, 0.4], [72.1, 0.8], [74.3, 0.5], [76, 1.0], [74.6, 0.4], [72, 0.6], [71.4, 0.5], [69.1, 1.2], [68.5, 0.5], [69, 0.9]];
+        let t = o + 0.2;
+        const at = [];
+        for (const [m, d] of plan) { if (t + d > o + L) break; at.push([t, t + d, m]); t += d + 0.12; }
+        for (let k = 0; o + k * hop < o + L; k++) {
+          const tt = o + k * hop, n = at.find((x) => tt >= x[0] && tt < x[1]);
+          if (!n) { midi.push(null); rms.push(0.02); continue; }
+          const u = (tt - n[0]) / (n[1] - n[0]);
+          midi.push(+(n[2] + 0.18 * Math.sin(2 * Math.PI * 5.5 * (tt - n[0])) * Math.min(1, u * 3) - 0.3 * Math.max(0, 0.15 - u) / 0.15).toFixed(3));
+          rms.push(+(0.4 + 0.6 * Math.sin(Math.PI * u)).toFixed(3));
+        }
+        for (const [a, b, m] of at) notes.push([a, b, m]);
+        return { pitch: { hop, start: o, midi, rms, notes } };
+      }
       const o = c.offset || 0, L = c.len * clipRatio(c), hits = [];
       for (let t = Math.ceil(o / 0.5) * 0.5 + 0.02; t < o + L; t += 0.5) hits.push(t);
       return { hits };

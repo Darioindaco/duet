@@ -952,6 +952,107 @@ def test_stems():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_tune():
+    """The Tune tab's engine side, through the shared song: the song's key
+    found from the other clips (a backing in A minor), a voice's notes found
+    with their centres, notes moved into the key (as Snap to key does), and
+    the partner hearing the voice in tune (its notes measured again)."""
+    import shutil
+    import tempfile
+    import wave
+    from pathlib import Path
+
+    from daw import Daw
+
+    a, b, _ = connect_pair()
+    root = Path(tempfile.mkdtemp(prefix="duet-tune-"))
+    da, db = Daw(a, root / "A", "alice"), Daw(b, root / "B", "bob")
+    sr = 44100
+
+    def write(path, x):
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes((np.clip(x, -1, 1) * 32767).astype("<i2").tobytes())
+
+    def tone(midi, secs, harmonics=8, vib=0.0):
+        t = np.arange(int(secs * sr)) / sr
+        m = midi + vib * np.sin(2 * np.pi * 5.5 * t)
+        ph = np.cumsum(2 * np.pi * 440 * 2 ** ((m - 69) / 12) / sr)
+        env = np.minimum(1, t / 0.02) * np.minimum(1, (secs - t) / 0.02)
+        return 0.3 * env * sum(np.sin(ph * h) / h for h in range(1, harmonics + 1))
+
+    try:
+        wait_for(lambda: da.p.pid == db.p.pid and da.view()["shared"] and db.view()["shared"], what="one shared song")
+        for d in (da, db):
+            d.set_local("click", False)
+        # the backing: Am, F, C, G (in A minor), two seconds each
+        chords = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]]
+        backing = np.concatenate([sum(tone(m, 2.0, 5) for m in ch) / 3 for ch in chords] * 2)
+        write(root / "backing.wav", backing)
+        # the voice: A4 +35 cents, C5 -30, E5 +8 (in tune enough), D5 +45, with vibrato
+        plan = [(69.35, 0.7), (71.7, 0.7), (76.08, 0.7), (74.45, 0.7)]
+        gap = np.zeros(int(0.15 * sr))
+        voice = np.concatenate([np.concatenate([tone(m, d, 10, 0.15), gap]) for m, d in plan])
+        write(root / "voice.wav", voice)
+        da.sample_clip(str(root / "backing.wav"), None, 0.0)
+        da.sample_clip(str(root / "voice.wav"), None, 0.0)
+        clips = da.view()["clips"]
+        vid = [c for c in clips if c["file"] != clips[0]["file"]][0]["id"] if len(clips) == 2 else None
+        vid = [c["id"] for c in clips if da.view()["files"][c["file"]].get("name") == "voice"][0]
+        wait_for(lambda: all(c["file"] in da.loaded for c in da.view()["clips"]), what="both loaded")
+        key = da.analyze(vid, "key")
+        # (C major has the same notes: either is right for tuning)
+        assert key["key"] in ("A minor", "C major") and set([key["key"]] + key["others"][:1]) == {"A minor", "C major"}, key
+        p = da.analyze(vid, "pitch")["pitch"]
+        notes = p["notes"]
+        assert len(notes) == 4, notes
+        assert all(abs(n[2] - want) < 0.08 for n, (want, _) in zip(notes, plan)), [round(n[2], 2) for n in notes]
+        # Snap to key, full strength, leaving notes within 12 cents
+        scale = {9, 11, 0, 2, 4, 5, 7}
+        moves = []
+        for s0, e0, c0 in notes:
+            target = min((m for m in range(int(c0) - 2, int(c0) + 3) if m % 12 in scale), key=lambda m: abs(m - c0))
+            if abs(target - c0) * 100 > 12:
+                moves.append([s0, e0, c0, target - c0, 0.0])
+        assert len(moves) == 3, moves
+        da.edit([["clip", vid, {"tune": {"key": "A minor", "notes": moves}}]])
+        vkey = da.p.live("clip")[vid]["file"]
+        wait_for(lambda: vkey in db.loaded and db.p.live("clip").get(vid, {}).get("tune"), timeout=30, what="the tune on bob's side")
+        wait_for(lambda: vkey not in b.daw_processing() and any(len(c) > 11 and c[11] for t in (db.sent_desc or []) for c in t),
+                 timeout=30, what="bob's tuned voice made")
+        time.sleep(0.3)
+        # bob plays the song: just the voice (backing muted), measured again
+        bk = [c["id"] for c in db.view()["clips"] if c["id"] != vid][0]
+        db.edit([["clip", bk, {"mute": True}]])
+        wait_for(lambda: db.sent_desc and all(c[4] == 0.0 for t in db.sent_desc for c in t if c[0] != vkey), what="backing muted")
+        b.daw_play(0.0)
+        x = [0.0] * N
+        out = []
+        for _ in range(int(3.6 * 48000 / N)):
+            out += b.process(x)
+        b.daw_stop()
+        heard = root / "heard.wav"
+        with wave.open(str(heard), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes((np.clip(np.array(out), -1, 1) * 32767).astype("<i2").tobytes())
+        b.daw_load("heard", str(heard))
+        got = [round(n[2], 2) for n in b.daw_pitch("heard", 0.0, 3.6)["notes"]]
+        assert len(got) == 4, got
+        want = [69.0, 72.0, 76.08, 74.0]
+        assert all(abs(g - w) < 0.08 for g, w in zip(got, want)), (got, want)
+        print(f"tune: ok  (key {key['key']} from the backing, notes {[round(n[2], 2) for n in notes]} -> heard on bob's side {got})")
+    finally:
+        da.close()
+        db.close()
+        a.close()
+        b.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_library():
     """The sample library: the built-in sounds as WAVs, folders you make, sounds
     you import, search, nested bins; nothing outside its folders. And samples
@@ -1538,6 +1639,7 @@ if __name__ == "__main__":
     test_big_file()
     test_clip_edit()
     test_stems()
+    test_tune()
     test_library()
     test_signals()
     test_mixer()

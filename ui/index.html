@@ -659,8 +659,9 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
       <button class="x" id="ceX" aria-label="Close">✕</button></div>
     <div class="mbody">
       <canvas id="ceWave" class="cewave" aria-label="The clip's audio: drag its edges to trim, drag inside to slide the sound"></canvas>
+      <canvas id="tuneCv" class="tunecv" hidden aria-label="The voice's notes: drag one to move it, double-click to put it in key"></canvas>
       <p class="fine cehint">Drag the edges to trim · drag inside to slide the sound under the clip · scroll to zoom, shift-scroll to move</p>
-      <div class="seg" id="ceTabs"><button data-v="clip">Clip</button><button data-v="pitch">Pitch &amp; speed</button><button data-v="chop">Chop</button><button data-v="stems">Stems</button></div>
+      <div class="seg" id="ceTabs"><button data-v="clip">Clip</button><button data-v="pitch">Pitch &amp; speed</button><button data-v="chop">Chop</button><button data-v="tune">Tune</button><button data-v="stems">Stems</button></div>
       <div id="ceBody" class="cebody"></div>
     </div>
   </div>
@@ -690,6 +691,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="daw.js"></script>
 <script src="auto.js"></script>
 <script src="clipedit.js"></script>
+<script src="tune.js"></script>
 <script src="keys.js"></script>
 <script src="instr.js"></script>
 <script src="seq.js"></script>
