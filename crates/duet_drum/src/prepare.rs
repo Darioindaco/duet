@@ -152,9 +152,25 @@ pub struct DrumModel {
     /// 1 + kσ̃ and 1 − kσ̃
     pub(crate) d_plus: Vec<f64>,
     pub(crate) d_minus: Vec<f64>,
+    /// output weights per mode (§4.10): the far monopole `ρ_a/(4π r_far)·ã_i` and the close mic's `c_i`,
+    /// both multiplying the mode's acceleration to give pascals
+    pub(crate) far_w: Vec<f64>,
+    pub(crate) close_w: Vec<f64>,
+    /// the close mic's position (m: x, y in the head's plane, height) and the dipole term's factor
+    /// `g_att/(4π c_a)`
+    pub(crate) mic_xy: (f64, f64),
+    pub(crate) mic_h: f64,
+    pub(crate) attack_k: f64,
+    /// linear output gains and the 20 Hz high-pass's coefficient
+    pub(crate) gain_close: f64,
+    pub(crate) gain_far: f64,
+    pub(crate) hp_a: f64,
     /// C of V_tm = Σ_h C_h·G_h², G_h = Σκ²q² (§4.8a): γ_nl·E·h / (8A(1−ν²)σ²), per head
     pub(crate) c_tm: [f64; 2],
 }
+
+/// The outputs' DC and infrasound filter (§4.10).
+pub const HIGH_PASS_HZ: f64 = 20.0;
 
 fn omega_floor(lam: f64) -> bool {
     !(lam > 0.0 && lam.is_finite())
@@ -385,7 +401,34 @@ impl DrumModel {
             p.nonlinearity_scale * p.youngs_modulus * p.head(h).thickness / (8.0 * p.area() * (1.0 - p.poisson_ratio * p.poisson_ratio) * sg * sg)
         };
         let c_tm = [c_of(Head::Batter), if opt.resonant { c_of(Head::Resonant) } else { 0.0 }];
-        Ok(DrumModel { fs, k, params: p.clone(), options: *opt, modes, bases, warnings, n_a, rows, t_a, omega_t2, w_k2, head_idx, d_plus, d_minus, c_tm })
+        // ---- outputs (§4.10) ----
+        let batter = bases[0].as_ref().unwrap();
+        let r_m = p.mic.close_radius * batter.params.radius;
+        let (th_m, h_m) = (p.mic.close_angle, p.mic.close_height);
+        let far_scale = p.air_density / (4.0 * PI * p.mic.far_distance);
+        let (mut far_w, mut close_w) = (vec![0.0; n_pad], vec![0.0; n_pad]);
+        // a batter mode of the head, as the close mic hears it: (ρ_a/κ)·e^{−κh}·Φ(x_m)
+        let surface = |bi: usize| {
+            let bm = &batter.modes[bi];
+            p.air_density / bm.kappa * (-bm.kappa * h_m).exp() * bm.radial(r_m)
+        };
+        for i in 0..n_a {
+            far_w[i] = far_scale * modes[i].vol_weight;
+            close_w[i] = (0..rows.len()).filter(|&r| rows[r].head == 0).map(|r| surface(rows[r].basis_index) * t_a[r * n_a + i]).sum();
+        }
+        for i in n_a..n {
+            let md = &modes[i];
+            if md.head == Head::Batter {
+                let a = md.m as f64 * th_m - md.phi;
+                close_w[i] = md.scale * surface(md.basis_index) * if md.sin { a.sin() } else { a.cos() };
+            }
+        }
+        let db = |x: f64| 10f64.powf(x / 20.0);
+        Ok(DrumModel {
+            fs, k, params: p.clone(), options: *opt, modes, bases, warnings, n_a, rows, t_a, omega_t2, w_k2, head_idx, d_plus, d_minus, c_tm,
+            far_w, close_w, mic_xy: (r_m * th_m.cos(), r_m * th_m.sin()), mic_h: h_m, attack_k: p.attack_gain / (4.0 * PI * p.speed_of_sound),
+            gain_close: db(p.gain_close_db), gain_far: db(p.gain_far_db), hp_a: 1.0 / (1.0 + 2.0 * PI * HIGH_PASS_HZ * k),
+        })
     }
 
     /// Number of modes (degrees of freedom).

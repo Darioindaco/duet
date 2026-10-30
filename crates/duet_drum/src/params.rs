@@ -118,7 +118,7 @@ pub struct DrumParams {
     pub sav_epsilon: f64,
     /// SAV drift control λ (0 = off)
     pub sav_drift: f64,
-    /// output gains (dB), set in stage 7
+    /// output gains (dB): velocity 1.0 at the centre peaks near −6 dBFS
     pub gain_close_db: f64,
     pub gain_far_db: f64,
 }
@@ -149,8 +149,10 @@ impl Default for DrumParams {
             attack_gain: 1.0,
             sav_epsilon: 1e-12,
             sav_drift: 0.0,
-            gain_close_db: 0.0,
-            gain_far_db: 0.0,
+            // (calibrate_gains: a velocity-1.0 hit at the centre peaks at −6 dBFS on both outputs, at
+            // 44.1, 48 and 96 kHz to within 0.3 dB)
+            gain_close_db: -59.2,
+            gain_far_db: -26.8,
         }
     }
 }

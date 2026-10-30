@@ -62,7 +62,22 @@ pub struct DrumVoice {
     /// the energy right after the last trigger
     e_peak: f64,
     n: usize,
+    /// hits queued for a later sample of the next block(s) (capacity reserved: no allocation)
+    pending: Vec<Hit>,
+    /// asleep: silent, nothing computed (§4.11)
+    sleeping: bool,
+    /// the dipole term's distance from the last strike to the close mic (m)
+    d_s: f64,
+    /// the outputs' 1-pole high-pass: (previous input, previous output) for close and far
+    hp: [(f64, f64); 2],
+    /// samples until the next sleep check
+    sleep_check: u32,
+    /// how many times a non-finite output made `process` reset the voice
+    errors: u32,
 }
+
+const MAX_PENDING: usize = 16;
+const SLEEP_CHECK_EVERY: u32 = 32;
 
 impl DrumVoice {
     pub fn new(model: &DrumModel) -> Self {
@@ -73,6 +88,7 @@ impl DrumVoice {
             q: vec![0.0; model.rows.len()],
             z: 0.0, pz: 0.0, stick_active: false, away: 0,
             psi: model.params.sav_epsilon.sqrt(), force: 0.0, force_prev: 0.0, stick_energy_removed: 0.0, e_peak: 0.0, n: model.len(),
+            pending: Vec::with_capacity(MAX_PENDING), sleeping: true, d_s: 1.0, hp: [(0.0, 0.0); 2], sleep_check: SLEEP_CHECK_EVERY, errors: 0,
         }
     }
 
@@ -91,6 +107,9 @@ impl DrumVoice {
         self.force_prev = 0.0;
         self.stick_energy_removed = 0.0;
         self.e_peak = 0.0;
+        self.pending.clear();
+        self.sleeping = true;
+        self.hp = [(0.0, 0.0); 2];
     }
 
     /// One sample of the linear scheme. `force` (modal, length ≥ model.len(), or none) is
@@ -140,7 +159,25 @@ impl DrumVoice {
     /// Strikes the head (§4.11): the stick starts one sample of travel above it, moving down at
     /// `v0 = v_min + (v_max − v_min)·vel^γ_v`. A retrigger while the stick is in contact just
     /// resets the stick. Real-time safe: no Bessel evaluations, only the radial tables.
+    ///
+    /// A hit with `sample_offset == 0` acts at once; one with an offset waits in a small queue and
+    /// is applied by [`Self::process`] at that sample of its next block.
     pub fn trigger(&mut self, model: &DrumModel, hit: Hit) {
+        if hit.sample_offset == 0 {
+            self.apply_hit(model, hit);
+        } else if self.pending.len() < MAX_PENDING {
+            self.pending.push(hit);
+        }
+    }
+
+    fn apply_hit(&mut self, model: &DrumModel, hit: Hit) {
+        if self.sleeping {
+            // on wake, clear the state (and the outputs' filters)
+            let pending = std::mem::take(&mut self.pending);
+            self.reset(model);
+            self.pending = pending;
+            self.sleeping = false;
+        }
         let sp = &model.params.stick;
         let r = hit.radius.clamp(0.0, 0.95);
         model.strike_vector(r, hit.angle, &mut self.q, &mut self.e[..self.n]);
@@ -158,7 +195,88 @@ impl DrumVoice {
         self.psi = (2.0 * v_tm + model.params.sav_epsilon).sqrt();
         self.force = 0.0;
         self.force_prev = 0.0;
-        self.e_peak = self.energy(model);
+        // the dipole term's distance: from the strike point to the close mic
+        let (xe, ye) = (r * model.bases[0].as_ref().unwrap().params.radius * hit.angle.cos(), r * model.bases[0].as_ref().unwrap().params.radius * hit.angle.sin());
+        self.d_s = (model.mic_h * model.mic_h + (model.mic_xy.0 - xe).powi(2) + (model.mic_xy.1 - ye).powi(2)).sqrt();
+        self.e_peak = self.physical_energy(model);
+        self.sleep_check = SLEEP_CHECK_EVERY;
+    }
+
+    /// The energy without the SAV's gauge: what the head and the stick really hold.
+    pub fn physical_energy(&self, model: &DrumModel) -> f64 {
+        self.energy_linear(model) + 0.5 * self.pz * self.pz
+    }
+
+    /// Asleep: silent, and `process` costs nothing until the next hit.
+    pub fn is_sleeping(&self) -> bool {
+        self.sleeping
+    }
+
+    /// How many times a non-finite output made `process` reset the voice.
+    pub fn error_count(&self) -> u32 {
+        self.errors
+    }
+
+    /// Renders a block (§4.10): the close mic and the far monopole, in pascals times the output
+    /// gains, high-passed at 20 Hz. Hits queued with a `sample_offset` land at that sample.
+    /// Real-time safe: no allocation, no locks.
+    pub fn process(&mut self, model: &DrumModel, close: &mut [f32], far: &mut [f32]) {
+        let n = close.len().min(far.len());
+        let k = model.k;
+        for s in 0..n {
+            // queued hits whose sample has come
+            let mut i = 0;
+            while i < self.pending.len() {
+                if self.pending[i].sample_offset as usize == s {
+                    let h = Hit { sample_offset: 0, ..self.pending.remove(i) };
+                    self.apply_hit(model, h);
+                } else {
+                    i += 1;
+                }
+            }
+            if self.sleeping {
+                close[s] = 0.0;
+                far[s] = 0.0;
+                continue;
+            }
+            self.step(model);
+            let mut pc = 0.0;
+            for j in 0..self.n {
+                pc += model.close_w[j] * self.acc[j];
+            }
+            pc += model.attack_k * (self.force - self.force_prev) / k / self.d_s;
+            let mut pf = 0.0;
+            for j in 0..model.n_a {
+                pf += model.far_w[j] * self.acc[j];
+            }
+            // 1-pole high-pass: y = a·(y_prev + x − x_prev)
+            let a = model.hp_a;
+            let yc = a * (self.hp[0].1 + pc - self.hp[0].0);
+            let yf = a * (self.hp[1].1 + pf - self.hp[1].0);
+            self.hp = [(pc, yc), (pf, yf)];
+            close[s] = (yc * model.gain_close) as f32;
+            far[s] = (yf * model.gain_far) as f32;
+            self.sleep_check -= 1;
+            if self.sleep_check == 0 {
+                self.sleep_check = SLEEP_CHECK_EVERY;
+                if !self.stick_active && self.physical_energy(model) < 1e-12 * self.e_peak {
+                    self.sleeping = true;
+                }
+            }
+        }
+        for h in self.pending.iter_mut() {
+            h.sample_offset = h.sample_offset.saturating_sub(n as u32);
+        }
+        // a non-finite output: reset the voice and say so
+        if close[..n].iter().chain(far[..n].iter()).any(|x| !x.is_finite()) {
+            debug_assert!(false, "non-finite output");
+            let pending = std::mem::take(&mut self.pending);
+            self.reset(model);
+            self.pending = pending;
+            self.errors += 1;
+            close[..n].fill(0.0);
+            far[..n].fill(0.0);
+        }
     }
 
     /// `G_h = Σ_{k∈h} κ_k² q_k²` for both heads, from the current state.
