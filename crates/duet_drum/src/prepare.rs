@@ -553,6 +553,13 @@ impl DrumModel {
         out
     }
 
+    /// Each mode's weight in an output (pascals per unit of modal acceleration, before the output gain):
+    /// the close mic's `c_i` or the far monopole's `ρ_a/(4π r_far)·ã_i`. Per mode, in the order of `modes`.
+    pub fn output_weights(&self, close: bool) -> Vec<f64> {
+        let w = if close { &self.close_w } else { &self.far_w };
+        (0..self.len()).map(|i| w[self.slot(i)]).collect()
+    }
+
     /// `∂w_b/∂η_i` of one mode (slow: a whole strike vector; for tests and tables).
     pub fn shape(&self, i: usize, r_frac: f64, theta: f64) -> f64 {
         self.projection(r_frac, theta)[i]
