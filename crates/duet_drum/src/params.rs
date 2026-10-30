@@ -170,7 +170,34 @@ impl Default for DrumParams {
     }
 }
 
+/// How many modes to keep: the cost of a voice goes with the count (stage-8 report). The spec's own
+/// cut-offs are `High`; the lower two trade the top of the band for speed (the waveform differs
+/// more, the pitch glide and the low modes, which carry the tone, don't).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Quality {
+    /// f_max 800 / 600 Hz (batter / resonant): ~80 modes, about 18× real time
+    Draft,
+    /// f_max 1800 / 1200 Hz: ~370 modes, about 4× real time
+    Normal,
+    /// f_max 2500 / 1500 Hz (the spec): ~630 modes, about 2× real time
+    High,
+}
+
 impl DrumParams {
+    /// The defaults with the mode cut-offs of a quality level.
+    pub fn with_quality(q: Quality) -> Self {
+        let mut p = Self::default();
+        let (b, r) = match q {
+            Quality::Draft => (800.0, 600.0),
+            Quality::Normal => (1800.0, 1200.0),
+            Quality::High => (2500.0, 1500.0),
+        };
+        p.batter.f_max = b;
+        p.resonant.f_max = r;
+        p
+    }
+
     pub fn head(&self, head: Head) -> &HeadParams {
         match head {
             Head::Batter => &self.batter,
