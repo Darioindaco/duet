@@ -140,7 +140,7 @@ fn the_resonant_head_answers_and_nothing_blows_up() {
         v.step(&m);
         let (mut eb, mut er) = (0.0, 0.0);
         for (i, x) in m.modes.iter().enumerate().take(m.n_axisym()) {
-            let e = 0.5 * v.p()[i].powi(2);
+            let e = 0.5 * v.p(&m)[i].powi(2);
             eb += e * x.participation[0];
             er += e * x.participation[1];
         }

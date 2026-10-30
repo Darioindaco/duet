@@ -64,9 +64,9 @@ fn run_and_measure(fs: f64) -> Vec<(f64, f64, f64, f64)> {
     let mut env: Vec<Vec<f64>> = vec![Vec::new(); 10];
     for _ in 0..n {
         v.step_linear(&m, None);
-        sig.push(v.displacement(&mic_w));
+        sig.push(v.displacement(&m, &mic_w));
         for (e, &i) in env.iter_mut().zip(&firsts) {
-            let (x, p, mo) = (v.x()[i], v.p()[i], &m.modes[i]);
+            let (x, p, mo) = (v.x(&m)[i], v.p(&m)[i], &m.modes[i]);
             // x = A e^{−σt} cos(Ωt+φ): x² + ((p + σx)/Ω)² = (A e^{−σt})²
             e.push((x * x + ((p + mo.sigma * x) / mo.omega).powi(2)).sqrt());
         }

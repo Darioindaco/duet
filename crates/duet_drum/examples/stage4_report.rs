@@ -13,8 +13,8 @@ fn track(m: &DrumModel, vel: f32, mode: usize, times: &[f64]) -> (Vec<f64>, f64)
     let (mut x, mut p, mut peak) = (Vec::with_capacity(n), Vec::with_capacity(n), 0f64);
     for _ in 0..n {
         v.step(m);
-        x.push(v.x()[mode]);
-        p.push(v.p()[mode]);
+        x.push(v.x(m)[mode]);
+        p.push(v.p(m)[mode]);
         peak = peak.max(v.tension_rise(m));
     }
     let mo = &m.modes[mode];

@@ -19,9 +19,9 @@ fn main() {
         let mut sig = Vec::with_capacity(n);
         for _ in 0..n {
             v.step_linear(&m, None);
-            sig.push(v.displacement(&mic_w));
+            sig.push(v.displacement(&m, &mic_w));
             for (e, &i) in env.iter_mut().zip(&firsts) {
-                let (x, pp, mo) = (v.x()[i], v.p()[i], &m.modes[i]);
+                let (x, pp, mo) = (v.x(&m)[i], v.p(&m)[i], &m.modes[i]);
                 e.push((x * x + ((pp + mo.sigma * x) / mo.omega).powi(2)).sqrt());
             }
         }

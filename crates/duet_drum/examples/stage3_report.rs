@@ -84,7 +84,7 @@ fn main() {
             let mut acc = Vec::new();
             for _ in 0..12000 {
                 v.step(&m);
-                acc.push(v.acceleration(&w));
+                acc.push(v.acceleration(&m, &w));
             }
             cs.push(spectral_centroid(&acc, 48000.0));
         }

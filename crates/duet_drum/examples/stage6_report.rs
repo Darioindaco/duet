@@ -31,7 +31,7 @@ fn main() {
         let mut sig = Vec::new();
         for _ in 0..(4.0 * fs) as usize {
             v.step(&m);
-            sig.push(w.iter().zip(v.p()).map(|(w, p)| w * p).sum::<f64>());
+            sig.push(w.iter().zip(v.p(&m)).map(|(w, p)| w * p).sum::<f64>());
         }
         let peak = sig.iter().fold(0f64, |a, x| a.max(x.abs()));
         let spec = hound::WavSpec { channels: 1, sample_rate: fs as u32, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };

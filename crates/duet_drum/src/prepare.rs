@@ -146,14 +146,20 @@ pub struct DrumModel {
     pub(crate) t_a: Vec<f64>,
     // per mode, contiguous (struct of arrays), padded to a multiple of 4
     pub(crate) omega_t2: Vec<f64>,
-    /// κ²/(1+μ) of a pair's modes (0 for block A and padding), and the head it belongs to
-    pub(crate) w_k2: Vec<f64>,
-    pub(crate) head_idx: Vec<usize>,
-    /// the wavenumber of each mode's dominant (m, n) (the contact patch's weight)
+    /// κ²/(1+μ) of a pair's modes, in the slot of a batter pair (`w_b`) or a resonant one (`w_r`); 0 elsewhere
+    pub(crate) w_b: Vec<f64>,
+    pub(crate) w_r: Vec<f64>,
+    /// the wavenumber of each mode's dominant (m, n) (the contact patch's weight), per mode (not per slot)
     pub(crate) mode_kappa: Vec<f64>,
+    /// the state's layout: block A's modes in slots 0..n_a (padded to `pad_a` slots, a multiple of 4), then the
+    /// pairs, the whole padded to a multiple of 4 (`n_slots`): the sweeps run in lanes of four
+    pub(crate) pad_a: usize,
+    pub(crate) n_slots: usize,
     /// 1 + kσ̃ and 1 − kσ̃
     pub(crate) d_plus: Vec<f64>,
     pub(crate) d_minus: Vec<f64>,
+    /// 1/(1 + kσ̃)
+    pub(crate) inv_d_plus: Vec<f64>,
     /// output weights per mode (§4.10): the far monopole `ρ_a/(4π r_far)·ã_i` and the close mic's `c_i`,
     /// both multiplying the mode's acceleration to give pascals
     pub(crate) far_w: Vec<f64>,
@@ -392,21 +398,27 @@ impl DrumModel {
             }
         }
 
-        // ---- the runtime arrays ----
+        // ---- the runtime arrays: block A, then the pairs, in lanes of four ----
         let n = modes.len();
-        let n_pad = n.div_ceil(4) * 4;
-        let mut omega_t2 = vec![0.0; n_pad];
-        let (mut d_plus, mut d_minus) = (vec![1.0; n_pad], vec![1.0; n_pad]);
+        let pad_a = n_a.div_ceil(4) * 4;
+        let n_slots = (pad_a + (n - n_a)).div_ceil(4) * 4;
+        let slot = |i: usize| if i < n_a { i } else { i + pad_a - n_a };
+        let mut omega_t2 = vec![0.0; n_slots];
+        let (mut d_plus, mut d_minus) = (vec![1.0; n_slots], vec![1.0; n_slots]);
         for (i, m) in modes.iter().enumerate() {
             let (st, o2) = exact_coefficients(m.omega, m.sigma, k);
-            omega_t2[i] = o2;
-            d_plus[i] = 1.0 + k * st;
-            d_minus[i] = 1.0 - k * st;
+            omega_t2[slot(i)] = o2;
+            d_plus[slot(i)] = 1.0 + k * st;
+            d_minus[slot(i)] = 1.0 - k * st;
         }
-        let (mut w_k2, mut head_idx) = (vec![0.0; n_pad], vec![0usize; n_pad]);
+        let inv_d_plus: Vec<f64> = d_plus.iter().map(|d| 1.0 / d).collect();
+        let (mut w_b, mut w_r) = (vec![0.0; n_slots], vec![0.0; n_slots]);
         for (j, (w, h)) in pair_w2.iter().zip(&pair_head).enumerate() {
-            w_k2[n_a + j] = *w;
-            head_idx[n_a + j] = *h;
+            if *h == 0 {
+                w_b[slot(n_a + j)] = *w;
+            } else {
+                w_r[slot(n_a + j)] = *w;
+            }
         }
         let mut t_a = vec![0.0; nr * n_a];
         for (c, col) in t_cols.iter().enumerate() {
@@ -424,7 +436,7 @@ impl DrumModel {
         let r_m = p.mic.close_radius * batter.params.radius;
         let (th_m, h_m) = (p.mic.close_angle, p.mic.close_height);
         let far_scale = p.air_density / (4.0 * PI * p.mic.far_distance);
-        let (mut far_w, mut close_w) = (vec![0.0; n_pad], vec![0.0; n_pad]);
+        let (mut far_w, mut close_w) = (vec![0.0; n_slots], vec![0.0; n_slots]);
         // a batter mode of the head, as the close mic hears it: (ρ_a/κ)·e^{−κh}·Φ(x_m)
         let surface = |bi: usize| {
             let bm = &batter.modes[bi];
@@ -438,11 +450,11 @@ impl DrumModel {
             let md = &modes[i];
             if md.head == Head::Batter {
                 let a = md.m as f64 * th_m - md.phi;
-                close_w[i] = md.scale * surface(md.basis_index) * if md.sin { a.sin() } else { a.cos() };
+                close_w[slot(i)] = md.scale * surface(md.basis_index) * if md.sin { a.sin() } else { a.cos() };
             }
         }
         // (a block-A mode mixes heads: its κ is the participation-weighted one)
-        let mut mode_kappa = vec![0.0; n_pad];
+        let mut mode_kappa = vec![0.0; n];
         for i in 0..n_a {
             // κ_eff = Σ_rows V_ri²·κ_r, V = T·√(1+μ) (the rows' shares of the mode, summing to 1)
             mode_kappa[i] = (0..rows.len())
@@ -457,11 +469,20 @@ impl DrumModel {
         }
         let db = |x: f64| 10f64.powf(x / 20.0);
         Ok(DrumModel {
-            fs, k, params: p.clone(), options: *opt, modes, bases, warnings, n_a, rows, t_a, omega_t2, w_k2, head_idx, mode_kappa, d_plus, d_minus, c_tm,
+            fs, k, params: p.clone(), options: *opt, modes, bases, warnings, n_a, rows, t_a, omega_t2, w_b, w_r, mode_kappa, pad_a, n_slots, d_plus, d_minus, inv_d_plus, c_tm,
             far_w, close_w, mic_xy: (r_m * th_m.cos(), r_m * th_m.sin()), mic_h: h_m, attack_k: p.attack_gain / (4.0 * PI * p.speed_of_sound),
             gain_close: db(p.gain_close_db), gain_far: db(p.gain_far_db), hp_a: 1.0 / (1.0 + 2.0 * PI * HIGH_PASS_HZ * k),
             attack_lp: butterworth_lowpass4(p.attack_lowpass_hz, fs),
         })
+    }
+
+    /// Where mode `i`'s state lives (block A first, then the pairs, after the padding).
+    pub(crate) fn slot(&self, i: usize) -> usize {
+        if i < self.n_a {
+            i
+        } else {
+            i + self.pad_a - self.n_a
+        }
     }
 
     /// Number of modes (degrees of freedom).

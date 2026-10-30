@@ -19,8 +19,8 @@ fn glide(m: &DrumModel, vel: f32, mode: usize, times: &[f64]) -> Vec<f64> {
     let (mut x, mut p) = (Vec::with_capacity(n), Vec::with_capacity(n));
     for _ in 0..n {
         v.step(m);
-        x.push(v.x()[mode]);
-        p.push(v.p()[mode]);
+        x.push(v.x(m)[mode]);
+        p.push(v.p(m)[mode]);
     }
     let mo = &m.modes[mode];
     let tr = mode_frequency_track(&x, &p, mo.omega, mo.sigma, m.fs, (0.04 * m.fs) as usize);

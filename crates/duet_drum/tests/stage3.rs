@@ -69,7 +69,7 @@ fn ten_thousand_random_hits_stay_finite() {
                         assert!(e.is_finite() && v.force().is_finite() && v.psi().is_finite(), "non-finite state");
                         peak = peak.max(e);
                     }
-                    assert!(v.x().iter().chain(v.p()).all(|x| x.is_finite()));
+                    assert!(v.x(&m).iter().chain(v.p(&m).iter()).all(|x| x.is_finite()));
                 }
                 peak
             })
@@ -101,7 +101,7 @@ fn harder_hits_are_brighter() {
             let mut a = Vec::new();
             for _ in 0..(0.25 * fs) as usize {
                 v.step(&m);
-                a.push(v.acceleration(&w));
+                a.push(v.acceleration(&m, &w));
             }
             sum += spectral_centroid(&a, fs);
         }
