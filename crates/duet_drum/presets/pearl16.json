@@ -1,0 +1,5 @@
+{
+  "air_mass_factor": 0.8,
+  "batter": { "tension": 575.0, "sigma1": 2.5e-7 },
+  "resonant": { "tension": 469.5, "sigma1": 2.5e-7 }
+}

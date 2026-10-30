@@ -36,3 +36,27 @@ A hit rendered by the model, analysed, and compared with the model's own mode ta
   while the head rings), but there are 10 partials more, at the pairs' frequencies, with half their T60. The far
   output only hears the axisymmetric modes, and the tension modulation (quadratic) drives those at the pairs'
   frequencies and their sums and differences. That is the model's nonlinearity, not a fault of the tools.
+
+## A first calibration: a Pearl 16" floor tom (presets/pearl16.json)
+
+The recordings: the AVL Drumkits "Black Pearl" kit by Glen MacArthur (bandshed.net, CC-BY-SA 3.0), its
+16" floor tom, centre and edge hits, 5 velocities each, 44.1 kHz mono. Used for measuring only: the samples
+are not in this repository.
+
+Measured: centre hits 69 Hz (T60 2.3 s, gliding down ~130 cents); edge hits 68 / 110 / 158 Hz (T60 2.8 / 2.1 /
+1.6 s), so (0,1) / (1,1) / (2,1); and strong partials between 1.0 and 1.7 kHz with T60 0.3–0.4 s.
+
+Fitted (a grid over the batter's tension and the air-mass factor, the resonant head kept at the same ratio of
+tension; σ1 from the high partials' decay):
+
+| | measured | model, presets/pearl16.json |
+|---|---|---|
+| centre: lowest partial | 69 Hz, T60 2.31 s, glide 130 c | 69 Hz, T60 2.24 s, glide 167 c (vel 0.7) |
+| edge: (0,1), (1,1), (2,1) | 68 / 110 / 158 Hz | 69 / 114 / 155 Hz (37 cents rms) |
+| edge: T60 of those | 2.8 / 2.1 / 1.6 s | 2.2 / 2.2 / 2.1 s |
+| 1.0–1.7 kHz | strong, T60 0.3–0.4 s | nearly nothing |
+
+The low end is close. The model has none of the recording's 1–1.7 kHz content (the attack and body of a real
+tom): the close mic's e^{−κh} weighting leaves the high modes out, and the far output hears only m = 0. The
+(2,1)/(1,1) ratio would need an air-mass factor of ~5 to match; β_air = 0.8 fits (0,1) better, so the fit
+compromises. With the lower tension more modes fall under f_max (1207 at `High`): use `Normal`.
