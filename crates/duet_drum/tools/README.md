@@ -56,7 +56,16 @@ tension; σ1 from the high partials' decay):
 | edge: T60 of those | 2.8 / 2.1 / 1.6 s | 2.2 / 2.2 / 2.1 s |
 | 1.0–1.7 kHz | strong, T60 0.3–0.4 s | nearly nothing |
 
-The low end is close. The model has none of the recording's 1–1.7 kHz content (the attack and body of a real
+The low end is close. Without the shell, the model has none of the recording's 0.5–1.7 kHz content (the attack and body of a real
 tom): the close mic's e^{−κh} weighting leaves the high modes out, and the far output hears only m = 0. The
 (2,1)/(1,1) ratio would need an air-mass factor of ~5 to match; β_air = 0.8 fits (0,1) better, so the fit
 compromises. With the lower tension more modes fall under f_max (1207 at `High`): use `Normal`.
+
+### The shell (an extension, roadmap §8.3)
+
+The partials above 500 Hz recur at the same frequencies in centre and edge hits, at every velocity: they are
+the shell's, not the heads'. `shell` in the parameters adds them as damped oscillators driven by the contact
+force and heard by both outputs (`ShellMode { freq, t60, gain }`; none by default, so the spec's drum is
+unchanged). presets/pearl16.json has the nine that recur in at least 5 of the 10 takes, their T60s as measured
+and their gains fitted (`fit_shell.py`-style, 4 iterations) so the centre hit's levels match exactly; the edge
+hit then lands within ~5 dB rms of the recording with `shell_edge_boost = 0`.

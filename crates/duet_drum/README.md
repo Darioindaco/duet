@@ -25,6 +25,8 @@ cargo run --release --example stage7_render   # renders/stage7/*.wav (not in git
   Without it the contact force ripples at ~3 kHz, a buzz at every strike.
 * **`attack_lowpass_hz = 800`** (new): a 4-pole low-pass on the contact force before the close mic's dipole term
   differentiates it. 0 gives the spec's raw difference.
+* **`shell`, `shell_edge_boost`** (new, roadmap §8.3): the shell's modes, driven by the contact force. Empty by
+  default; `presets/pearl16.json` has nine, measured from a real 16" floor tom.
 * **`Quality`**: the spec's cut-offs (2500/1500 Hz) are `High`; `Normal`/`Draft` keep fewer modes.
 
 Set `contact_radius = 0`, `attack_lowpass_hz = 0`, `stick.stiffness = 1e8` for the spec's behaviour.

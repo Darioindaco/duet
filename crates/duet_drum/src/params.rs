@@ -60,6 +60,20 @@ pub struct StickParams {
     pub velocity_gamma: f64,
 }
 
+/// EXTENSION (not in the spec; its roadmap §8.3): one mode of the shell, a damped oscillator driven by the
+/// stick's contact force and heard by both outputs. The shell rings at fixed frequencies wherever the head
+/// is struck, more strongly near the edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellMode {
+    /// Hz
+    pub freq: f64,
+    /// s (to −60 dB)
+    pub t60: f64,
+    /// Pa (before the output gains) per m/s² of a unit-mass oscillator driven by the contact force in N
+    pub gain: f64,
+}
+
 /// The two virtual microphones.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +146,10 @@ pub struct DrumParams {
     /// output gains (dB): velocity 1.0 at the centre peaks near −6 dBFS
     pub gain_close_db: f64,
     pub gain_far_db: f64,
+    /// EXTENSION: the shell's modes (none = the spec)
+    pub shell: Vec<ShellMode>,
+    /// EXTENSION: how much more a strike near the edge drives the shell: × (1 + boost·r²), r a fraction of R
+    pub shell_edge_boost: f64,
 }
 
 impl Default for DrumParams {
@@ -166,6 +184,8 @@ impl Default for DrumParams {
             // 44.1, 48 and 96 kHz to within 0.3 dB)
             gain_close_db: -45.3,
             gain_far_db: -30.9,
+            shell: Vec::new(),
+            shell_edge_boost: 0.0,
         }
     }
 }

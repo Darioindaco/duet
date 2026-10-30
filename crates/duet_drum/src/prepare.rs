@@ -175,6 +175,8 @@ pub struct DrumModel {
     pub(crate) hp_a: f64,
     /// the attack term's low-pass: two Butterworth biquads (4 poles; b0, b1, b2, a1, a2 each), or None
     pub(crate) attack_lp: Option<[[f64; 5]; 2]>,
+    /// the shell's modes: (1 − kσ̃, k·Ω̃², 1/(1 + kσ̃), gain) each
+    pub(crate) shell: Vec<[f64; 4]>,
     /// C of V_tm = Σ_h C_h·G_h², G_h = Σκ²q² (§4.8a): γ_nl·E·h / (8A(1−ν²)σ²), per head
     pub(crate) c_tm: [f64; 2],
 }
@@ -473,6 +475,16 @@ impl DrumModel {
             far_w, close_w, mic_xy: (r_m * th_m.cos(), r_m * th_m.sin()), mic_h: h_m, attack_k: p.attack_gain / (4.0 * PI * p.speed_of_sound),
             gain_close: db(p.gain_close_db), gain_far: db(p.gain_far_db), hp_a: 1.0 / (1.0 + 2.0 * PI * HIGH_PASS_HZ * k),
             attack_lp: butterworth_lowpass4(p.attack_lowpass_hz, fs),
+            shell: p
+                .shell
+                .iter()
+                .filter(|s| s.freq > 0.0 && s.freq < 0.45 * fs && s.t60 > 0.0)
+                .map(|s| {
+                    let sigma = 3.0 * std::f64::consts::LN_10 / s.t60;
+                    let (st, o2) = exact_coefficients(2.0 * PI * s.freq, sigma, k);
+                    [1.0 - k * st, k * o2, 1.0 / (1.0 + k * st), s.gain]
+                })
+                .collect(),
         })
     }
 

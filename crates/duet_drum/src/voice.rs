@@ -77,6 +77,9 @@ pub struct DrumVoice {
     /// the attack term's low-pass: the filtered force of this sample and the last, and its state
     force_lp: (f64, f64),
     lp_state: [(f64, f64); 2],
+    /// the shell's modes: displacement and velocity of each, and how hard this hit drives them
+    shell: Vec<(f64, f64)>,
+    shell_drive: f64,
     /// samples until the next sleep check
     sleep_check: u32,
     /// how many times a non-finite output made `process` reset the voice
@@ -147,7 +150,7 @@ impl DrumVoice {
             ec: vec![0.0; model.len()],
             z: 0.0, pz: 0.0, stick_active: false, away: 0,
             psi: model.params.sav_epsilon.sqrt(), force: 0.0, force_prev: 0.0, stick_energy_removed: 0.0, e_peak: 0.0, n: model.len(),
-            pending: Vec::with_capacity(MAX_PENDING), sleeping: true, d_s: 1.0, hp: [(0.0, 0.0); 2], force_lp: (0.0, 0.0), lp_state: [(0.0, 0.0); 2], sleep_check: SLEEP_CHECK_EVERY, errors: 0,
+            pending: Vec::with_capacity(MAX_PENDING), sleeping: true, d_s: 1.0, hp: [(0.0, 0.0); 2], force_lp: (0.0, 0.0), lp_state: [(0.0, 0.0); 2], shell: vec![(0.0, 0.0); model.shell.len()], shell_drive: 0.0, sleep_check: SLEEP_CHECK_EVERY, errors: 0,
         }
     }
 
@@ -171,6 +174,7 @@ impl DrumVoice {
         self.hp = [(0.0, 0.0); 2];
         self.force_lp = (0.0, 0.0);
         self.lp_state = [(0.0, 0.0); 2];
+        self.shell.iter_mut().for_each(|s| *s = (0.0, 0.0));
     }
 
     /// One sample of the linear scheme. `force` (modal, length ≥ model.len(), or none) is
@@ -269,6 +273,7 @@ impl DrumVoice {
         self.force_prev = 0.0;
         // the dipole term's distance: from the strike point to the close mic
         let (xe, ye) = (r * model.bases[0].as_ref().unwrap().params.radius * hit.angle.cos(), r * model.bases[0].as_ref().unwrap().params.radius * hit.angle.sin());
+        self.shell_drive = 1.0 + model.params.shell_edge_boost * r * r;
         self.d_s = (model.mic_h * model.mic_h + (model.mic_xy.0 - xe).powi(2) + (model.mic_xy.1 - ye).powi(2)).sqrt();
         self.e_peak = self.physical_energy(model);
         self.sleep_check = SLEEP_CHECK_EVERY;
@@ -327,6 +332,18 @@ impl DrumVoice {
             }
             self.force_lp = (fl, self.force_lp.0);
             pc += model.attack_k * (self.force_lp.0 - self.force_lp.1) / k / self.d_s;
+            // the shell: linear modes driven by the contact force (the same exact scheme, forced)
+            let (hk, f) = (0.5 * k, self.force * self.shell_drive);
+            let mut ps = 0.0;
+            for (st, [dm, ko2, id, gain]) in self.shell.iter_mut().zip(&model.shell) {
+                let xh = st.0 + hk * st.1;
+                let pn = (dm * st.1 - ko2 * xh + k * f) * id;
+                ps += gain * (pn - st.1) / k;
+                st.0 = xh + hk * pn;
+                st.1 = pn;
+            }
+            pc += ps;
+            let pf = pf + ps;
             // 1-pole high-pass: y = a·(y_prev + x − x_prev)
             let a = model.hp_a;
             let yc = a * (self.hp[0].1 + pc - self.hp[0].0);

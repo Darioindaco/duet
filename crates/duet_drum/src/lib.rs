@@ -20,6 +20,6 @@ pub mod quad;
 pub mod voice;
 
 pub use modes::{MembraneBasis, MembraneMode, MembraneParams, RADIAL_POINTS};
-pub use params::{DrumParams, Head, HeadParams, MicParams, Quality, StickParams};
+pub use params::{DrumParams, Head, HeadParams, MicParams, Quality, ShellMode, StickParams};
 pub use prepare::{Block, DrumModel, ModeInfo, PrepareError, PrepareOptions};
 pub use voice::{DrumVoice, Hit};
