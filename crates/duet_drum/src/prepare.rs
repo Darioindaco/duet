@@ -165,12 +165,26 @@ pub struct DrumModel {
     pub(crate) gain_close: f64,
     pub(crate) gain_far: f64,
     pub(crate) hp_a: f64,
+    /// the attack term's low-pass (a Butterworth biquad: b0, b1, b2, a1, a2), or None
+    pub(crate) attack_lp: Option<[f64; 5]>,
     /// C of V_tm = Σ_h C_h·G_h², G_h = Σκ²q² (§4.8a): γ_nl·E·h / (8A(1−ν²)σ²), per head
     pub(crate) c_tm: [f64; 2],
 }
 
 /// The outputs' DC and infrasound filter (§4.10).
 pub const HIGH_PASS_HZ: f64 = 20.0;
+
+/// A 2-pole Butterworth low-pass (bilinear transform): (b0, b1, b2, a1, a2); None when off.
+fn butterworth_lowpass(fc: f64, fs: f64) -> Option<[f64; 5]> {
+    if !(fc > 0.0 && fc < 0.45 * fs) {
+        return None;
+    }
+    let w = (PI * fc / fs).tan();
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let n = 1.0 / (1.0 + w / q + w * w);
+    let b0 = w * w * n;
+    Some([b0, 2.0 * b0, b0, 2.0 * (w * w - 1.0) * n, (1.0 - w / q + w * w) * n])
+}
 
 fn omega_floor(lam: f64) -> bool {
     !(lam > 0.0 && lam.is_finite())
@@ -428,6 +442,7 @@ impl DrumModel {
             fs, k, params: p.clone(), options: *opt, modes, bases, warnings, n_a, rows, t_a, omega_t2, w_k2, head_idx, d_plus, d_minus, c_tm,
             far_w, close_w, mic_xy: (r_m * th_m.cos(), r_m * th_m.sin()), mic_h: h_m, attack_k: p.attack_gain / (4.0 * PI * p.speed_of_sound),
             gain_close: db(p.gain_close_db), gain_far: db(p.gain_far_db), hp_a: 1.0 / (1.0 + 2.0 * PI * HIGH_PASS_HZ * k),
+            attack_lp: butterworth_lowpass(p.attack_lowpass_hz, fs),
         })
     }
 

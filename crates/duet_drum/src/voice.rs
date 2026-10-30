@@ -70,6 +70,9 @@ pub struct DrumVoice {
     d_s: f64,
     /// the outputs' 1-pole high-pass: (previous input, previous output) for close and far
     hp: [(f64, f64); 2],
+    /// the attack term's low-pass: the filtered force of this sample and the last, and its state
+    force_lp: (f64, f64),
+    lp_state: (f64, f64),
     /// samples until the next sleep check
     sleep_check: u32,
     /// how many times a non-finite output made `process` reset the voice
@@ -88,7 +91,7 @@ impl DrumVoice {
             q: vec![0.0; model.rows.len()],
             z: 0.0, pz: 0.0, stick_active: false, away: 0,
             psi: model.params.sav_epsilon.sqrt(), force: 0.0, force_prev: 0.0, stick_energy_removed: 0.0, e_peak: 0.0, n: model.len(),
-            pending: Vec::with_capacity(MAX_PENDING), sleeping: true, d_s: 1.0, hp: [(0.0, 0.0); 2], sleep_check: SLEEP_CHECK_EVERY, errors: 0,
+            pending: Vec::with_capacity(MAX_PENDING), sleeping: true, d_s: 1.0, hp: [(0.0, 0.0); 2], force_lp: (0.0, 0.0), lp_state: (0.0, 0.0), sleep_check: SLEEP_CHECK_EVERY, errors: 0,
         }
     }
 
@@ -110,6 +113,8 @@ impl DrumVoice {
         self.pending.clear();
         self.sleeping = true;
         self.hp = [(0.0, 0.0); 2];
+        self.force_lp = (0.0, 0.0);
+        self.lp_state = (0.0, 0.0);
     }
 
     /// One sample of the linear scheme. `force` (modal, length ≥ model.len(), or none) is
@@ -244,7 +249,18 @@ impl DrumVoice {
             for j in 0..self.n {
                 pc += model.close_w[j] * self.acc[j];
             }
-            pc += model.attack_k * (self.force - self.force_prev) / k / self.d_s;
+            // the contact force, low-passed (transposed direct form II), then differentiated
+            let fl = match &model.attack_lp {
+                Some([b0, b1, b2, a1, a2]) => {
+                    let y = b0 * self.force + self.lp_state.0;
+                    self.lp_state.0 = b1 * self.force - a1 * y + self.lp_state.1;
+                    self.lp_state.1 = b2 * self.force - a2 * y;
+                    y
+                }
+                None => self.force,
+            };
+            self.force_lp = (fl, self.force_lp.0);
+            pc += model.attack_k * (self.force_lp.0 - self.force_lp.1) / k / self.d_s;
             let mut pf = 0.0;
             for j in 0..model.n_a {
                 pf += model.far_w[j] * self.acc[j];

@@ -114,6 +114,11 @@ pub struct DrumParams {
     pub mic: MicParams,
     /// gain of the contact force's dipole term in the close mic
     pub attack_gain: f64,
+    /// EXTENSION (not in the spec): a 2-pole low-pass (Hz) on the contact force before the close mic's
+    /// dipole term differentiates it. The spec's raw `(F_n − F_{n−1})/k` makes a high-pitched click at
+    /// every strike (the force rises in a fraction of a millisecond; the head can't answer above f_max).
+    /// 0 = off (the spec).
+    pub attack_lowpass_hz: f64,
     /// SAV gauge ε (J)
     pub sav_epsilon: f64,
     /// SAV drift control λ (0 = off)
@@ -147,11 +152,12 @@ impl Default for DrumParams {
             stick: StickParams { mass: 0.02, stiffness: 1.0e6, exponent: 1.5, v_min: 0.2, v_max: 6.0, velocity_gamma: 1.5 },
             mic: MicParams { close_radius: 0.5, close_angle: 0.0, close_height: 0.06, far_distance: 1.5 },
             attack_gain: 1.0,
+            attack_lowpass_hz: 1500.0,
             sav_epsilon: 1e-12,
             sav_drift: 0.0,
             // (calibrate_gains: a velocity-1.0 hit at the centre peaks at −6 dBFS on both outputs, at
             // 44.1, 48 and 96 kHz to within 0.3 dB)
-            gain_close_db: -59.2,
+            gain_close_db: -44.4,
             gain_far_db: -26.8,
         }
     }
