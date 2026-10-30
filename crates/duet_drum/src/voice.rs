@@ -72,7 +72,7 @@ pub struct DrumVoice {
     hp: [(f64, f64); 2],
     /// the attack term's low-pass: the filtered force of this sample and the last, and its state
     force_lp: (f64, f64),
-    lp_state: (f64, f64),
+    lp_state: [(f64, f64); 2],
     /// samples until the next sleep check
     sleep_check: u32,
     /// how many times a non-finite output made `process` reset the voice
@@ -91,7 +91,7 @@ impl DrumVoice {
             q: vec![0.0; model.rows.len()],
             z: 0.0, pz: 0.0, stick_active: false, away: 0,
             psi: model.params.sav_epsilon.sqrt(), force: 0.0, force_prev: 0.0, stick_energy_removed: 0.0, e_peak: 0.0, n: model.len(),
-            pending: Vec::with_capacity(MAX_PENDING), sleeping: true, d_s: 1.0, hp: [(0.0, 0.0); 2], force_lp: (0.0, 0.0), lp_state: (0.0, 0.0), sleep_check: SLEEP_CHECK_EVERY, errors: 0,
+            pending: Vec::with_capacity(MAX_PENDING), sleeping: true, d_s: 1.0, hp: [(0.0, 0.0); 2], force_lp: (0.0, 0.0), lp_state: [(0.0, 0.0); 2], sleep_check: SLEEP_CHECK_EVERY, errors: 0,
         }
     }
 
@@ -114,7 +114,7 @@ impl DrumVoice {
         self.sleeping = true;
         self.hp = [(0.0, 0.0); 2];
         self.force_lp = (0.0, 0.0);
-        self.lp_state = (0.0, 0.0);
+        self.lp_state = [(0.0, 0.0); 2];
     }
 
     /// One sample of the linear scheme. `force` (modal, length ≥ model.len(), or none) is
@@ -186,6 +186,13 @@ impl DrumVoice {
         let sp = &model.params.stick;
         let r = hit.radius.clamp(0.0, 0.95);
         model.strike_vector(r, hit.angle, &mut self.q, &mut self.e[..self.n]);
+        if model.params.contact_radius > 0.0 {
+            // a Gaussian patch: the highest modes hardly feel the stick
+            for i in 0..self.n {
+                let ka = model.mode_kappa[i] * model.params.contact_radius;
+                self.e[i] *= (-0.5 * ka * ka).exp();
+            }
+        }
         let v0 = sp.v_min + (sp.v_max - sp.v_min) * (hit.velocity.clamp(0.0, 1.0) as f64).powf(sp.velocity_gamma);
         let sq = sp.mass.sqrt();
         let w: f64 = (0..self.n).map(|i| self.e[i] * self.x[i]).sum();
@@ -250,15 +257,15 @@ impl DrumVoice {
                 pc += model.close_w[j] * self.acc[j];
             }
             // the contact force, low-passed (transposed direct form II), then differentiated
-            let fl = match &model.attack_lp {
-                Some([b0, b1, b2, a1, a2]) => {
-                    let y = b0 * self.force + self.lp_state.0;
-                    self.lp_state.0 = b1 * self.force - a1 * y + self.lp_state.1;
-                    self.lp_state.1 = b2 * self.force - a2 * y;
-                    y
+            let mut fl = self.force;
+            if let Some(sections) = &model.attack_lp {
+                for (st, [b0, b1, b2, a1, a2]) in self.lp_state.iter_mut().zip(sections) {
+                    let y = b0 * fl + st.0;
+                    st.0 = b1 * fl - a1 * y + st.1;
+                    st.1 = b2 * fl - a2 * y;
+                    fl = y;
                 }
-                None => self.force,
-            };
+            }
             self.force_lp = (fl, self.force_lp.0);
             pc += model.attack_k * (self.force_lp.0 - self.force_lp.1) / k / self.d_s;
             let mut pf = 0.0;

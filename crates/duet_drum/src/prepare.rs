@@ -149,6 +149,8 @@ pub struct DrumModel {
     /// κ²/(1+μ) of a pair's modes (0 for block A and padding), and the head it belongs to
     pub(crate) w_k2: Vec<f64>,
     pub(crate) head_idx: Vec<usize>,
+    /// the wavenumber of each mode's dominant (m, n) (the contact patch's weight)
+    pub(crate) mode_kappa: Vec<f64>,
     /// 1 + kσ̃ and 1 − kσ̃
     pub(crate) d_plus: Vec<f64>,
     pub(crate) d_minus: Vec<f64>,
@@ -165,8 +167,8 @@ pub struct DrumModel {
     pub(crate) gain_close: f64,
     pub(crate) gain_far: f64,
     pub(crate) hp_a: f64,
-    /// the attack term's low-pass (a Butterworth biquad: b0, b1, b2, a1, a2), or None
-    pub(crate) attack_lp: Option<[f64; 5]>,
+    /// the attack term's low-pass: two Butterworth biquads (4 poles; b0, b1, b2, a1, a2 each), or None
+    pub(crate) attack_lp: Option<[[f64; 5]; 2]>,
     /// C of V_tm = Σ_h C_h·G_h², G_h = Σκ²q² (§4.8a): γ_nl·E·h / (8A(1−ν²)σ²), per head
     pub(crate) c_tm: [f64; 2],
 }
@@ -174,16 +176,18 @@ pub struct DrumModel {
 /// The outputs' DC and infrasound filter (§4.10).
 pub const HIGH_PASS_HZ: f64 = 20.0;
 
-/// A 2-pole Butterworth low-pass (bilinear transform): (b0, b1, b2, a1, a2); None when off.
-fn butterworth_lowpass(fc: f64, fs: f64) -> Option<[f64; 5]> {
+/// A 4-pole Butterworth low-pass as two biquads (bilinear transform; Q = 0.5412 and 1.3066); None when off.
+fn butterworth_lowpass4(fc: f64, fs: f64) -> Option<[[f64; 5]; 2]> {
     if !(fc > 0.0 && fc < 0.45 * fs) {
         return None;
     }
     let w = (PI * fc / fs).tan();
-    let q = std::f64::consts::FRAC_1_SQRT_2;
-    let n = 1.0 / (1.0 + w / q + w * w);
-    let b0 = w * w * n;
-    Some([b0, 2.0 * b0, b0, 2.0 * (w * w - 1.0) * n, (1.0 - w / q + w * w) * n])
+    let section = |q: f64| {
+        let n = 1.0 / (1.0 + w / q + w * w);
+        let b0 = w * w * n;
+        [b0, 2.0 * b0, b0, 2.0 * (w * w - 1.0) * n, (1.0 - w / q + w * w) * n]
+    };
+    Some([section(0.541196100146197), section(1.3065629648763766)])
 }
 
 fn omega_floor(lam: f64) -> bool {
@@ -437,12 +441,26 @@ impl DrumModel {
                 close_w[i] = md.scale * surface(md.basis_index) * if md.sin { a.sin() } else { a.cos() };
             }
         }
+        // (a block-A mode mixes heads: its κ is the participation-weighted one)
+        let mut mode_kappa = vec![0.0; n_pad];
+        for i in 0..n_a {
+            // κ_eff = Σ_rows V_ri²·κ_r, V = T·√(1+μ) (the rows' shares of the mode, summing to 1)
+            mode_kappa[i] = (0..rows.len())
+                .map(|r| {
+                    let v = t_a[r * n_a + i] * (1.0 + mu(rows[r].head, rows[r].kappa2.sqrt())).sqrt();
+                    v * v * rows[r].kappa2.sqrt()
+                })
+                .sum::<f64>();
+        }
+        for i in n_a..n {
+            mode_kappa[i] = bases[head_index(modes[i].head)].as_ref().unwrap().modes[modes[i].basis_index].kappa;
+        }
         let db = |x: f64| 10f64.powf(x / 20.0);
         Ok(DrumModel {
-            fs, k, params: p.clone(), options: *opt, modes, bases, warnings, n_a, rows, t_a, omega_t2, w_k2, head_idx, d_plus, d_minus, c_tm,
+            fs, k, params: p.clone(), options: *opt, modes, bases, warnings, n_a, rows, t_a, omega_t2, w_k2, head_idx, mode_kappa, d_plus, d_minus, c_tm,
             far_w, close_w, mic_xy: (r_m * th_m.cos(), r_m * th_m.sin()), mic_h: h_m, attack_k: p.attack_gain / (4.0 * PI * p.speed_of_sound),
             gain_close: db(p.gain_close_db), gain_far: db(p.gain_far_db), hp_a: 1.0 / (1.0 + 2.0 * PI * HIGH_PASS_HZ * k),
-            attack_lp: butterworth_lowpass(p.attack_lowpass_hz, fs),
+            attack_lp: butterworth_lowpass4(p.attack_lowpass_hz, fs),
         })
     }
 

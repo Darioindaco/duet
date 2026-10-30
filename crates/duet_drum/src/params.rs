@@ -114,9 +114,15 @@ pub struct DrumParams {
     pub mic: MicParams,
     /// gain of the contact force's dipole term in the close mic
     pub attack_gain: f64,
-    /// EXTENSION (not in the spec): a 2-pole low-pass (Hz) on the contact force before the close mic's
+    /// EXTENSION (not in the spec): radius a (m) of the stick's contact patch: the strike vector is weighted by
+    /// `exp(−(κa)²/2)` (a Gaussian patch instead of a point), so the stick hardly drives the highest kept modes.
+    /// Without it the contact force ripples at ~3 kHz (the stick against the top of the modal band): a buzz at
+    /// every strike. 0 = a point (the spec).
+    pub contact_radius: f64,
+    /// EXTENSION (not in the spec): a 4-pole low-pass (Hz) on the contact force before the close mic's
     /// dipole term differentiates it. The spec's raw `(F_n − F_{n−1})/k` makes a high-pitched click at
-    /// every strike (the force rises in a fraction of a millisecond; the head can't answer above f_max).
+    /// every strike: the force rises in a fraction of a millisecond and then ripples at ~3 kHz (the stick against the
+    /// highest kept modes), which the derivative turns into a buzz.
     /// 0 = off (the spec).
     pub attack_lowpass_hz: f64,
     /// SAV gauge ε (J)
@@ -152,13 +158,14 @@ impl Default for DrumParams {
             stick: StickParams { mass: 0.02, stiffness: 1.0e6, exponent: 1.5, v_min: 0.2, v_max: 6.0, velocity_gamma: 1.5 },
             mic: MicParams { close_radius: 0.5, close_angle: 0.0, close_height: 0.06, far_distance: 1.5 },
             attack_gain: 1.0,
-            attack_lowpass_hz: 1500.0,
+            contact_radius: 0.010,
+            attack_lowpass_hz: 800.0,
             sav_epsilon: 1e-12,
             sav_drift: 0.0,
             // (calibrate_gains: a velocity-1.0 hit at the centre peaks at −6 dBFS on both outputs, at
             // 44.1, 48 and 96 kHz to within 0.3 dB)
-            gain_close_db: -44.4,
-            gain_far_db: -26.8,
+            gain_close_db: -45.3,
+            gain_far_db: -30.9,
         }
     }
 }
