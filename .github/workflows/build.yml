@@ -104,6 +104,8 @@ jobs:
     env:
       # the ASIO bindings are made with bindgen, which needs libclang (LLVM is on the runner)
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      # see engine/.cargo/config.toml (also here, for builds started outside engine/)
+      CXXFLAGS_x86_64_pc_windows_msvc: /Zc:__cplusplus
       PYTHONIOENCODING: utf-8
     defaults:
       run:

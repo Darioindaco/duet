@@ -1,0 +1,5 @@
+[env]
+# MSVC reports __cplusplus as 199711 unless asked; ssstretch's bridge.h then adds a
+# std::make_unique of its own next to the real one ("ambiguous call"). Windows only:
+# cc-rs reads the target-specific variable.
+CXXFLAGS_x86_64_pc_windows_msvc = "/Zc:__cplusplus"
