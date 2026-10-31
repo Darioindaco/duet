@@ -400,6 +400,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
       <button class="ttog" id="tgClick" title="Click while the song plays (just for you)">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3h7l4 18h-15z"/><path d="M12 15 17 6"/><path d="M7 17h10"/></svg></button>
       <button class="ttog" id="tgCount" title="Count in one bar before recording">1 bar</button>
+      <button class="ttog" id="tgPunch" title="Punch: record only between the in and out points (the loop strip on the ruler), with a bar to play along to before, and stop after">Punch</button>
       <button class="ttog loop" id="tgLoop" title="Loop the marked part (drag in the ruler to mark it)">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M3 11V9a4 4 0 0 1 4-4h13"/><path d="M7 22l-3-3 3-3"/><path d="M21 13v2a4 4 0 0 1-4 4H4"/></svg></button>
       <div class="zoom">
@@ -662,7 +663,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
       <canvas id="ceWave" class="cewave" aria-label="The clip's audio: drag its edges to trim, drag inside to slide the sound"></canvas>
       <canvas id="tuneCv" class="tunecv" hidden aria-label="The voice's notes: drag one to move it, double-click to put it in key"></canvas>
       <p class="fine cehint">Drag the edges to trim · drag inside to slide the sound under the clip · scroll to zoom, shift-scroll to move</p>
-      <div class="seg" id="ceTabs"><button data-v="clip">Clip</button><button data-v="pitch">Pitch &amp; speed</button><button data-v="chop">Chop</button><button data-v="tune">Tune</button><button data-v="stems">Stems</button></div>
+      <div class="seg" id="ceTabs"><button data-v="clip">Clip</button><button data-v="pitch">Pitch &amp; speed</button><button data-v="chop">Chop</button><button data-v="tune">Tune</button><button data-v="takes">Takes</button><button data-v="stems">Stems</button></div>
       <div id="ceBody" class="cebody"></div>
     </div>
   </div>
@@ -693,6 +694,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="auto.js"></script>
 <script src="clipedit.js"></script>
 <script src="tune.js"></script>
+<script src="takes.js"></script>
 <script src="keys.js"></script>
 <script src="instr.js"></script>
 <script src="seq.js"></script>

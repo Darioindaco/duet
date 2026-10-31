@@ -228,6 +228,12 @@ class Api:
     def daw_edit(self, changes):
         return self._daw.edit(list(changes))
 
+    def daw_comp(self, group, take, a, b):
+        return self._daw.comp(str(group), int(take), float(a), float(b))
+
+    def daw_take_op(self, group, op, take=None):
+        return self._daw.take_op(str(group), str(op), None if take is None else int(take))
+
     def daw_time_op(self, op, a, b):
         return self._daw.time_op(str(op), float(a), float(b))
 

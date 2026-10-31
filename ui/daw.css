@@ -448,3 +448,6 @@ header > .spacer { flex-shrink: 1; }
 .verrow b { font-variant-numeric: tabular-nums; min-width: 48px; }
 .verrow span { flex: 1; min-width: 0; color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .verrow .btn { padding: 5px 12px; font-size: 12px; }
+
+/* takes: the comp and a row a take */
+.takescv { display: block; width: 100%; border: 1px solid var(--line); border-radius: 8px; margin: 8px 0 10px; cursor: crosshair; }

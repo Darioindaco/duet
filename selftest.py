@@ -1646,6 +1646,105 @@ def test_stun():
     e.close()
 
 
+def test_takes():
+    """Loop recording makes a take each time round (the last whole one plays); comping picks a take
+    for a stretch; punch keeps only what's between the in and out points, stops by itself after the
+    out point, and over a clip makes a take folder with it."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-takes-"))
+    d = Daw(e, root / "songs", "me")
+    zero = [0.0] * N
+
+    def tone(amp, blocks):
+        for k in range(blocks):
+            e.process([amp * math.sin(2 * math.pi * 220 * (k * N + i) / SR) for i in range(N)])
+
+    def rms_at(t0, t1):
+        """The song's level from t0 to t1 seconds, played."""
+        e.daw_play(t0)
+        out = []
+        for _ in range(int((t1 - t0) * SR / N)):
+            out += e.process(zero)
+        e.daw_stop()
+        return float(np.sqrt(np.mean(np.square(out))))
+
+    try:
+        tid = d.view()["tracks"][0]["id"]
+        d.edit([["meta", "meta", {"bpm": 120.0, "loop": True, "loop_start": 0.0, "loop_end": 4.0}],
+                ["track", tid, {"arm": True}]])
+        d.set_local("countin", False)
+        d.set_local("click", False)
+        d.record(0.0)
+        per = int(2.0 * SR / N)  # one time round the 2 s loop
+        for k, amp in enumerate([0.1, 0.2, 0.4]):
+            tone(amp, per)
+        tone(0.3, per // 3)  # a fourth time, cut short
+        d.stop()
+        v = d.view()
+        takes = sorted(v["takes"], key=lambda c: c["take"])
+        assert [c["take"] for c in takes] == [1, 2, 3, 4] and len({c["group"] for c in takes}) == 1, takes
+        assert all(abs(c["len"] - 2.0) < 0.02 for c in takes[:3]) and takes[3]["len"] < 1.0, [c["len"] for c in takes]
+        comp = [c for c in v["clips"] if c.get("group")]
+        assert len(comp) == 1 and comp[0]["take"] == 3 and comp[0]["start"] == 0.0, comp
+        group = comp[0]["group"]
+        d.edit([["track", tid, {"arm": False}]])
+        d.set_local("countin", False)
+        d.edit([["meta", "meta", {"loop": False}]])
+        hi = rms_at(0.2, 1.8)
+        # comping: the first half from take 1
+        d.comp(group, 1, 0.0, 2.0)
+        v = d.view()
+        comp = sorted((c for c in v["clips"] if c.get("group") == group), key=lambda c: c["start"])
+        assert [c["take"] for c in comp] == [1, 3] and comp[1]["start"] == 2.0, comp
+        a, b = rms_at(0.2, 0.9), rms_at(1.1, 1.8)
+        assert 0.15 < a / b < 0.4, (a, b, hi)  # take 1 (0.1) against take 3 (0.4)
+        assert abs(b - hi) / hi < 0.1, (b, hi)
+        d.undo()
+        assert len([c for c in d.view()["clips"] if c.get("group")]) == 1, "a comp is one undo"
+
+        # punch: a take from beat 8 to 16, then a punch in 10..12 over it
+        d.edit([["track", tid, {"arm": True}]])
+        d.record(8.0)
+        tone(0.1, int(4.0 * SR / N))
+        d.stop()
+        plain = [c for c in d.view()["clips"] if not c.get("group")]
+        assert len(plain) == 1 and plain[0]["start"] == 8.0, plain
+        d.edit([["meta", "meta", {"loop_start": 10.0, "loop_end": 12.0}]])
+        d.set_local("punch", True)
+        assert d.record(9.0) == {"ok": True}
+        stopped = None
+        for k in range(int(4.0 * SR / N)):
+            tone(0.4, 1)
+            if k % 20 == 0:
+                d.status(e.state())
+                if not d.rec:
+                    stopped = k * N / SR
+                    break
+        assert stopped is not None and 1.5 < stopped < 2.2, f"the punch stops after the out point ({stopped})"
+        v = d.view()
+        comp = sorted((c for c in v["clips"] if c["start"] >= 8.0), key=lambda c: c["start"])
+        assert [(c["start"], c["take"]) for c in comp] == [(8.0, 1), (10.0, 2), (12.0, 1)], comp
+        assert abs(comp[1]["len"] - 1.0) < 0.01, comp[1]
+        g2 = comp[0]["group"]
+        assert {c["take"] for c in v["takes"] if c["group"] == g2} == {1, 2}
+        d.set_local("punch", False)
+        d.take_op(g2, "flatten")
+        v = d.view()
+        assert not [c for c in v["takes"] if c["group"] == g2] and all(not c.get("group") for c in v["clips"] if c["start"] >= 8)
+        print("takes: loop recording a take a time round, comping, punch in/out over a clip")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_tempo_map():
     """A tempo change and a time signature change: notes, the click (its accents on the new bars), the
     playhead and recording follow them; deleting and duplicating a section moves everything after it."""
@@ -1817,6 +1916,7 @@ if __name__ == "__main__":
     test_song_edit()
     test_versions()
     test_tempo_map()
+    test_takes()
     test_instruments()
     test_patterns()
     test_live()

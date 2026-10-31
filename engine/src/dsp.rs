@@ -953,7 +953,7 @@ impl Dsp {
         // --- the song: one or (wrapping around a loop) two stretches of the timeline ---
         let tp_pos = self.tp.pos;
         let mut play = Play { segs: [(0usize, tp_pos, n); 2], nseg: 1, looping: None };
-        let looping = self.tp.playing && self.tp.loop_on && !self.tp.recording;
+        let looping = self.tp.playing && self.tp.loop_on; // (recording too: loop recording, a take each time round)
         // (>=: a block that ends right on the loop's end still jumps back, with an
         // empty second stretch, or the next block would start past the end)
         if looping && tp_pos < self.tp.loop_end && tp_pos + n as i64 >= self.tp.loop_end {

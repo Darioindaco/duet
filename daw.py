@@ -63,8 +63,10 @@ FIELDS = {
     # speed (2 = twice as fast), pitch (semitones), stretch (keep the pitch
     # when the speed changes; off = tape), reverse (the clip's stretch of the
     # file backwards). offset is in seconds of the file, len on the timeline.
+    # Takes: the clips of a take folder share a group; take is which take a clip comes from. A take's
+    # whole recording is kept as a silent clip (tsrc: not in the playlist), the comp is ordinary clips.
     "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out",
-             "speed", "pitch", "stretch", "reverse", "mute", "tune", "del"},
+             "speed", "pitch", "stretch", "reverse", "mute", "tune", "group", "take", "tsrc", "del"},
     "file": {"frames", "sr", "owner", "name", "del"},
     "pattern": {"name", "len", "color", "del"},
     "note": {"pattern", "track", "start", "len", "key", "vel", "del"},
@@ -79,7 +81,8 @@ FIELD_DEFAULTS = {
     "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None,
               "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "del": False},
     "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "speed": 1.0, "pitch": 0.0,
-             "stretch": False, "reverse": False, "mute": False, "tune": None, "del": False},
+             "stretch": False, "reverse": False, "mute": False, "tune": None, "group": None, "take": None,
+             "tsrc": False, "del": False},
     "file": {"del": False},
     "pattern": {"del": False},
     "note": {"vel": 100, "del": False},
@@ -202,6 +205,102 @@ def new_id(prefix: str = "") -> str:
     return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
 
 
+def take_passes(first: float, total: float, rec: dict) -> list:
+    """Where a recording goes on the timeline: [(timeline s, file offset s, length s)], one per time
+    round the loop (loop recording), or the part between the punch points, or all of it from where
+    the recording started. first: the timeline second of the file's first sample."""
+    out = []
+    if rec.get("cycle"):
+        ls, le = rec["cycle"]
+        L = le - ls
+        u0 = max(rec["punch"], first)
+        if le - u0 > 0.01:
+            out.append((u0, u0 - first, min(le - u0, total - (u0 - first))))
+        k = 0
+        while True:
+            off = le - first + k * L  # (the engine jumps back sample-exact at the loop's end)
+            if off >= total - 0.3:
+                break
+            out.append((ls, off, min(L, total - off)))
+            k += 1
+        return [p for p in out if p[2] > 0.01]
+    if rec.get("prange"):
+        a, b = rec["prange"]
+        u0, u1 = max(a, first), min(b, first + total)
+        return [(u0, u0 - first, u1 - u0)] if u1 - u0 > 0.01 else []
+    u0 = max(rec["punch"], first)
+    d = total - (u0 - first)
+    return [(u0, u0 - first, d)] if d > 0.01 else []
+
+
+class Comp:
+    """Comping on a copy of a track's clips: changes() gives what changed, as edits."""
+    XF = 0.008  # a short fade where two takes meet (seconds)
+
+    def __init__(self, clips: dict, tm):
+        self.orig = {cid: dict(c) for cid, c in clips.items()}
+        self.clips = clips
+        self.tm = tm
+
+    def span(self, c) -> tuple[float, float]:
+        s0 = self.tm.b2s(float(c.get("start", 0)))
+        return s0, s0 + float(c.get("len", 0))
+
+    def overlaps(self, c, a: float, b: float) -> bool:
+        s0, e0 = self.span(c)
+        return e0 > a + 1e-3 and s0 < b - 1e-3
+
+    def cut(self, c, a: float, b: float):
+        """c's part from timeline second a to b (fields), or None."""
+        s0, e0 = self.span(c)
+        x, y = max(a, s0), min(b, e0)
+        if y - x < 0.005:
+            return None
+        r = num(c.get("speed"), 1.0, 0.05, 20.0)
+        if not c.get("stretch"):
+            r *= 2 ** (num(c.get("pitch"), 0.0, -48.0, 48.0) / 12)
+        o = float(c.get("offset", 0))
+        off = o + (e0 - y) * r if c.get("reverse") else o + (x - s0) * r
+        return {**c, "start": self.tm.s2b(x), "offset": off, "len": y - x,
+                "fade_in": float(c.get("fade_in", 0)) if x <= s0 + 1e-6 else self.XF,
+                "fade_out": float(c.get("fade_out", 0)) if y >= e0 - 1e-6 else self.XF}
+
+    def next_take(self, group: str) -> int:
+        return 1 + max([int(c.get("take") or 0) for c in self.clips.values() if c.get("group") == group] or [0])
+
+    def comp(self, group: str, take: int, a: float, b: float):
+        """Take `take` plays from second a to b: the comp clips there make room."""
+        srcs = [c for c in self.clips.values() if c.get("group") == group and c.get("tsrc") and c.get("take") == take
+                and not c.get("del")]
+        if not srcs:
+            return
+        for cid, c in list(self.clips.items()):
+            if c.get("group") != group or c.get("tsrc") or c.get("del") or not self.overlaps(c, a, b):
+                continue
+            left, right = self.cut(c, -1e9, a), self.cut(c, b, 1e18)
+            self.clips[cid] = left if left else {**c, "del": True}
+            if right:
+                self.clips[new_id("c")] = right
+        for src in srcs:
+            piece = self.cut(src, a, b)
+            if piece:
+                piece.pop("tsrc", None)
+                self.clips[new_id("c")] = {**piece, "tsrc": False}
+
+    def changes(self) -> list:
+        out = []
+        for cid, c in self.clips.items():
+            o = self.orig.get(cid)
+            if o is None:
+                if not c.get("del"):
+                    out.append(["clip", cid, {k: v for k, v in c.items() if k in FIELDS["clip"]}])
+            else:
+                diff = {k: v for k, v in c.items() if k in FIELDS["clip"] and o.get(k) != v}
+                if diff:
+                    out.append(["clip", cid, diff])
+        return out
+
+
 class TempoMap:
     """The song's tempo and time signature changes: beats (the timeline) to seconds (the engine) and back.
     Beats are quarter notes; tempo changes are steps; a time signature change starts a bar."""
@@ -280,7 +379,7 @@ class Project:
         self.clock = 0
         # this machine only: mute/solo per track, click, count-in, and what the
         # live strips ("L0", the partner's "R0"...) send to the song's buses
-        self.local = {"mute": {}, "solo": {}, "click": True, "countin": True, "livesends": {}}
+        self.local = {"mute": {}, "solo": {}, "click": True, "countin": True, "punch": False, "livesends": {}}
         self.recovered: str | None = None  # the file it was loaded from, when project.json couldn't be read
 
     @property
@@ -880,7 +979,7 @@ class Daw:
         with self.lock:
             if key in ("mute", "solo") and track:
                 self.p.local[key][track] = bool(value)
-            elif key in ("click", "countin"):
+            elif key in ("click", "countin", "punch"):
                 self.p.local[key] = bool(value)
             elif key == "livesends" and isinstance(track, str) and re.fullmatch(r"[LR]\d", track) and isinstance(value, dict):
                 sends = {str(b): float(v) for b, v in value.items() if isinstance(v, (int, float)) and v > 0}
@@ -993,11 +1092,23 @@ class Daw:
                 return {"error": "Arm a track first: the red dot on the track."}
             if self.rec:
                 return {"error": "Already recording."}
-            self._start(self.cursor if pos is None else float(pos), rec=True,
-                        countin=not jam and bool(self.p.local.get("countin")), broadcast=True, jam=jam)
+            pos = self.cursor if pos is None else float(pos)
+            m, punch = self.p.meta(), False
+            if not jam and self.p.local.get("punch"):
+                a, b = float(m["loop_start"]), float(m["loop_end"])
+                if b <= a:
+                    return {"error": "Punch records between the in and out points: mark them first (drag on the ruler)."}
+                punch = True
+                # a bar to play along to before the in point (or from the playhead, if it's a little before it)
+                lead = self._tm().meter_at(a)[1]
+                if not (a - 4 * lead <= pos < a):
+                    pos = max(0.0, a - lead)
+            self._start(pos, rec=True, countin=not jam and not punch and bool(self.p.local.get("countin")),
+                        broadcast=True, jam=jam, punch=punch)
             return {"ok": True}
 
-    def _start(self, pos: float, rec: bool, countin: bool, broadcast: bool, delay: float = 0.0, jam: bool = False):
+    def _start(self, pos: float, rec: bool, countin: bool, broadcast: bool, delay: float = 0.0, jam: bool = False,
+               punch: bool = False):
         if self.rec or self._playing():
             self._stop(broadcast=False)
         tm = self._tm()
@@ -1018,16 +1129,22 @@ class Daw:
                 if src not in sources:
                     sources[src] = new_id("take-") + ".wav"
             self.p.audio_dir.mkdir(parents=True, exist_ok=True)
+            m = self.p.meta()
+            ls, le = tm.b2s(float(m["loop_start"])), tm.b2s(float(m["loop_end"]))
             self.rec = {"punch": at, "sources": sources, "tracks": {tid: int(t.get("src", 0)) for tid, t in mine.items()},
-                        "channels": channels, "jam": jam}
-            if jam:
-                self._push()  # the song's click off for this take
+                        "channels": channels, "jam": jam,
+                        # punch: only what's between the in and out points is kept (and it doesn't loop)
+                        "prange": (ls, le) if punch and le > ls else None,
+                        # loop recording: round and round the loop, a take each time
+                        "cycle": (ls, le) if not punch and not jam and m["loop"] and le - ls > 0.25 and at < le else None}
+            if jam or punch:
+                self._push()  # the song's click off for a jam take; no looping while punching
         if sources or (self.rec and self.rec["channels"]):
             self.e.daw_record([(src, key, str(self.p.audio_dir / key)) for src, key in sources.items()], start, until)
         else:
             self.e.daw_play(start, until)
         if broadcast:
-            self._send({"t": "tp", "play": True, "rec": rec, "pos": pos, "countin": countin, "jam": jam})
+            self._send({"t": "tp", "play": True, "rec": rec, "pos": pos, "countin": countin, "jam": jam, "punch": punch})
         self.version += 1
 
     def stop(self):
@@ -1039,7 +1156,7 @@ class Daw:
         takes = self.e.daw_stop()
         played = self.e.daw_rec_notes()
         rec, self.rec = self.rec, None
-        if self.pattern_mode or (rec and rec.get("jam")):
+        if self.pattern_mode or (rec and (rec.get("jam") or rec.get("prange"))):
             self.pattern_mode = None
             self._push()  # (after a jam take: the song's click as you had it)
         if rec and takes:
@@ -1057,16 +1174,12 @@ class Daw:
                 # where the take's first sample belongs on the timeline: what the
                 # sound cards added is taken off, so it lines up with what you heard
                 first = take["first"] - take["comp"] - self.rec_offset
-                start = max(rec["punch"], first)
-                offset = start - first
-                length = take["frames"] / take["sr"] - offset
-                if length <= 0.01:
+                passes = take_passes(first, take["frames"] / take["sr"], rec)
+                if not passes:
                     continue
                 for tid, src in rec["tracks"].items():
                     if src == take["src"]:
-                        changes.append(["clip", new_id("c"), {
-                            "track": tid, "file": key, "start": tm.s2b(start), "offset": offset, "len": length,
-                            "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}])
+                        changes += self._place_take(tid, key, passes, tm)
                 if take["dropped"]:
                     self.notices.append("The recording skipped a little (the disk couldn't keep up).")
             self._do(changes)  # one undo step takes the whole take back out
@@ -1078,6 +1191,77 @@ class Daw:
         if broadcast:
             self._send({"t": "tp", "play": False})
         self.version += 1
+
+    def _place_take(self, tid: str, key: str, passes: list, tm: TempoMap) -> list:
+        """A recording's clips on a track: one take, or (loop recording) one take a time round. Over
+        clips already there it becomes a take folder with them: the newest take plays, the rest stay
+        to choose from (comp)."""
+        clips = {cid: dict(c) for cid, c in self.p.live("clip").items() if c.get("track") == tid and not c.get("pattern")}
+        work = Comp(clips, tm)
+        lo = min(t for t, _, _ in passes)
+        hi = max(t + d for t, _, d in passes)
+        group = next((c["group"] for c in clips.values() if c.get("group") and work.overlaps(c, lo, hi)), None)
+        if group is None:
+            plain = [cid for cid, c in clips.items() if not c.get("group") and work.overlaps(c, lo, hi)]
+            if not plain and len(passes) == 1:
+                t, off, d = passes[0]
+                cid = new_id("c")
+                work.clips[cid] = {"track": tid, "file": key, "start": tm.s2b(t), "offset": off, "len": d,
+                                   "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}
+                return work.changes()
+            group = new_id("g")
+            for cid in plain:  # what was there is take 1
+                c = work.clips[cid]
+                c.update(group=group, take=1)
+                work.clips[new_id("c")] = {**c, "tsrc": True}
+        take = work.next_take(group)
+        full = max(d for _, _, d in passes)
+        for i, (t, off, d) in enumerate(passes):
+            work.clips[new_id("c")] = {"track": tid, "file": key, "start": tm.s2b(t), "offset": off, "len": d,
+                                       "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0, "group": group,
+                                       "take": take + i, "tsrc": True}
+        # the comp: each take over what it covers, in order; a last time round cut short stays a take only
+        n = len(passes)
+        if n > 1 and passes[-1][2] < 0.9 * full:
+            n -= 1
+        for i in range(n):
+            t, off, d = passes[i]
+            work.comp(group, take + i, t, t + d)
+        return work.changes()
+
+    def comp(self, group: str, take: int, a: float, b: float) -> dict:
+        """Comping: take `take` of a take folder plays from beat a to b (the others make room)."""
+        with self.lock:
+            tm = self._tm()
+            live = self.p.live("clip")
+            tid = next((c.get("track") for c in live.values() if c.get("group") == group), None)
+            if tid is None or not (b > a):
+                return self.view()
+            work = Comp({cid: dict(c) for cid, c in live.items() if c.get("track") == tid and c.get("group") == group}, tm)
+            work.comp(group, int(take), tm.b2s(float(a)), tm.b2s(float(b)))
+            self._do(work.changes())
+            return self.view()
+
+    def take_op(self, group: str, op: str, take: int | None = None) -> dict:
+        """flatten: keep the comp as plain clips, drop the takes. delete: take `take` out of the folder."""
+        with self.lock:
+            live = self.p.live("clip")
+            members = {cid: c for cid, c in live.items() if c.get("group") == group}
+            ch = []
+            if op == "flatten":
+                for cid, c in members.items():
+                    ch.append(["clip", cid, {"del": True} if c.get("tsrc") else {"group": None, "take": None}])
+            elif op == "delete" and take is not None:
+                for cid, c in members.items():
+                    if c.get("take") == int(take):
+                        ch.append(["clip", cid, {"del": True}])
+                left = {c.get("take") for c in members.values() if c.get("tsrc") and c.get("take") != int(take)}
+                if len(left) <= 1:  # one take left: no folder any more
+                    for cid, c in members.items():
+                        if c.get("take") != int(take):
+                            ch.append(["clip", cid, {"del": True} if c.get("tsrc") else {"group": None, "take": None}])
+            self._do(ch)
+            return self.view()
 
     def _take_notes(self, rec: dict, played: list, stop_at: float):
         """Notes played on armed channels while recording become a new pattern
@@ -1151,7 +1335,7 @@ class Daw:
         every track on its own too. Runs in the background (engine.daw_export_status)."""
         with self.lock:
             tm, m = self._tm(), self.p.meta()
-            clips = list(self.p.live("clip").values())
+            clips = [c for c in self.p.live("clip").values() if not c.get("tsrc")]
             if loop and m["loop"] and m["loop_end"] > m["loop_start"]:
                 start, end = tm.b2s(m["loop_start"]), tm.b2s(m["loop_end"])  # exact, so it loops
             else:
@@ -1269,6 +1453,8 @@ class Daw:
             self.pattern_mode = None
         desc = [[] for _ in range(MAX_TRACKS)]
         for c in ([] if self.pattern_mode else p.live("clip").values()):
+            if c.get("tsrc"):
+                continue  # a take kept to comp from: silent
             slot = self.slots.get(c.get("track"))
             key = c.get("file")
             if slot is None or key not in self.loaded:
@@ -1282,7 +1468,7 @@ class Daw:
             e.daw_timeline(desc, notes)
             self.sent_desc, self.sent_notes = desc, notes
         m = p.meta()
-        loop = (bool(m["loop"]), b2s(float(m["loop_start"])), b2s(float(m["loop_end"])))
+        loop = (bool(m["loop"]) and not ((self.rec or {}).get("prange") or (self.rec or {}).get("jam")), b2s(float(m["loop_start"])), b2s(float(m["loop_end"])))
         if self.pattern_mode:
             loop = (True, 0.0, b2s(self._pattern_len(self.pattern_mode)))
         if loop != self.sent_loop:
@@ -1892,7 +2078,7 @@ class Daw:
             if m.get("play"):
                 rtt = self.e.state().get("rtt") or 0.0
                 self._start(float(m.get("pos", 0)), rec=bool(m.get("rec")), countin=bool(m.get("countin")),
-                            broadcast=False, delay=rtt / 2000.0, jam=bool(m.get("jam")))
+                            broadcast=False, delay=rtt / 2000.0, jam=bool(m.get("jam")), punch=bool(m.get("punch")))
             else:
                 self._stop(broadcast=False)
         elif t == "here" and pid == self.p.pid:
@@ -2089,9 +2275,10 @@ class Daw:
             return {
                 "pid": p.pid, "meta": p.meta(), "tracks": [t for t in tracks if not t["bus"]],
                 "buses": [t for t in tracks if t["bus"]],
-                "clips": [{"id": i, **c} for i, c in p.live("clip").items()],
+                "clips": [{"id": i, **c} for i, c in p.live("clip").items() if not c.get("tsrc")],
+                "takes": [{"id": i, **c} for i, c in p.live("clip").items() if c.get("tsrc")],
                 "files": files, "me": self.me, "partner": self.partner,
-                "local": {"click": p.local.get("click"), "countin": p.local.get("countin"),
+                "local": {"click": p.local.get("click"), "countin": p.local.get("countin"), "punch": p.local.get("punch"),
                           "livesends": p.local.get("livesends") or {}},
                 "patterns": sorted(({"id": i, **x} for i, x in p.live("pattern").items()), key=lambda x: str(x.get("name", ""))),
                 "notes": [{"id": i, **n} for i, n in p.live("note").items()],
@@ -2106,6 +2293,8 @@ class Daw:
         with self.lock:
             if self.rec and not s["daw_recording"] and not s["daw_playing"]:
                 self._stop(broadcast=True)  # the engine stopped by itself (sound card restart)
+            elif self.rec and self.rec.get("prange") and s["daw_pos"] > self.rec["prange"][1] + 0.5:
+                self._stop(broadcast=True)  # past the out point: the punch is done
             tm = self._tm()
             playing = bool(s["daw_playing"])
             levels = {tid: s["track_levels"][slot] for tid, slot in self.slots.items()}

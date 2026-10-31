@@ -130,6 +130,22 @@ own playback of the song, corrected for your own sound card. So the takes land
 on the beat **however far apart you are**: the 30–50 ms between you only
 matters for what you hear of each other live, not for what ends up in the song.
 
+**Takes and comping.**
+
+- **Loop recording:** turn the loop on and record: every time round the loop
+  is a new take, all in one take folder; the last whole one plays.
+- **Punch:** the *Punch* button next to *1 bar*. Recording then keeps only what's
+  between the in and out points (the loop strip on the ruler, red while Punch
+  is on), with a bar to play along to before the in point, and it stops by
+  itself after the out point. Punching (or loop recording) over a clip that's
+  already there makes a take folder with it: nothing is lost.
+- **Comping:** a clip in a take folder says *⧉ take 2*. Right-click → *Takes…*
+  (or *Swap in take 3 here*) opens the **Takes** tab: the comp on top, every
+  take below. **Drag along a take** and that take plays there; **click a take**
+  and it takes over that part of the comp. *Take N* buttons use one take all
+  the way, *Flatten* keeps the comp as plain clips. Moving a comp clip moves
+  the whole folder; every comp change is one undo.
+
 **Tempo changes, time signatures, markers and sections.** The ruler above the
 tracks has three strips:
 

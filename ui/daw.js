@@ -205,6 +205,7 @@ function songSetup() {
   $("songBeats").onchange = () => songEdit([["meta", "meta", { beats: +$("songBeats").value }]]);
   $("tgClick").onclick = async () => setSongView(await api.daw_local("click", !song.view.local.click));
   $("tgCount").onclick = async () => setSongView(await api.daw_local("countin", !song.view.local.countin));
+  $("tgPunch").onclick = async () => setSongView(await api.daw_local("punch", !song.view.local.punch));
   $("tgLoop").onclick = () => {
     const m = song.view.meta;
     const ch = { loop: !m.loop };
@@ -353,6 +354,7 @@ function songRender() {
   $("songBeats").value = String(m.beats);
   $("tgClick").classList.toggle("on", !!v.local.click);
   $("tgCount").classList.toggle("on", !!v.local.countin);
+  $("tgPunch").classList.toggle("on", !!v.local.punch);
   $("tgLoop").classList.toggle("on", !!m.loop);
   $("undoBtn").disabled = !v.undo;
   $("redoBtn").disabled = !v.redo;
@@ -717,6 +719,7 @@ function songDraw() {
 // what's been done to a clip, after its name: ◀ backwards, ±semitones, the speed
 function clipBadges(c) {
   let out = "";
+  if (c.group) out += `  ⧉ take ${c.take}`;
   if (c.tune && (c.tune.notes || []).length) out += "  ♪ tuned";
   if (c.reverse) out += "  ◀";
   const p = c.pitch || 0;
@@ -965,9 +968,11 @@ function drawRuler() {
   ctx.save();
   ctx.translate(0, RT);
   ctx.beginPath(); ctx.rect(0, 0, w, h - RT); ctx.clip();
-  if (v.meta.loop || song.rulerDrag) {
+  const punch = v.local.punch && v.meta.loop_end > v.meta.loop_start;
+  if (v.meta.loop || song.rulerDrag || punch) {
     const x0 = v.meta.loop_start * ppb - sx, x1 = v.meta.loop_end * ppb - sx;
-    ctx.fillStyle = v.meta.loop ? "rgba(79,214,198,0.55)" : "rgba(255,255,255,0.14)";
+    // punch on: the in and out points in red (recording keeps only what's between them)
+    ctx.fillStyle = punch && !song.rulerDrag ? "rgba(255,96,112,0.7)" : v.meta.loop ? "rgba(79,214,198,0.55)" : "rgba(255,255,255,0.14)";
     ctx.fillRect(x0, 0, x1 - x0, 8);
   }
   const barPx = ppb * bpb();
@@ -1222,10 +1227,22 @@ function commitDrag(d) {
       song.sel.add(id);
     }
   } else {
+    const moved = new Set();
     for (const [id, r] of Object.entries(d.result)) {
       const { row, ...f } = r;
       if (row != null) f.track = v.tracks[row].id;
       ch.push(["clip", id, f]);
+      moved.add(id);
+      // a clip of a take folder moves the whole folder with it (its takes and the rest of the comp)
+      const c = v.clips.find((k) => k.id === id);
+      if (d.zone === "body" && c && c.group) {
+        const db = f.start - c.start;
+        for (const k of [...v.clips, ...(v.takes || [])]) {
+          if (k.group !== c.group || moved.has(k.id) || d.result[k.id]) continue;
+          moved.add(k.id);
+          ch.push(["clip", k.id, { start: k.start + db, ...(f.track ? { track: f.track } : {}) }]);
+        }
+      }
     }
   }
   songEdit(ch);
@@ -1309,7 +1326,7 @@ function splitClips(beat, clips) {
     }
     const left = secsBetween(c.start, beat), right = c.len - left, cut = cutOffsets(c, left);
     ch.push(["clip", c.id, { offset: cut.left, len: left, fade_out: 0, fade_in: Math.min(c.fade_in || 0, left) }]);
-    ch.push(["clip", newId("c"), { ...clipFields(c), start: beat, offset: cut.right, len: right,
+    ch.push(["clip", newId("c"), { ...clipFields(c), ...(c.group ? { group: c.group, take: c.take } : {}), start: beat, offset: cut.right, len: right,
       fade_in: 0, fade_out: Math.min(c.fade_out || 0, right) }]);
   }
   if (ch.length) songEdit(ch);
@@ -1341,7 +1358,14 @@ function duplicateSel() {
 function deleteSel() {
   const ids = [...song.sel];
   song.sel.clear();
-  if (ids.length) songEdit(ids.map((id) => ["clip", id, { del: true }]));
+  const ch = ids.map((id) => ["clip", id, { del: true }]);
+  // a take folder with none of its comp left: its takes go too
+  const v = song.view, gone = new Set(ids);
+  for (const g of new Set(v.clips.filter((c) => gone.has(c.id) && c.group).map((c) => c.group))) {
+    if (v.clips.some((c) => c.group === g && !gone.has(c.id))) continue;
+    for (const t of v.takes || []) if (t.group === g) ch.push(["clip", t.id, { del: true }]);
+  }
+  if (ch.length) songEdit(ch);
 }
 
 function copySel(cut = false) {
@@ -1398,6 +1422,7 @@ function lanesContext(e) {
       items.push(["Open in the sequencer", "dbl-click", () => { seq.pat = c.pattern; setMainView("seq"); }]);
     } else {
       items.push(["Edit clip…", "dbl-click", () => openClipEditor(c.id)]);
+      items.push(...takeMenuItems(c));
       items.push(["Split into stems…", "", () => { openClipEditor(c.id); ce.tab = "stems"; ceRender(); }]);
       items.push([c.mute ? "Unmute clip" : "Mute clip", "Alt+M", () => muteSel(!c.mute)]);
       items.push(["Reverse", "", () => songEdit(selClips().filter((k) => !k.pattern).map((k) => ["clip", k.id, { reverse: !k.reverse }]))]);
@@ -1890,11 +1915,13 @@ function demoSong() {
     ],
     clips: [
       { id: "c1", track: "t1", file: "take-g1.wav", start: 0, offset: 0, len: 15, gain: 1 },
-      { id: "c2", track: "t2", file: "take-v1.wav", start: 8, offset: 0.5, len: 11, gain: 0.7, fade_in: 1.2, fade_out: 2.5 },
+      { id: "c2", track: "t2", file: "take-v1.wav", start: 8, offset: 0.5, len: 5, gain: 0.7, fade_in: 1.2, fade_out: 0.008, group: "gv", take: 2 },
+      { id: "c2b", track: "t2", file: "take-v1.wav", start: 16, offset: 5.8, len: 6, gain: 0.7, fade_in: 0.008, fade_out: 2.5, group: "gv", take: 3 },
       { id: "c3", track: "t3", file: "take-k1.wav", start: 16, offset: 0, len: 8, gain: 1 },
       { id: "c4", track: "t4", pattern: "pa", start: 0, blen: 16, boff: 0 },
       { id: "c5", track: "t5", pattern: "pb", start: 8, blen: 16, boff: 0 },
     ],
+    takes: [1, 2, 3].map((k) => ({ id: "tv" + k, track: "t2", file: "take-v1.wav", start: 8, offset: 0.2 + 0.3 * (k - 1), len: 11, gain: 0.7, group: "gv", take: k, tsrc: true })),
     patterns: [{ id: "pa", name: "Beat", len: 4 }, { id: "pb", name: "Bassline", len: 8 }],
     notes: [
       ...[0, 1.5, 2, 3.5].map((b, i) => ({ id: "k" + i, pattern: "pa", track: "t4", start: b, len: 0.25, key: 36, vel: 115 })),
@@ -1905,7 +1932,7 @@ function demoSong() {
     markers: [{ id: "m1", beat: 0, name: "Intro", section: true }, { id: "m2", beat: 16, name: "Verse", section: true },
       { id: "m3", beat: 24, name: "drop the bass", section: false }],
     patternMode: null,
-    files, me, partner, local: { click: true, countin: true }, conflict: null, shared: true, undo: true, redo: false,
+    files, me, partner, local: { click: true, countin: true, punch: false }, conflict: null, shared: true, undo: true, redo: false,
   };
   let v = 1, playing = false, recording = false, recFrom = null, pos = 0, t0 = 0, exportAt = 0;
   const copy = () => JSON.parse(JSON.stringify(view));
@@ -1924,6 +1951,38 @@ function demoSong() {
         let free = 0;
         while (used.has(free)) free++;
         if (o) Object.assign(o, f); else list.push({ id, ...f, mine: f.owner === me, slot: free });
+      }
+      v++; return copy();
+    },
+    daw_comp: async (group, take, a, b) => {
+      // (like daw.py's Comp, in beats; good enough for the demo)
+      const cut = (c, x, y) => {
+        const s0 = c.start, e0 = c.start + clipBeats(c), p = Math.max(x, s0), q = Math.min(y, e0);
+        if (q - p < 1e-3) return null;
+        return { ...c, start: p, offset: (c.offset || 0) + secsBetween(s0, p), len: secsBetween(p, q),
+          fade_in: p > s0 ? 0.008 : c.fade_in || 0, fade_out: q < e0 ? 0.008 : c.fade_out || 0 };
+      };
+      for (const c of view.clips.filter((k) => k.group === group)) {
+        const e0 = c.start + clipBeats(c);
+        if (e0 <= a || c.start >= b) continue;
+        const l = cut(c, -1e9, a), r = cut(c, b, 1e9);
+        view.clips.splice(view.clips.indexOf(c), 1);
+        if (l) view.clips.push(l);
+        if (r) view.clips.push({ ...r, id: newId("c") });
+      }
+      for (const s of view.takes.filter((k) => k.group === group && k.take === take)) {
+        const p = cut(s, a, b);
+        if (p) { delete p.tsrc; view.clips.push({ ...p, id: newId("c") }); }
+      }
+      v++; return copy();
+    },
+    daw_take_op: async (group, op, take) => {
+      if (op === "flatten") {
+        view.takes = view.takes.filter((k) => k.group !== group);
+        for (const c of view.clips) if (c.group === group) { delete c.group; delete c.take; }
+      } else if (op === "delete") {
+        view.takes = view.takes.filter((k) => !(k.group === group && k.take === take));
+        view.clips = view.clips.filter((k) => !(k.group === group && k.take === take));
       }
       v++; return copy();
     },

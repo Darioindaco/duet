@@ -70,8 +70,8 @@ function ceRender() {
   $("ceSub").textContent = `${f.name || "Audio"} · ${ceTime(ceFileDur(c))} file · ${ceTime(c.len)} in the song`;
   for (const b of $("ceTabs").querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === ce.tab);
   // the Tune tab has its piano roll where the waveform is
-  const tuning = ce.tab === "tune";
-  $("ceWave").hidden = tuning; $("tuneCv").hidden = !tuning;
+  const tuning = ce.tab === "tune" || ce.tab === "takes";
+  $("ceWave").hidden = tuning; $("tuneCv").hidden = ce.tab !== "tune";
   document.querySelector("#clipEd .cehint").hidden = tuning;
   $("cePlay").classList.toggle("on", !!(song.st && song.st.playing));
   const body = $("ceBody");
@@ -80,7 +80,7 @@ function ceRender() {
     body.dataset.tab = ce.tab;
     body.innerHTML = "";
     body.append(ce.tab === "clip" ? ceClipTab(c) : ce.tab === "pitch" ? cePitchTab(c) : ce.tab === "chop" ? ceChopTab(c)
-      : ce.tab === "tune" ? tuneTab(c) : ceStemsTab(c));
+      : ce.tab === "tune" ? tuneTab(c) : ce.tab === "takes" ? takesTab(c) : ceStemsTab(c));
   } else {
     ceRefresh(c);
   }
@@ -379,6 +379,7 @@ function ceChop(c) {
 
 function ceDraw() {
   if (ce.tab === "tune") { tuneDraw(); return; }
+  if (ce.tab === "takes") { takesDraw(); return; }
   const c = ceClip(), cv = $("ceWave");
   if (!c || !cv || $("clipEd").hidden) return;
   const w = cv.clientWidth, h = cv.clientHeight;
