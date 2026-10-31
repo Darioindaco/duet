@@ -71,7 +71,7 @@ function addAutomation(target, param) {
 
 function scrollToRow(row) {
   const lanes = $("lanes");
-  if (row >= 0 && lanes) lanes.scrollTop = Math.max(0, row * ROW - lanes.clientHeight / 2);
+  if (row >= 0 && lanes) lanes.scrollTop = Math.max(0, rowY(row) - lanes.clientHeight / 2);
 }
 
 // a menu of everything on a target that can have a lane
@@ -154,7 +154,7 @@ function drawAutoLane(ctx, t, y, sx, w) {
 }
 
 function autoHit(t, p) {
-  const pts = autoPoints(t), y = p.row * ROW;
+  const pts = autoPoints(t), y = rowY(p.row);
   for (let i = pts.length - 1; i >= 0; i--) {
     if (Math.abs(pts[i][0] * song.ppb - p.px) <= AUTO_HIT && Math.abs(autoY(pts[i][1], y) - p.py) <= AUTO_HIT) return i;
   }
@@ -181,7 +181,7 @@ function autoRemovePoint(t, i) {
 }
 
 function autoDown(e, p, t) {
-  const lanes = $("lanes"), y = p.row * ROW;
+  const lanes = $("lanes"), y = rowY(p.row);
   let pts = autoPoints(t).map((q) => q.slice());
   let i = autoHit(t, p);
   if (i >= 0 && e.altKey) { autoRemovePoint(t, i); return; }

@@ -8,9 +8,47 @@
 // songSetup(), so the main script's helpers ($, ui, api, toast…) exist by then.
 
 const ROW = 64;          // track height, px
+const TAKE_ROW = 34;     // a take's lane under an opened track, px
+// ---------- the rows: a track is ROW high, plus a lane a take when its takes are open ----------
+let _rows = null, _rowsKey = null;
+function takeLanes(tid) {
+  // lane j shows the j-th take of every take folder on the track
+  const per = {};
+  for (const c of (song.view && song.view.takes) || []) if (c.track === tid) (per[c.group] ||= new Set()).add(c.take);
+  const groups = Object.entries(per).map(([g, s]) => [g, [...s].sort((a, b) => a - b)]);
+  return { groups, n: Math.max(0, ...groups.map(([, s]) => s.length)) };
+}
+function rows() {
+  const v = song.view;
+  if (!v) return { y: [], h: [], lanes: [], total: 0 };
+  const key = v.tracks.map((t) => t.id).join() + "|" + [...(song.takesOpen || [])].join() + "|" + (v.takes || []).length + "|" + (v.takes || []).map((c) => c.track + c.take).join();
+  if (_rows && _rowsKey === key && _rows.v === v) return _rows;
+  const y = [], h = [], lanes = [];
+  let at = 0;
+  v.tracks.forEach((t) => {
+    const L = song.takesOpen && song.takesOpen.has(t.id) ? takeLanes(t.id) : { groups: [], n: 0 };
+    y.push(at); lanes.push(L); h.push(ROW + L.n * TAKE_ROW);
+    at += ROW + L.n * TAKE_ROW;
+  });
+  _rowsKey = key;
+  return (_rows = { y, h, lanes, total: at, v });
+}
+const rowY = (i) => { const r = rows(); return i < r.y.length ? r.y[i] : r.total + (i - r.y.length) * ROW; };
+const rowsTotal = () => rows().total;
+// the track row at py (past the last: as if every row were ROW high), and the take lane in it (-1: the track itself)
+function rowAt(py) {
+  const r = rows();
+  if (py >= r.total) return { row: r.y.length + Math.floor((py - r.total) / ROW), lane: -1 };
+  let i = 0;
+  while (i + 1 < r.y.length && r.y[i + 1] <= py) i++;
+  const dy = py - (r.y[i] || 0);
+  return { row: i, lane: dy < ROW ? -1 : Math.floor((dy - ROW) / TAKE_ROW) };
+}
 // -1 off (free), -2 smart (free, but a grid line within a few pixels catches it), else the grid in beats (0 = a bar)
 const SNAPS = [["Off", -1], ["Smart", -2], ["Bar", 0], ["Beat", 1], ["1/2", 0.5], ["1/4", 0.25], ["1/8", 0.125], ["1/16", 0.0625]];
 const song = {
+  // tracks whose takes are open under them (this computer only)
+  takesOpen: (() => { try { return new Set(JSON.parse(localStorage.getItem("duet.takesOpen") || "[]")); } catch (e) { return new Set(); } })(),
   view: null, v: -1, st: null, stAt: 0, fetching: false,
   peaks: {}, peakReq: {},
   sel: new Set(), selTrack: null,
@@ -376,12 +414,13 @@ function renderHeads() {
   song.pendingHeads = false;
   const box = $("theadsIn"), v = song.view;
   box.innerHTML = "";
-  box.style.height = v.tracks.length * ROW + "px";
+  box.style.height = rowsTotal() + "px";
   v.tracks.forEach((t, i) => {
     const el = document.createElement("div");
     el.className = "th" + (t.mine ? "" : " partner") + (song.selTrack === t.id ? " sel" : "");
     el.dataset.id = t.id;
-    el.style.top = i * ROW + "px";
+    el.style.top = rowY(i) + "px";
+    el.style.height = rows().h[i] + "px";
     el.onpointerdown = () => { song.selTrack = t.id; for (const x of box.children) x.classList.toggle("sel", x === el); };
 
     const name = document.createElement("input");
@@ -406,6 +445,15 @@ function renderHeads() {
     const del = document.createElement("button");
     del.className = "del"; del.textContent = "✕"; del.title = "Delete this track";
     del.onclick = () => deleteTrack(t);
+    if ((v.takes || []).some((c) => c.track === t.id)) {
+      const open = song.takesOpen && song.takesOpen.has(t.id);
+      const tk = document.createElement("button");
+      tk.className = "tb takesbtn" + (open ? " on" : "");
+      tk.textContent = open ? "▾" : "▸";
+      tk.title = open ? "Close the takes" : "Show the takes under the track (comp them here)";
+      tk.onclick = () => toggleTakes(t.id);
+      btns.append(tk);
+    }
     btns.append(arm,
       toggleBtn("M", "m", t.mute, "Mute (just for you)", (on) => api.daw_local("mute", on, t.id).then(setSongView)),
       toggleBtn("S", "s", t.solo, "Solo (just for you)", (on) => api.daw_local("solo", on, t.id).then(setSongView)), del);
@@ -657,20 +705,21 @@ function songDraw() {
   if (!w || !h) return;
   const v = song.view, ppb = song.ppb, sx = lanes.scrollLeft, sy = lanes.scrollTop;
   $("lanesSize").style.width = songLengthBeats() * ppb + "px";
-  $("lanesSize").style.height = Math.max(h, (v.tracks.length + 2) * ROW) + "px";
+  $("lanesSize").style.height = Math.max(h, rowsTotal() + 2 * ROW) + "px";
   const ctx = sizeCanvas(song.cv, w, h);
   ctx.clearRect(0, 0, w, h);
   // rows
   v.tracks.forEach((t, i) => {
-    const y = i * ROW - sy;
-    if (y > h || y + ROW < 0) return;
+    const y = rowY(i) - sy, rh = rows().h[i];
+    if (y > h || y + rh < 0) return;
     ctx.fillStyle = i % 2 ? "#111017" : "#14121a";
-    ctx.fillRect(0, y, w, ROW);
+    ctx.fillRect(0, y, w, rh);
+    if (rh > ROW) { ctx.fillStyle = "#0b0a0f"; ctx.fillRect(0, y + ROW, w, rh - ROW); }
     ctx.fillStyle = "#1f1c27";
-    ctx.fillRect(0, y + ROW - 1, w, 1);
+    ctx.fillRect(0, y + rh - 1, w, 1);
   });
   // grid
-  const rowsH = Math.min(h, v.tracks.length * ROW - sy);
+  const rowsH = Math.min(h, rowsTotal() - sy);
   eachBar(sx / ppb, (sx + w) / ppb, (bar, at, len, k) => {
     const step = gridStep(len);
     if (step > len && k % Math.round(step / len)) return; // zoomed far out: every 4th bar
@@ -702,13 +751,14 @@ function songDraw() {
     const row = ghost && ghost.row != null ? ghost.row : trackRow(c.track);
     if (row < 0) return;
     const cc = ghost ? { ...c, ...ghost } : c;
-    const x = cc.start * ppb - sx, cw = clipBeats(cc) * ppb, y = row * ROW - sy;
+    const x = cc.start * ppb - sx, cw = clipBeats(cc) * ppb, y = rowY(row) - sy;
     if (x > w || x + cw < 0 || y > h || y + ROW < 0) return;
     drawClip(ctx, cc, x, y + 2, cw, ROW - 5, v.tracks[row]);
   };
   v.tracks.forEach((t, i) => {
-    const y = i * ROW - sy;
+    const y = rowY(i) - sy;
     if (isAuto(t) && y < h && y + ROW > 0) drawAutoLane(ctx, t, y, sx, w);
+    if (rows().lanes[i] && rows().lanes[i].n) drawTakeLanes(ctx, t, i, y, sx, w, h);
   });
   for (const c of v.clips) place(c, d && !d.copy ? res[c.id] : null);
   if (d && d.copy) for (const c of v.clips) if (res[c.id]) place(c, res[c.id]);
@@ -1008,7 +1058,7 @@ function drawOverlay() {
     const x0 = st.recFrom * ppb - sx, x1 = pos * ppb - sx;
     v.tracks.forEach((t, i) => {
       if (!t.arm || x1 <= x0) return;
-      const y = i * ROW - sy + 2;
+      const y = rowY(i) - sy + 2;
       ctx.fillStyle = "rgba(255,96,112,0.16)";
       ctx.fillRect(x0, y, x1 - x0, ROW - 5);
       ctx.fillStyle = "rgba(255,96,112,0.85)";
@@ -1019,7 +1069,7 @@ function drawOverlay() {
   }
   const px = Math.round(pos * ppb - sx) + 0.5;
   ctx.fillStyle = st && st.recording ? "#ff6070" : "#efeaf4";
-  ctx.fillRect(px - 0.5, 0, 1, Math.min(h, v.tracks.length * ROW - sy));
+  ctx.fillRect(px - 0.5, 0, 1, Math.min(h, rowsTotal() - sy));
   const b = song.band;
   if (b && b.moved) {
     const x0 = Math.min(b.b0, b.b1) * ppb - sx, x1 = Math.max(b.b0, b.b1) * ppb - sx;
@@ -1033,7 +1083,7 @@ function drawOverlay() {
   // a sound being dragged in from the browser: where it would land
   const g = song.dropGhost;
   if (g) {
-    const x = g.beat * ppb - sx, y = g.row * ROW - sy + 2;
+    const x = g.beat * ppb - sx, y = rowY(g.row) - sy + 2;
     ctx.fillStyle = "rgba(255,149,72,0.18)";
     ctx.fillRect(x, y, Math.max(40, 4 * ppb), ROW - 5);
     ctx.fillStyle = song.colors.me;
@@ -1076,7 +1126,7 @@ function lanePoint(e) {
   const lanes = $("lanes"), r = lanes.getBoundingClientRect();
   const x = e.clientX - r.left, y = e.clientY - r.top;
   const px = x + lanes.scrollLeft, py = y + lanes.scrollTop;
-  return { inside: x >= 0 && y >= 0 && x <= lanes.clientWidth && y <= lanes.clientHeight, px, py, beat: px / song.ppb, row: Math.floor(py / ROW) };
+  return { inside: x >= 0 && y >= 0 && x <= lanes.clientWidth && y <= lanes.clientHeight, px, py, beat: px / song.ppb, ...rowAt(py) };
 }
 
 function hitClip(beat, row) {
@@ -1099,7 +1149,7 @@ function fadePx(c, which, ppb) {
 function hitZone(p) {
   const c = hitClip(p.beat, p.row);
   if (!c) return null;
-  const ppb = song.ppb, w = clipBeats(c) * ppb, lx = p.px - c.start * ppb, ly = p.py - (p.row * ROW + 2);
+  const ppb = song.ppb, w = clipBeats(c) * ppb, lx = p.px - c.start * ppb, ly = p.py - (rowY(p.row) + 2);
   const fin = fadePx(c, "in", ppb), fout = fadePx(c, "out", ppb);
   if (ly < 14 && w > 30 && !c.pattern) {
     if (Math.abs(lx - Math.max(fin, 5)) <= 6 && lx < w / 2) return { c, zone: "fin" };
@@ -1132,8 +1182,8 @@ function lanesHover(e) {
   if (song.drag || song.band || song.autoDrag || e.buttons || !song.view) return;
   const p = lanePoint(e), at = p.inside ? song.view.tracks[p.row] : null;
   if (isAuto(at) || song.autoHover) { autoHoverAt(isAuto(at) ? at : null, p); if (isAuto(at)) return; }
-  const h = p.inside ? hitZone(p) : null;
-  $("lanes").style.cursor = h ? CURSORS[h.zone] : "";
+  const h = p.inside && p.lane < 0 ? hitZone(p) : null;
+  $("lanes").style.cursor = h ? CURSORS[h.zone] : p.inside && p.lane >= 0 && takeLaneAt(p) ? "crosshair" : "";
   const key = h ? h.c.id + h.zone : "";
   if (key !== song.hoverKey) { song.hoverKey = key; song.hover = h ? h.c.id : null; songDraw(); }
 }
@@ -1147,6 +1197,7 @@ function lanesDown(e) {
   lanes.setPointerCapture(e.pointerId);
   const row = song.view.tracks[p.row];
   if (isAuto(row)) { autoDown(e, p, row); return; }
+  if (p.lane >= 0) { takeLaneDown(e, p); return; }
   const h = hitZone(p);
   if (!h) { bandSelect(e, p); return; }
   const c = h.c;
@@ -1262,7 +1313,7 @@ function bandSelect(e, p) {
     song.sel = new Set(keep);
     for (const c of song.view.clips) {
       const row = trackRow(c.track);
-      if (row * ROW + ROW > ly && row * ROW < hy && c.start + clipBeats(c) > lb && c.start < hb) song.sel.add(c.id);
+      if (rowY(row) + ROW > ly && rowY(row) < hy && c.start + clipBeats(c) > lb && c.start < hb) song.sel.add(c.id);
     }
     songDraw();
   };
@@ -1408,6 +1459,7 @@ function lanesContext(e) {
   if (!p.inside) return;
   const row = song.view.tracks[p.row];
   if (isAuto(row)) { autoContext(p, row, e.clientX, e.clientY); return; }
+  if (p.lane >= 0) { takeLaneContext(e, p); return; }
   const h = hitZone(p), items = [];
   if (h) {
     const c = h.c;

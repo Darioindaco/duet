@@ -145,6 +145,10 @@ matters for what you hear of each other live, not for what ends up in the song.
   and it takes over that part of the comp. *Take N* buttons use one take all
   the way, *Flatten* keeps the comp as plain clips. Moving a comp clip moves
   the whole folder; every comp change is one undo.
+- **Take lanes in the playlist:** a track with takes gets a **▸** in its header:
+  it opens a lane a take under the track, with the parts that play lit up.
+  Comp right there: drag along a take, or click it to swap in that part.
+  Right-click a lane for *Take N all the way*, *Delete take*, *Flatten*.
 
 **Tempo changes, time signatures, markers and sections.** The ruler above the
 tracks has three strips:

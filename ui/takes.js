@@ -55,7 +55,7 @@ async function compSet(group, take, a, b) {
   if (!(b > a)) return;
   setSongView(await api.daw_comp(group, take, a, b));
   // the clip the editor shows may have been cut away: follow the comp
-  if (!song.view.clips.some((k) => k.id === ce.id)) {
+  if (ce.id && !song.view.clips.some((k) => k.id === ce.id)) {
     const c = song.view.clips.find((k) => k.group === group);
     if (c) ce.id = c.id;
   }
@@ -127,12 +127,12 @@ function takesDraw() {
 }
 
 // a take's waveform from its file's peaks
-function takeWave(ctx, s, x0, x1, y, h, x, lit, col) {
+function takeWave(ctx, s, x0, x1, y, h, x, lit, col, left = TK_LEFT) {
   const levels = song.peaks[s.file], f = song.view.files[s.file] || {};
   if (!levels) {
     if (f.here && !song.peakReq[s.file]) {
       song.peakReq[s.file] = true;
-      api.daw_peaks(s.file).then((bb) => { if (bb) { song.peaks[s.file] = peakLevels(decodePeaks(bb)); takesDraw(); } else song.peakReq[s.file] = false; });
+      api.daw_peaks(s.file).then((bb) => { if (bb) { song.peaks[s.file] = peakLevels(decodePeaks(bb)); takesDraw(); songDraw(); } else song.peakReq[s.file] = false; });
     }
     return;
   }
@@ -141,7 +141,7 @@ function takeWave(ctx, s, x0, x1, y, h, x, lit, col) {
   let k = 0;
   while (k + 1 < levels.length && (512 << (k + 1)) <= secPx * sr) k++;
   const pk = levels[k], per = 512 << k, mid = y + h / 2, gn = (h / 2 - 2) / 127;
-  for (let px = Math.max(TK_LEFT, Math.floor(x0)); px < x1; px++) {
+  for (let px = Math.max(left, Math.floor(x0)); px < Math.min(x1, left + 1e5); px++) {
     const beat = beatOf(px), t = clipSrcAt(s, b2s(beat) - s0);
     const i0 = Math.max(0, Math.floor(t * sr / per)), i1 = Math.max(i0 + 1, Math.floor((t + secPx) * sr / per));
     let lo = 0, hi = 0;
@@ -196,4 +196,101 @@ function takeMenuItems(c) {
   for (const k of g.nums) if (k !== c.take) items.push([`Swap in take ${k} here`, "", async () => setSongView(await api.daw_comp(c.group, k, c.start, end))]);
   items.push(["Flatten takes", "", async () => setSongView(await api.daw_take_op(c.group, "flatten"))]);
   return items;
+}
+
+// ---------- take lanes in the playlist: under a track whose takes are open (▸ in its header) ----------
+function toggleTakes(tid) {
+  song.takesOpen ||= new Set();
+  song.takesOpen.has(tid) ? song.takesOpen.delete(tid) : song.takesOpen.add(tid);
+  try { localStorage.setItem("duet.takesOpen", JSON.stringify([...song.takesOpen])); } catch (e) { /* fine */ }
+  renderHeads(); songDraw();
+}
+
+// what's at a point in a take lane: {group, take, src} (the take folder whose take covers the beat, or the nearest)
+function takeLaneAt(p) {
+  const L = rows().lanes[p.row];
+  if (!L || p.lane < 0 || p.lane >= L.n) return null;
+  let best = null, dist = Infinity;
+  for (const [g, nums] of L.groups) {
+    const k = nums[p.lane];
+    if (k == null) continue;
+    for (const s of song.view.takes.filter((c) => c.group === g && c.take === k)) {
+      const a = s.start, b = s.start + clipBeats(s), d = p.beat < a ? a - p.beat : p.beat > b ? p.beat - b : 0;
+      if (d < dist) { dist = d; best = { group: g, take: k, src: s }; }
+    }
+  }
+  return best;
+}
+
+function drawTakeLanes(ctx, t, i, y, sx, w, h) {
+  const L = rows().lanes[i], ppb = song.ppb, x = (beat) => beat * ppb - sx, v = song.view;
+  ctx.font = "600 10px system-ui, sans-serif";
+  for (let j = 0; j < L.n; j++) {
+    const ly = y + ROW + j * TAKE_ROW;
+    if (ly > h || ly + TAKE_ROW < 0) continue;
+    ctx.fillStyle = "#1a1822"; ctx.fillRect(0, ly + TAKE_ROW - 1, w, 1);
+    for (const [g, nums] of L.groups) {
+      const k = nums[j];
+      if (k == null) continue;
+      const col = takeColor(k), comp = v.clips.filter((c) => c.group === g && c.take === k);
+      for (const s of v.takes.filter((c) => c.group === g && c.take === k)) {
+        const x0 = x(s.start), x1 = x(s.start + clipBeats(s));
+        if (x1 < 0 || x0 > w) continue;
+        ctx.fillStyle = col + "16"; ctx.fillRect(x0, ly + 2, x1 - x0, TAKE_ROW - 5);
+        ctx.fillStyle = col + "70"; ctx.fillRect(x0, ly + 2, 2, TAKE_ROW - 5);
+        // bright where this take is in the comp
+        for (const c of comp) {
+          const a = x(c.start), b = x(c.start + clipBeats(c));
+          ctx.fillStyle = col + "2a"; ctx.fillRect(a, ly + 2, b - a, TAKE_ROW - 5);
+        }
+        takeWave(ctx, s, x0, x1, ly + 3, TAKE_ROW - 7, x,
+          (beat) => comp.some((c) => beat >= c.start - 1e-6 && beat < c.start + clipBeats(c) + 1e-6), col, 0);
+        ctx.fillStyle = col;
+        ctx.fillText(`Take ${k}`, Math.max(x0, 0) + 6, ly + 13);
+      }
+    }
+    const d = song.takeDrag;
+    if (d && d.moved && d.row === i && d.lane === j) {
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5;
+      const a = x(Math.min(d.a, d.b)), b = x(Math.max(d.a, d.b));
+      ctx.strokeRect(a, ly + 2, b - a, TAKE_ROW - 5);
+    }
+  }
+}
+
+function takeLaneDown(e, p) {
+  const hit = takeLaneAt(p);
+  if (!hit) return;
+  const lanes = $("lanes");
+  const g = takeGroup(hit.group), at = (ev) => Math.max(g.a, Math.min(g.b, snapBeat(lanePoint(ev).beat, snapFor(ev))));
+  const d = (song.takeDrag = { row: p.row, lane: p.lane, a: at(e), b: at(e), x0: e.clientX, moved: false });
+  const move = (ev) => {
+    if (Math.abs(ev.clientX - d.x0) > 3) d.moved = true;
+    d.b = at(ev);
+    songDraw();
+  };
+  const up = (ev) => {
+    lanes.removeEventListener("pointermove", move); lanes.removeEventListener("pointerup", up);
+    song.takeDrag = null;
+    if (d.moved) { compSet(hit.group, hit.take, Math.min(d.a, d.b), Math.max(d.a, d.b)); return; }
+    // a click: this take for the part of the comp under the mouse (in a gap: where the take is)
+    const beat = lanePoint(ev).beat, gg = takeGroup(hit.group);
+    const seg = gg.comp.find((c) => beat >= c.start && beat < c.start + clipBeats(c));
+    if (seg) compSet(hit.group, hit.take, seg.start, seg.start + clipBeats(seg));
+    else if (beat >= hit.src.start && beat < hit.src.start + clipBeats(hit.src)) compSet(hit.group, hit.take, hit.src.start, hit.src.start + clipBeats(hit.src));
+    songDraw();
+  };
+  lanes.addEventListener("pointermove", move); lanes.addEventListener("pointerup", up);
+}
+
+function takeLaneContext(e, p) {
+  const hit = takeLaneAt(p);
+  if (!hit) return;
+  const g = takeGroup(hit.group);
+  showCtx([
+    [`Take ${hit.take} all the way`, "", () => compSet(hit.group, hit.take, g.a, g.b)],
+    [`Delete take ${hit.take}`, "", async () => setSongView(await api.daw_take_op(hit.group, "delete", hit.take))],
+    ["Flatten takes", "", async () => setSongView(await api.daw_take_op(hit.group, "flatten"))],
+    ["Close the takes", "", () => toggleTakes(song.view.tracks[p.row].id)],
+  ], e.clientX, e.clientY);
 }

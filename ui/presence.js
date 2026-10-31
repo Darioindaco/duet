@@ -42,7 +42,7 @@ function hereState() {
   return {
     view: ui.view, pattern: seq.pat, track: ui.view === "seq" ? seq.channel : song.selTrack,
     sel: [...song.sel].slice(0, 64), notes: [...seq.sel].slice(0, 64), ptr: p,
-    scroll: { beat: r2(lanes.scrollLeft / song.ppb), row: r2(lanes.scrollTop / ROW) },
+    scroll: { beat: r2(lanes.scrollLeft / song.ppb), row: r2(rowAt(lanes.scrollTop).row) },
     roll: { beat: r2(pr.scrollLeft / seq.ppb), key: prKeyAt(pr.scrollTop + pr.clientHeight / 2) },
   };
 }
@@ -140,7 +140,7 @@ function goTo(t) {
     } else if (t.view === "song" && t.scroll) {
       requestAnimationFrame(() => {
         const lanes = $("lanes");
-        const x = t.scroll.beat * song.ppb, y = t.scroll.row * ROW;
+        const x = t.scroll.beat * song.ppb, y = rowY(Math.floor(t.scroll.row));
         if (Math.abs(lanes.scrollLeft - x) < 1 && Math.abs(lanes.scrollTop - y) < 1) return;
         song.autoScroll = true; // not you scrolling: the playhead keeps being followed
         lanes.scrollLeft = x; lanes.scrollTop = y;
@@ -184,14 +184,14 @@ function hereDrawSong(ctx, sx, sy, w, h) {
     for (const c of v.clips) {
       if (!t.sel.includes(c.id)) continue;
       const row = trackRow(c.track);
-      const x = c.start * ppb - sx, cw = clipBeats(c) * ppb, y = row * ROW - sy + 2;
+      const x = c.start * ppb - sx, cw = clipBeats(c) * ppb, y = rowY(row) - sy + 2;
       if (row < 0 || x > w || x + cw < 0 || y > h || y + ROW < 0) continue;
       ctx.beginPath(); ctx.roundRect(x - 1.5, y - 1.5, cw + 2, ROW - 3, 7); ctx.stroke();
     }
     ctx.restore();
   }
   const d = here.disp;
-  if (d && d.in === "song" && d.y >= 0) hereCursor(ctx, d.beat * ppb - sx, d.y * ROW - sy + ROW / 2, w, h);
+  if (d && d.in === "song" && d.y >= 0) hereCursor(ctx, d.beat * ppb - sx, rowY(Math.floor(d.y)) + (d.y % 1) * ROW - sy, w, h);
 }
 
 // in the piano roll: their selected notes and pointer, when they're on the same notes
