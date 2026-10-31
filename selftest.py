@@ -1203,6 +1203,12 @@ def test_signals():
     time.sleep(1.5)            # retransmits of acked messages must not deliver twice
     got += b.drain_signals()
     assert sorted(got) == sorted(msgs), [len(g) for g in got]
+    # the acks cross the same 30%-loss link: give the retransmits time to get one through
+    t1 = time.monotonic()
+    while a.signals_pending and time.monotonic() - t1 < 10:
+        time.sleep(0.1)
+        got += b.drain_signals()
+    assert sorted(got) == sorted(msgs), "a retransmit was delivered twice"
     assert a.signals_pending == 0, "messages never acked"
     a.close()
     b.close()
@@ -1677,6 +1683,8 @@ def test_takes():
     def tone(amp, blocks):
         for k in range(blocks):
             e.process([amp * math.sin(2 * math.pi * 220 * (k * N + i) / SR) for i in range(N)])
+            if k % 50 == 49:
+                time.sleep(0.01)  # no faster than the take writer drains (a sound card never is)
 
     def rms_at(t0, t1):
         """The song's level from t0 to t1 seconds, played."""
@@ -1699,6 +1707,7 @@ def test_takes():
             tone(amp, per)
         tone(0.3, per // 3)  # a fourth time, cut short
         d.stop()
+        assert not any("skipped" in n for n in d.notices), d.notices
         v = d.view()
         takes = sorted(v["takes"], key=lambda c: c["take"])
         assert [c["take"] for c in takes] == [1, 2, 3, 4] and len({c["group"] for c in takes}) == 1, takes
