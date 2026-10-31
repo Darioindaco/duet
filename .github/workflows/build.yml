@@ -202,7 +202,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; else tag="build-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"; fi
-          gh release create "$tag" dist/*.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+          # A new tag on a commit whose workflow files differ from the default branch's needs the
+          # "workflows" permission, which this token can't have (HTTP 403). So a build from a
+          # branch tags the default branch; the notes say which commit the apps were built from.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; target="$GITHUB_SHA"
+          else tag="build-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"; target="${{ github.event.repository.default_branch }}"; fi
+          gh release create "$tag" dist/*.zip --repo "$GITHUB_REPOSITORY" --target "$target" \
             --title "Duet ${tag}" \
             --notes "Builds of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Mac: Apple Silicon (M1 and newer) Duet-mac-apple-silicon.zip, older Intel Macs Duet-mac-intel.zip; unsigned: the first time, right-click the app -> Open (or run: xattr -cr Duet.app). Windows (if it's there): Duet-windows.zip, unzip and run Duet.exe; SmartScreen warns because it isn't signed: More info -> Run anyway."
