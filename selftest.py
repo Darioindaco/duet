@@ -1646,6 +1646,91 @@ def test_stun():
     e.close()
 
 
+def test_tempo_map():
+    """A tempo change and a time signature change: notes, the click (its accents on the new bars), the
+    playhead and recording follow them; deleting and duplicating a section moves everything after it."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw, TempoMap
+
+    tm = TempoMap({"bpm": 120, "beats": 4, "tempo": [[4, 60], [-1, 99], [6, "x"]], "meters": [[8, 3]]})
+    assert tm.b2s(4) == 2.0 and tm.b2s(6) == 4.0 and abs(tm.s2b(4.0) - 6) < 1e-9 and tm.s2b(1.0) == 2.0
+    assert tm.bpm_at(3.9) == 120 and tm.bpm_at(4) == 60 and tm.meter_at(9) == (8.0, 3) and tm.bar_secs(0) == 2.0
+    assert tm.click_map() == [(0.0, 120.0, 0.0, 4, 0.0), (2.0, 60.0, 4.0, 4, 0.0), (6.0, 60.0, 8.0, 3, 8.0)]
+    assert TempoMap({"bpm": 100, "beats": 4}).click_map() == [], "a steady song: the engine's own click"
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-tempo-"))
+    d = Daw(e, root / "songs", "me")
+    x = [0.0] * N
+    try:
+        d.edit([["meta", "meta", {"bpm": 120.0, "beats": 4, "tempo": [[4.0, 60.0]], "meters": [[8.0, 3]]}],
+                ["track", "drums", {"name": "Drums", "order": 5.0, "owner": "me", "vol": 1.0, "pan": 0.0,
+                                    "inst": {"kind": "drums", "level": 0.8, "tune": 0.5, "decay": 1.0}}],
+                ["pattern", "p1", {"name": "Beat", "len": 1.0}],
+                ["note", "n0", {"pattern": "p1", "track": "drums", "start": 0.0, "len": 0.25, "key": 42, "vel": 120}],
+                ["clip", "pc", {"track": "drums", "pattern": "p1", "start": 0.0, "blen": 7.0, "boff": 0.0}]])
+        d.set_local("click", False)
+        d.play(0.0)
+        out = []
+        for _ in range(int(5.5 * SR / N)):
+            out += e.process(x)
+        st = d.status(e.state())
+        d.stop()
+        want = [round(tm.b2s(k) * SR) for k in range(7)]  # 0, .5, 1, 1.5, then a second a beat
+        got = hits_in(out)
+        assert len(got) == 7 and all(abs(h - w) < 4 for h, w in zip(got, want)), (got, want)
+        assert abs(st["pos"] - tm.s2b(len(out) / SR)) < 0.1, st["pos"]
+
+        # the click: beats where the map says, accents on each bar's first beat (0, 4, then 3/4 from 8)
+        d.edit([["clip", "pc", {"del": True}]])
+        d.set_local("click", True)
+        d.play(0.0)
+        out = []
+        for _ in range(int(12.2 * SR / N)):
+            out += e.process(x)
+        d.stop()
+        d.set_local("click", False)
+        out = np.array(out)
+        got = hits_in(out, gap=6000)
+        want = [round(tm.b2s(k) * SR) for k in range(15)]  # 12.2 s: up to beat 14
+        assert len(got) == len(want) and all(abs(h - w) < 4 for h, w in zip(got, want)), (got, want)
+        peaks = [float(np.abs(out[h:h + 2000]).max()) for h in got]
+        loud = [k for k, p in enumerate(peaks) if p > 0.85 * max(peaks)]
+        assert loud == [0, 4, 8, 11, 14], (loud, peaks)
+
+        # delete beats 4..8 (the slow 4/4 bar): what came after moves 4 beats earlier, tempo joins up
+        d.edit([["marker", "m1", {"beat": 4.0, "name": "Verse", "section": True}],
+                ["marker", "m2", {"beat": 8.0, "name": "Chorus", "section": True}],
+                ["clip", "c9", {"track": "drums", "pattern": "p1", "start": 9.0, "blen": 1.0, "boff": 0.0}],
+                ["clip", "c5", {"track": "drums", "pattern": "p1", "start": 5.0, "blen": 1.0, "boff": 0.0}],
+                ["track", "drums", {"points": [[2.0, 0.1], [5.0, 0.5], [10.0, 0.9]]}]])
+        v = d.time_op("delete", 4.0, 8.0)
+        clips = {c["id"]: c for c in v["clips"]}
+        assert "c5" not in clips and clips["c9"]["start"] == 5.0, clips
+        assert [(m["name"], m["beat"]) for m in v["markers"]] == [("Chorus", 4.0)], v["markers"]
+        assert v["meta"]["tempo"] == [[4.0, 60.0]] and v["meta"]["meters"] == [[4.0, 3]], v["meta"]
+        assert next(t for t in v["tracks"] if t["id"] == "drums")["points"] == [[2.0, 0.1], [6.0, 0.9]]
+        d.undo()
+        v = d.view()
+        assert {c["id"] for c in v["clips"]} == {"c5", "c9"} and len(v["markers"]) == 2, "one undo brings it back"
+
+        # duplicate the verse: a copy right after, the chorus later; the copy starts at the verse's tempo
+        v = d.time_op("duplicate", 4.0, 8.0)
+        starts = sorted(c["start"] for c in v["clips"])
+        assert starts == [5.0, 9.0, 13.0], starts
+        assert [(m["name"], m["beat"]) for m in v["markers"]] == [("Verse", 4.0), ("Verse", 8.0), ("Chorus", 12.0)]
+        assert v["meta"]["tempo"] == [[4.0, 60.0]] and v["meta"]["meters"] == [[12.0, 3]], v["meta"]
+        print("tempo map: notes, click and accents follow the tempo and time signature changes; sections move")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_versions():
     """Versions (the song as it was, restored as one undoable edit), a damaged song file (the save before
     stands in), a crash (said on the next start), and a song file (.duet: the song and its audio) that opens
@@ -1731,6 +1816,7 @@ if __name__ == "__main__":
     test_daw()
     test_song_edit()
     test_versions()
+    test_tempo_map()
     test_instruments()
     test_patterns()
     test_live()

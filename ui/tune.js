@@ -311,7 +311,7 @@ function tuneDraw() {
   }
   // the playhead
   if (song.st && song.st.playing) {
-    const t = (curPos() - c.start) * spb();
+    const t = secsBetween(c.start, curPos());
     if (t >= 0 && t <= c.len) { ctx.fillStyle = "#fff"; ctx.fillRect(g.x(clipSrcAt(c, t)), 0, 1.5, h); }
   }
 }

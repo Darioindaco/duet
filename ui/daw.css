@@ -205,9 +205,9 @@ header > .spacer { flex-shrink: 1; }
 .addtrack:hover { color: var(--text); border-color: var(--muted); }
 
 /* arrangement: header column + ruler + lanes */
-.arr { flex: 1; min-height: 0; display: grid; grid-template-columns: 250px 1fr; grid-template-rows: 26px 1fr; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #0c0b10; }
+.arr { flex: 1; min-height: 0; display: grid; grid-template-columns: 250px 1fr; grid-template-rows: 52px 1fr; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #0c0b10; }
 .corner { display: flex; align-items: center; gap: 1px; padding: 0 4px 0 8px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--panel); }
-#ruler { display: block; height: 26px; cursor: pointer; border-bottom: 1px solid var(--line); }
+#ruler { display: block; height: 52px; cursor: pointer; border-bottom: 1px solid var(--line); }
 .rulerwrap { min-width: 0; overflow: hidden; background: #16141c; }
 .theads { position: relative; overflow: hidden; border-right: 1px solid var(--line); background: var(--panel); }
 .theads-in { position: absolute; left: 0; right: 0; top: 0; }

@@ -130,6 +130,24 @@ own playback of the song, corrected for your own sound card. So the takes land
 on the beat **however far apart you are**: the 30–50 ms between you only
 matters for what you hear of each other live, not for what ends up in the song.
 
+**Tempo changes, time signatures, markers and sections.** The ruler above the
+tracks has three strips:
+
+- **Top: markers and sections.** Right-click → *Start a section here* (Intro,
+  Verse, Chorus…) or *Add a marker here*; double-click the strip to start a
+  section. A section lasts until the next one; click it to select it and its
+  clips. Right-click a section to **loop it, duplicate it** (a copy right after
+  it, everything after it moves later) **or delete it** (the gap closes) — clips,
+  automation, markers and tempo changes all move along, in one undo. Drag a
+  marker or a section's start to move it; double-click to rename.
+- **Middle: tempo and time signature.** Right-click → *Tempo change here* or
+  *Time signature from bar…* (3/4, 7/4…). Drag a change to move it,
+  double-click it to edit it, right-click to remove it. The click, the
+  count-in, recording, notes, automation and export all follow the changes;
+  audio clips keep their real length in seconds.
+- **Bottom: bars and the loop**, as before (bar numbers follow the time
+  signature changes).
+
 **Editing clips** (right-click a clip for the same things in a menu):
 
 | | |

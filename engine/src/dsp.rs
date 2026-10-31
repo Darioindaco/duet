@@ -73,6 +73,8 @@ pub enum Cmd {
     Loop { on: bool, start: i64, end: i64 },
     /// The click while the transport plays (tempo and bar from the project).
     Click { on: bool, bpm: f32, beats: u32 },
+    /// The song's tempo map for the timeline's click (None: one tempo, `Click`'s)
+    ClickMap(Option<Box<ClickMap>>),
     /// What a strip plays instead of its input (None: back to the input).
     Instrument(Target, Option<Box<InstSlot>>),
     InstParam(Target, usize, f32),
@@ -101,6 +103,7 @@ pub enum Garbage {
     Inst(Box<InstSlot>),
     Wiring(Box<Wiring>),
     Preview(std::sync::Arc<crate::daw::AudioData>),
+    ClickMap(Box<ClickMap>),
 }
 
 /// One received audio packet, from the network thread to the audio thread.
@@ -250,6 +253,30 @@ impl StripSettings {
 /// leader's timeline *as it arrives*: the jitter buffer knows which of the
 /// leader's blocks is playing right now, so the follower's click lands exactly
 /// on the leader's audio as heard, which is what the follower plays along to.
+/// A song's tempo and meter changes, for the click: segments from `start` seconds, each at `bpm`, counting
+/// beats from `beat0` (the song's beat at `start`), bars of `beats` starting at song beat `bar0`.
+#[derive(Clone, Debug, Default)]
+pub struct ClickMap {
+    pub segs: Vec<ClickSeg>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ClickSeg {
+    pub start: f64,
+    pub bpm: f64,
+    pub beat0: f64,
+    pub beats: u32,
+    pub bar0: f64,
+}
+
+impl ClickMap {
+    /// (song beat, the segment) at `sec` seconds (before the first: the first, extended backwards)
+    fn at(&self, sec: f64) -> Option<(f64, &ClickSeg)> {
+        let seg = self.segs.iter().rev().find(|s| s.start <= sec).or(self.segs.first())?;
+        Some((seg.beat0 + (sec - seg.start) * seg.bpm / 60.0, seg))
+    }
+}
+
 struct Metro {
     on: bool,
     bpm: f32,
@@ -265,12 +292,14 @@ struct Metro {
     accent: bool,
     /// clicks before 0 too (the timeline's count-in)
     negative: bool,
+    /// the song's tempo map (the timeline's click only)
+    map: Option<Box<ClickMap>>,
 }
 
 impl Metro {
     fn new() -> Self {
         Metro { on: false, bpm: 100.0, beats: 4, leader: true, epoch: 0, volume: 0.6, last_beat: i64::MIN,
-                left: 0, len: 1, phase: 0.0, inc: 0.0, accent: false, negative: false }
+                left: 0, len: 1, phase: 0.0, inc: 0.0, accent: false, negative: false, map: None }
     }
 
     /// Add this block's clicks to `l`/`r`. `timeline` is the block number on the
@@ -290,13 +319,18 @@ impl Metro {
         for k in 0..l.len() {
             let pos = start + k as f64;
             if pos >= 0.0 || self.negative {
-                let beat = (pos / spb).floor() as i64;
-                if self.last_beat == i64::MIN && pos - beat as f64 * spb >= 1.0 {
+                // where in the beat: one tempo, or the song's tempo map
+                let (fbeat, beats, bar0, samples_per_beat) = match self.map.as_deref().and_then(|m| m.at(pos / sr as f64)) {
+                    Some((b, seg)) => (b, seg.beats, seg.bar0, sr as f64 * 60.0 / seg.bpm.max(1.0)),
+                    None => (pos / spb, self.beats, 0.0, spb),
+                };
+                let beat = fbeat.floor() as i64;
+                if self.last_beat == i64::MIN && (fbeat - beat as f64) * samples_per_beat >= 1.0 {
                     self.last_beat = beat; // started mid-beat: wait for the next one
                 }
                 if beat != self.last_beat {
                     self.last_beat = beat;
-                    self.accent = beat.rem_euclid(self.beats.max(1) as i64) == 0;
+                    self.accent = (beat as f64 - bar0).round() as i64 % beats.max(1) as i64 == 0;
                     let hz = if self.accent { 1760.0 } else { 1175.0 };
                     self.inc = 2.0 * std::f32::consts::PI * hz / sr;
                     self.phase = 0.0;
@@ -657,6 +691,11 @@ impl Dsp {
                     self.click.bpm = bpm;
                     self.click.beats = beats.max(1);
                 }
+                Cmd::ClickMap(map) => {
+                    if let Some(old) = std::mem::replace(&mut self.click.map, map) {
+                        self.discard(Garbage::ClickMap(old));
+                    }
+                }
                 Cmd::Instrument(t, inst) => {
                     let old = match self.strip(t) {
                         Some(s) => std::mem::replace(&mut s.inst, inst),
@@ -956,7 +995,14 @@ impl Dsp {
         self.master_level = pk.max(self.master_level * 0.9);
 
         // tempo-synced plugins follow the song while it plays, the metronome otherwise
-        let tempo = if self.tp.playing { self.click.bpm } else { self.metro.bpm };
+        let tempo = if self.tp.playing {
+            match self.click.map.as_deref().and_then(|m| m.at(tp_pos as f64 / self.samplerate as f64)) {
+                Some((_, seg)) => seg.bpm as f32,
+                None => self.click.bpm,
+            }
+        } else {
+            self.metro.bpm
+        };
         crate::fx::TEMPO_BITS.store((tempo as f64).to_bits(), Relaxed);
         // click track: local only, after the mix and after the master fader
         let timeline = if self.metro.leader {

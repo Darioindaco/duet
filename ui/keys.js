@@ -114,7 +114,7 @@ function songKeys(e) {
 function setInOut(which) {
   const m = song.view.meta, at = Math.max(0, snapBeat(curPos()));
   let a = which === "in" ? at : m.loop_start, b = which === "out" ? at : m.loop_end;
-  if (b <= a) { if (which === "in") b = a + bpb(); else a = Math.max(0, b - bpb()); }
+  if (b <= a) { if (which === "in") b = barNext(a); else a = Math.max(0, barFloor(b - 1e-6)); }
   songEdit([["meta", "meta", { loop: true, loop_start: a, loop_end: b }]]);
   toast(`${which === "in" ? "In" : "Out"} point at ${fmtPos(at)}`);
 }
@@ -134,18 +134,18 @@ function clipsAtPlayhead() {
 }
 
 function fadeToPlayhead(which) {
-  const s = spb(), at = curPos(), ch = [];
+  const at = curPos(), ch = [];
   for (const c of clipsAtPlayhead()) {
-    const t = (at - c.start) * s;
+    const t = secsBetween(c.start, at);
     ch.push(["clip", c.id, which === "in" ? { fade_in: Math.min(t, c.len - (c.fade_out || 0)) } : { fade_out: Math.min(c.len - t, c.len - (c.fade_in || 0)) }]);
   }
   if (ch.length) songEdit(ch); else toast("No clip under the playhead.");
 }
 
 function trimToPlayhead(edge) {
-  const s = spb(), at = curPos(), ch = [];
+  const at = curPos(), ch = [];
   for (const c of clipsAtPlayhead()) {
-    const t = (at - c.start) * s, cut = cutOffsets(c, t);
+    const t = secsBetween(c.start, at), cut = cutOffsets(c, t);
     ch.push(["clip", c.id, edge === "start"
       ? { start: at, offset: cut.right, len: c.len - t, fade_in: Math.min(c.fade_in || 0, c.len - t) }
       : { offset: cut.left, len: t, fade_out: Math.min(c.fade_out || 0, t) }]);
@@ -164,11 +164,11 @@ function nudgeSel(dir) {
 // where two selected clips on a track meet (or overlap): they overlap by the
 // crossfade length, one fading out while the other fades in
 function crossfadeSel() {
-  const s = spb(), xf = Math.max(0.005, (keyCfg.xfadeMs || 50) / 1000), ch = [];
+  const xf = Math.max(0.005, (keyCfg.xfadeMs || 50) / 1000), ch = [];
   let sel = selClips().filter((c) => !c.pattern);
   if (sel.length === 1) {
     // one clip: with the one that starts where it ends (or ends where it starts)
-    const c = sel[0], end = c.start + clipBeats(c), near = (a, b) => Math.abs(a - b) * s < 0.05;
+    const c = sel[0], end = c.start + clipBeats(c), near = (a, b) => Math.abs(secsBetween(a, b)) < 0.05;
     const other = song.view.clips.find((k) => k.track === c.track && k.id !== c.id && !k.pattern && (near(k.start, end) || near(k.start + clipBeats(k), c.start)));
     if (other) sel = [c, other];
   }
@@ -181,7 +181,7 @@ function crossfadeSel() {
     list.sort((x, y) => x.start - y.start);
     for (let i = 0; i + 1 < list.length; i++) {
       const a = list[i], b = list[i + 1];
-      const gap = (b.start - (a.start + a.len / s)) * s; // seconds (negative: they overlap)
+      const gap = secsBetween(a.start, b.start) - a.len; // seconds (negative: they overlap)
       if (gap > 0.05) continue; // not meeting
       let ov = -gap;
       if (ov < xf) {
@@ -190,7 +190,7 @@ function crossfadeSel() {
         const rb = clipRatio(b), roomB = b.reverse ? fileDur(b) - (b.offset || 0) - b.len * rb : (b.offset || 0);
         const ga = Math.max(0, Math.min((xf - ov) / 2, roomA / ra)), gb = Math.max(0, Math.min(xf - ov - ga, roomB / rb));
         set(a, { len: a.len + ga, ...(a.reverse ? { offset: (a.offset || 0) - ga * ra } : {}) });
-        set(b, { start: b.start - gb / s, len: b.len + gb, ...(b.reverse ? {} : { offset: (b.offset || 0) - gb * rb }) });
+        set(b, { start: s2b(b2s(b.start) - gb), len: b.len + gb, ...(b.reverse ? {} : { offset: (b.offset || 0) - gb * rb }) });
         ov += ga + gb;
       }
       if (ov < 0.002) continue;

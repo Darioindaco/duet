@@ -304,7 +304,7 @@ function brFileMenu(e, f, bin) {
   e.preventDefault();
   const items = [
     ["Hear it", "click", () => brSelect(f)],
-    ["Into the playlist (a new track)", "", () => brToSong(f, null, Math.max(0, Math.floor(curPos() / bpb()) * bpb()))],
+    ["Into the playlist (a new track)", "", () => brToSong(f, null, Math.max(0, barFloor(curPos())))],
     ["As a new channel (sampler)", "", () => brToChannel(f)],
   ];
   for (const b of br.bins) items.push([`Add to bin: ${b.name}`, "", async () => { await api.lib_bin_add(b.id, [f.path]); brRefresh(true); }]);

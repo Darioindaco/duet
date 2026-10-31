@@ -228,6 +228,9 @@ class Api:
     def daw_edit(self, changes):
         return self._daw.edit(list(changes))
 
+    def daw_time_op(self, op, a, b):
+        return self._daw.time_op(str(op), float(a), float(b))
+
     def daw_local(self, key, value, track=None):
         self._daw.set_local(key, value, track)
         return self._daw.view()

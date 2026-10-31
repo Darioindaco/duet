@@ -27,6 +27,7 @@ pattern's notes on their channels, repeating it when the clip is longer.
 from __future__ import annotations
 
 import base64
+import bisect
 import hashlib
 import json
 import math
@@ -43,13 +44,15 @@ import zipfile
 import traceback
 from pathlib import Path
 
-KINDS = ("meta", "track", "clip", "file", "pattern", "note")
+KINDS = ("meta", "track", "clip", "file", "pattern", "note", "marker")
 MAX_TRACKS = 32
 META_DEFAULTS = {"name": "Untitled", "bpm": 120.0, "beats": 4, "loop": False, "loop_start": 0.0, "loop_end": 16.0,
-                 "master_rack": []}
+                 "master_rack": [], "tempo": [], "meters": []}
 # per field, what the UI may set (anything else in an edit is ignored)
 FIELDS = {
-    "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end", "master_rack", "key"},
+    # tempo: the tempo changes after the start [[beat, bpm], ...] (bpm: the start's); meters: the time
+    # signature changes [[beat, beats per bar], ...] (beats: the start's), each on a barline
+    "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end", "master_rack", "key", "tempo", "meters"},
     # bus: a mixer track others feed (no clips); out: the bus it goes to (else
     # the master); sends: {bus: level}
     # auto: an automation lane instead of a track ({"target": track id or
@@ -65,6 +68,8 @@ FIELDS = {
     "file": {"frames", "sr", "owner", "name", "del"},
     "pattern": {"name", "len", "color", "del"},
     "note": {"pattern", "track", "start", "len", "key", "vel", "del"},
+    # a marker on the timeline (beat, name, color); a section marker starts a part that lasts until the next one
+    "marker": {"beat", "name", "color", "section", "del"},
 }
 
 
@@ -78,9 +83,10 @@ FIELD_DEFAULTS = {
     "file": {"del": False},
     "pattern": {"del": False},
     "note": {"vel": 100, "del": False},
+    "marker": {"color": None, "section": False, "del": False},
 }
 # controls you turn rather than click: a run of turns is one undo step
-CONTINUOUS = {"vol", "pan", "gain", "bpm", "rack", "inst", "vel", "sends", "master_rack", "points", "speed", "pitch", "tune"}
+CONTINUOUS = {"vol", "pan", "gain", "bpm", "tempo", "rack", "inst", "vel", "sends", "master_rack", "points", "speed", "pitch", "tune"}
 MAX_SENDS = 4
 UNDO_DEPTH = 200
 
@@ -194,6 +200,73 @@ def fmt_ago(seconds: float) -> str:
 
 def new_id(prefix: str = "") -> str:
     return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+
+
+class TempoMap:
+    """The song's tempo and time signature changes: beats (the timeline) to seconds (the engine) and back.
+    Beats are quarter notes; tempo changes are steps; a time signature change starts a bar."""
+
+    def __init__(self, meta: dict):
+        bpm0 = num(meta.get("bpm"), 120.0, 20.0, 400.0)
+        ch = {0.0: bpm0}
+        for x in meta.get("tempo") or []:
+            try:
+                b, v = float(x[0]), float(x[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if b > 0 and math.isfinite(b) and 20.0 <= v <= 400.0:
+                ch[b] = v
+        self.beats = sorted(ch)
+        self.bpms = [ch[b] for b in self.beats]
+        self.secs = [0.0]
+        for i in range(1, len(self.beats)):
+            self.secs.append(self.secs[-1] + (self.beats[i] - self.beats[i - 1]) * 60.0 / self.bpms[i - 1])
+        mt = {0.0: int(num(meta.get("beats"), 4, 1, 32))}
+        for x in meta.get("meters") or []:
+            try:
+                b, n = float(x[0]), int(x[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if b > 0 and math.isfinite(b) and 1 <= n <= 32:
+                mt[b] = n
+        self.meter_beats = sorted(mt)
+        self.meters = [mt[b] for b in self.meter_beats]
+
+    def constant(self) -> bool:
+        return len(self.beats) == 1 and len(self.meter_beats) == 1
+
+    def _i(self, xs: list, x: float) -> int:
+        return max(0, bisect.bisect_right(xs, x) - 1)
+
+    def b2s(self, b: float) -> float:
+        i = self._i(self.beats, b)
+        return self.secs[i] + (b - self.beats[i]) * 60.0 / self.bpms[i]
+
+    def s2b(self, s: float) -> float:
+        i = self._i(self.secs, s)
+        return self.beats[i] + (s - self.secs[i]) * self.bpms[i] / 60.0
+
+    def bpm_at(self, b: float) -> float:
+        return self.bpms[self._i(self.beats, b)]
+
+    def meter_at(self, b: float) -> tuple[float, int]:
+        """(the beat its time signature starts at, beats per bar) at beat b."""
+        i = self._i(self.meter_beats, b)
+        return self.meter_beats[i], self.meters[i]
+
+    def bar_secs(self, b: float) -> float:
+        """How long the bar at beat b lasts (its tempo, its time signature)."""
+        return self.meter_at(b)[1] * 60.0 / self.bpm_at(b)
+
+    def click_map(self) -> list:
+        """For the engine's click: [(start s, bpm, beat at start, beats per bar, a barline's beat)]."""
+        if self.constant():
+            return []
+        out = []
+        for b in sorted(set(self.beats) | set(self.meter_beats)):
+            m0, n = self.meter_at(b)
+            out.append((self.b2s(b), self.bpm_at(b), b, n, m0))
+        return out
 
 
 class Project:
@@ -433,6 +506,7 @@ class Daw:
         self.pattern_mode: str | None = None  # playing just this pattern, looped (local)
         self.sent_loop = None
         self.sent_click = None
+        self.sent_cmap = None
         self.cursor = 0.0  # playhead while stopped, in beats
         self.play_from = 0.0
         self.rec: dict | None = None
@@ -642,6 +716,102 @@ class Daw:
             self._do(changes)
             return self.view()
 
+    def time_op(self, op: str, a: float, b: float) -> dict:
+        """Delete the time from beat a to b (closing the gap), or duplicate it (right after itself,
+        pushing the rest later): clips and markers starting in it, automation, tempo and time signatures."""
+        with self.lock:
+            a, b = max(0.0, float(a)), float(b)
+            if op not in ("delete", "duplicate") or not (b > a + 1e-6) or not math.isfinite(b):
+                return self.view()
+            L, dup = b - a, op == "duplicate"
+            eps = 1e-6
+            p, tm, m = self.p, self._tm(), self.p.meta()
+            changes = []
+
+            def moved(x: float):
+                """Where a beat goes; None: deleted. (Duplicates are made separately.)"""
+                if x >= b - eps:
+                    return x + L if dup else x - L
+                if x >= a - eps and not dup:
+                    return None
+                return x
+
+            for kind in ("clip", "marker"):
+                field = "start" if kind == "clip" else "beat"
+                for oid, o in p.live(kind).items():
+                    x = float(o.get(field) or 0)
+                    y = moved(x)
+                    if y is None:
+                        changes.append([kind, oid, {"del": True}])
+                    elif y != x:
+                        changes.append([kind, oid, {field: y}])
+                    if dup and a - eps <= x < b - eps:
+                        changes.append([kind, new_id(kind[0]), {**{k: v for k, v in o.items() if k in FIELDS[kind]}, field: x + L}])
+
+            def points(pts: list) -> list:
+                out = []
+                for pt in pts:
+                    try:
+                        x, v = float(pt[0]), pt[1]
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    y = moved(x)
+                    if y is not None:
+                        out.append([y, v])
+                    if dup and a - eps <= x < b - eps:
+                        out.append([x + L, v])
+                return sorted(out, key=lambda q: q[0])
+
+            for tid, t in p.live("track").items():
+                if t.get("points"):
+                    new = points(t["points"])
+                    if new != t["points"]:
+                        changes.append(["track", tid, {"points": new}])
+
+            def steps(first, xs: list, at, ok) -> tuple:
+                """Tempo or time signature changes, moved, with the right value where the cut joins."""
+                pts = [[float(x[0]), x[1]] for x in xs if isinstance(x, (list, tuple)) and len(x) == 2]
+                new = points(pts)
+                if dup:
+                    new.append([b, at(a)])  # the copy starts like the original did
+                    new.append([b + L, at(b)])
+                else:
+                    new.append([a, at(b)])  # what played after the cut, plays from the cut
+                new.sort(key=lambda q: q[0])
+                out, cur = [], first
+                for x, v in new:
+                    if x <= eps or not ok(v):
+                        continue
+                    if out and abs(out[-1][0] - x) < eps:
+                        out[-1][1] = v
+                    else:
+                        out.append([x, v])
+                # drop the ones that change nothing
+                clean = []
+                for x, v in out:
+                    if v != cur:
+                        clean.append([x, v])
+                        cur = v
+                return clean
+
+            tempo = steps(tm.bpms[0], m.get("tempo") or [], tm.bpm_at, lambda v: 20 <= float(v) <= 400)
+            meters = steps(tm.meters[0], m.get("meters") or [], lambda x: tm.meter_at(x)[1], lambda v: 1 <= int(v) <= 32)
+            meta = {}
+            if tempo != (m.get("tempo") or []):
+                meta["tempo"] = tempo
+            if meters != (m.get("meters") or []):
+                meta["meters"] = meters
+            for f in ("loop_start", "loop_end"):
+                x = float(m.get(f) or 0)
+                y = moved(x)
+                y = a if y is None else y
+                if y != x:
+                    meta[f] = y
+            if meta:
+                changes.append(["meta", "meta", meta])
+            self._do(changes)
+            return self.view()
+
     def _do(self, changes: list, undoable: bool = True):
         """Make local changes: stamp, apply, send, and remember how to undo them."""
         forward, inverse = [], []
@@ -798,6 +968,14 @@ class Daw:
     def _spb(self) -> float:
         return 60.0 / max(20.0, float(self.p.meta()["bpm"]))
 
+    def _tm(self) -> TempoMap:
+        """The song's tempo map (cached until the song changes)."""
+        m = self.p.meta()
+        key = repr((m.get("bpm"), m.get("beats"), m.get("tempo"), m.get("meters")))
+        if getattr(self, "_tm_key", None) != key:
+            self._tm_cache, self._tm_key = TempoMap(m), key
+        return self._tm_cache
+
     def _playing(self) -> bool:
         return bool(self.e.state()["daw_playing"])
 
@@ -822,10 +1000,9 @@ class Daw:
     def _start(self, pos: float, rec: bool, countin: bool, broadcast: bool, delay: float = 0.0, jam: bool = False):
         if self.rec or self._playing():
             self._stop(broadcast=False)
-        m = self.p.meta()
-        spb = self._spb()
-        bar = spb * int(m["beats"])
-        at = pos * spb + delay  # seconds; a partner's start is shifted by the one-way delay
+        tm = self._tm()
+        bar = tm.bar_secs(pos)
+        at = tm.b2s(pos) + delay  # seconds; a partner's start is shifted by the one-way delay
         start = at - bar if countin else at
         until = at if countin else None
         self.play_from = pos
@@ -866,7 +1043,7 @@ class Daw:
             self.pattern_mode = None
             self._push()  # (after a jam take: the song's click as you had it)
         if rec and takes:
-            spb = self._spb()
+            tm = self._tm()
             changes = []
             for take in takes:
                 if take["error"] or not take["frames"]:
@@ -888,7 +1065,7 @@ class Daw:
                 for tid, src in rec["tracks"].items():
                     if src == take["src"]:
                         changes.append(["clip", new_id("c"), {
-                            "track": tid, "file": key, "start": start / spb, "offset": offset, "len": length,
+                            "track": tid, "file": key, "start": tm.s2b(start), "offset": offset, "len": length,
                             "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}])
                 if take["dropped"]:
                     self.notices.append("The recording skipped a little (the disk couldn't keep up).")
@@ -897,7 +1074,7 @@ class Daw:
         if rec and played:
             self._take_notes(rec, played, stop_at)
         self.cursor = self.play_from  # back to where you started, like FL
-        self.e.daw_locate(self.cursor * self._spb())
+        self.e.daw_locate(self._tm().b2s(self.cursor))
         if broadcast:
             self._send({"t": "tp", "play": False})
         self.version += 1
@@ -905,11 +1082,12 @@ class Daw:
     def _take_notes(self, rec: dict, played: list, stop_at: float):
         """Notes played on armed channels while recording become a new pattern
         per channel, placed where the recording started."""
-        spb, beats = self._spb(), int(self.p.meta()["beats"])
+        tm = self._tm()
         st = self.e.state()
         # you played to what you heard: after the sound card and the master rack
         lat = ((st.get("lat_out_ms") or 0.0) + (st.get("master_latency_ms") or 0.0)) / 1000.0
-        punch = rec["punch"] / spb
+        punch = tm.s2b(rec["punch"])
+        beats = tm.meter_at(punch)[1]
         tracks = self.p.live("track")
         changes = []
         for tid in rec.get("channels", []):
@@ -923,7 +1101,7 @@ class Daw:
                 b0, vel = down.pop(key)
                 notes.append((b0, max(0.02, at - b0), key, vel))
             for _slot, kind, key, vel, t in evs:
-                at = (t - lat) / spb - punch
+                at = tm.s2b(t - lat) - punch
                 if kind == "on":
                     if key in down:
                         end(key, at)
@@ -941,7 +1119,7 @@ class Daw:
                     for k in [k for k in held if k in down]:
                         end(k, at)
                     held.clear()
-            last = (stop_at - lat) / spb - punch
+            last = tm.s2b(stop_at - lat) - punch
             for k in list(down):
                 end(k, last)
             notes = [n for n in notes if n[0] >= -1e-6]  # not what was played during the count-in
@@ -963,7 +1141,7 @@ class Daw:
         with self.lock:
             self.cursor = max(-64.0, float(pos))
             if self._playing():
-                self.e.daw_locate(self.cursor * self._spb())
+                self.e.daw_locate(self._tm().b2s(self.cursor))
             self.version += 1
 
     # --- export --------------------------------------------------------------------
@@ -972,16 +1150,16 @@ class Daw:
         """Render the song (or just the loop) to WAV: the mix, and with stems_dir
         every track on its own too. Runs in the background (engine.daw_export_status)."""
         with self.lock:
-            spb, m = self._spb(), self.p.meta()
+            tm, m = self._tm(), self.p.meta()
             clips = list(self.p.live("clip").values())
             if loop and m["loop"] and m["loop_end"] > m["loop_start"]:
-                start, end = m["loop_start"] * spb, m["loop_end"] * spb  # exact, so it loops
+                start, end = tm.b2s(m["loop_start"]), tm.b2s(m["loop_end"])  # exact, so it loops
             else:
                 if not clips:
                     return {"error": "Nothing to export yet: record something first."}
                 start = 0.0
-                end = max(float(c.get("start", 0)) * spb + (float(c.get("blen") or 0) * spb if c.get("pattern")
-                                                            else float(c.get("len", 0))) for c in clips) + 2.0  # + tails
+                end = max(tm.b2s(float(c.get("start", 0)) + float(c.get("blen") or 0)) if c.get("pattern")
+                          else tm.b2s(float(c.get("start", 0))) + float(c.get("len", 0)) for c in clips) + 2.0  # + tails
             stems, files = [], [mix] if mix else []
             if stems_dir:
                 song = file_name(m["name"])
@@ -1075,10 +1253,11 @@ class Daw:
         if mrack != self.sent_mrack:
             self._apply_rack("M", self.sent_mrack, mrack)
             self.sent_mrack = mrack
-        spb = self._spb()
+        tm = self._tm()
+        b2s = tm.b2s
         # automation, looked up in the racks as they are now (so again when a rack changes)
         self._auto_missing: set[str] = set()
-        lanes = [lane for tid, t in autos if (lane := self._auto_lane(tid, t, byid, mrack, spb))]
+        lanes = [lane for tid, t in autos if (lane := self._auto_lane(tid, t, byid, mrack, b2s))]
         racks = (tuple(json.dumps(self.sent_rack.get(s), sort_keys=True) for s in range(MAX_TRACKS)),
                  json.dumps(mrack, sort_keys=True), json.dumps(self.sent_inst, sort_keys=True))
         if (lanes, racks) != self.sent_autos:
@@ -1094,18 +1273,18 @@ class Daw:
             key = c.get("file")
             if slot is None or key not in self.loaded:
                 continue
-            desc[slot].append((key, float(c.get("start", 0)) * spb, float(c.get("offset", 0)), float(c.get("len", 0)),
+            desc[slot].append((key, b2s(float(c.get("start", 0))), float(c.get("offset", 0)), float(c.get("len", 0)),
                                0.0 if c.get("mute") else float(c.get("gain", 1.0)), float(c.get("fade_in", 0)), float(c.get("fade_out", 0)),
                                num(c.get("speed"), 1.0, 0.05, 20.0), num(c.get("pitch"), 0.0, -48.0, 48.0),
                                bool(c.get("stretch")), bool(c.get("reverse")), tune_moves(c.get("tune"))))
-        notes = self._notes(spb)
+        notes = self._notes(b2s)
         if desc != self.sent_desc or notes != self.sent_notes:
             e.daw_timeline(desc, notes)
             self.sent_desc, self.sent_notes = desc, notes
         m = p.meta()
-        loop = (bool(m["loop"]), float(m["loop_start"]) * spb, float(m["loop_end"]) * spb)
+        loop = (bool(m["loop"]), b2s(float(m["loop_start"])), b2s(float(m["loop_end"])))
         if self.pattern_mode:
-            loop = (True, 0.0, self._pattern_len(self.pattern_mode) * spb)
+            loop = (True, 0.0, b2s(self._pattern_len(self.pattern_mode)))
         if loop != self.sent_loop:
             e.daw_loop(*loop)
             self.sent_loop = loop
@@ -1113,8 +1292,12 @@ class Daw:
         if click != self.sent_click:
             e.daw_click(*click)
             self.sent_click = click
+        cmap = tm.click_map()
+        if cmap != getattr(self, "sent_cmap", None):
+            e.daw_click_map(cmap)
+            self.sent_cmap = cmap
 
-    def _auto_lane(self, tid: str, t: dict, byid: dict, mrack: list, spb: float):
+    def _auto_lane(self, tid: str, t: dict, byid: dict, mrack: list, b2s):
         """An automation lane for the engine: (lane id, strip, what, [(seconds, value)]), or None."""
         a = t.get("auto")
         if not isinstance(a, dict):
@@ -1152,13 +1335,13 @@ class Daw:
             except (TypeError, ValueError, IndexError):
                 continue
             if math.isfinite(beat) and math.isfinite(v):
-                pts.append((max(0.0, beat) * spb, min(1.0, max(0.0, v))))
+                pts.append((b2s(max(0.0, beat)), min(1.0, max(0.0, v))))
         return (tid, strip, what, sorted(pts)) if pts else None
 
     def _pattern_len(self, pid: str) -> float:
         return max(0.25, float(self.p.live("pattern").get(pid, {}).get("len") or 4 * int(self.p.meta()["beats"])))
 
-    def _notes(self, spb: float) -> list:
+    def _notes(self, b2s) -> list:
         """Every channel's notes in seconds: patterns unrolled where their clips
         are (repeating to fill a clip), or the open pattern alone in pattern mode."""
         p = self.p
@@ -1173,7 +1356,8 @@ class Daw:
                 return
             dur = min(float(n.get("len", 0.25)), until - t)
             if dur > 1e-6:
-                out[slot].append((t * spb, dur * spb, int(n.get("key", 60)) & 127, max(1, min(127, int(n.get("vel", 100))))))
+                s0 = b2s(t)
+                out[slot].append((s0, b2s(t + dur) - s0, int(n.get("key", 60)) & 127, max(1, min(127, int(n.get("vel", 100))))))
 
         if self.pattern_mode:
             plen = self._pattern_len(self.pattern_mode)
@@ -1911,6 +2095,7 @@ class Daw:
                           "livesends": p.local.get("livesends") or {}},
                 "patterns": sorted(({"id": i, **x} for i, x in p.live("pattern").items()), key=lambda x: str(x.get("name", ""))),
                 "notes": [{"id": i, **n} for i, n in p.live("note").items()],
+                "markers": sorted(({"id": i, **x} for i, x in p.live("marker").items()), key=lambda x: float(x.get("beat") or 0)),
                 "patternMode": self.pattern_mode,
                 "conflict": self.conflict, "shared": self.connected and self.partner_pid == p.pid,
                 "undo": bool(self.undos), "redo": bool(self.redos),
@@ -1921,7 +2106,7 @@ class Daw:
         with self.lock:
             if self.rec and not s["daw_recording"] and not s["daw_playing"]:
                 self._stop(broadcast=True)  # the engine stopped by itself (sound card restart)
-            spb = self._spb()
+            tm = self._tm()
             playing = bool(s["daw_playing"])
             levels = {tid: s["track_levels"][slot] for tid, slot in self.slots.items()}
             st = self.e.file_status()
@@ -1936,9 +2121,9 @@ class Daw:
             for slot, key in self.e.partner_notes:
                 if slot in byslot:
                     live.setdefault(byslot[slot], []).append(key)
-            return {"v": self.version, "pos": s["daw_pos"] / spb if playing else self.cursor, "playing": playing,
+            return {"v": self.version, "pos": tm.s2b(s["daw_pos"]) if playing else self.cursor, "playing": playing,
                     "recording": bool(s["daw_recording"]) or bool(self.rec and playing),
-                    "recFrom": self.rec["punch"] / spb if self.rec else None,
+                    "recFrom": tm.s2b(self.rec["punch"]) if self.rec else None,
                     "levels": levels, "xfer": xfer, "notices": notices,
                     "partnerHere": self._partner_here(), "partnerNotes": live,
                     "processing": self.e.daw_processing(),

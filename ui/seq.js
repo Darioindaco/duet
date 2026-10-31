@@ -257,9 +257,9 @@ function placePattern() {
   const used = patNotes(p.id).map((n) => n.track);
   const lane = v.tracks.find((t) => used.includes(t.id)) || v.tracks.find((t) => t.id === seq.channel) || v.tracks[0];
   if (!lane) { toast("Add a track or channel first."); return; }
-  const at = Math.max(0, Math.floor(curPos() / bpb() + 1e-9) * bpb());
+  const at = Math.max(0, barFloor(curPos()));
   songEdit([["clip", newId("c"), { track: lane.id, pattern: p.id, start: at, blen: patLen(p), boff: 0 }]]);
-  toast(`"${p.name}" is in the song at bar ${Math.round(at / bpb()) + 1}.`);
+  toast(`"${p.name}" is in the song at bar ${barOf(at).bar + 1}.`);
 }
 
 function patMenu(e) {
@@ -296,7 +296,7 @@ function createInstrumentTrack(inst, name, place) {
   const ch = [["track", id, { name, order, owner: v.me, src: 0, arm: false, vol: 0.8, pan: 0, rack: [], inst }]];
   if (place) {
     const pid = newId("p"), drums = inst.kind === "drums" || /drum/i.test(inst.vst?.name || "");
-    const at = Math.max(0, Math.floor(curPos() / bpb() + 1e-9) * bpb());
+    const at = Math.max(0, barFloor(curPos()));
     // drums: a one-bar loop, repeated over four bars; anything else: four bars to write in
     ch.push(["pattern", pid, { name, len: (drums ? 1 : 4) * bpb() }],
       ["clip", newId("c"), { track: id, pattern: pid, start: at, blen: 4 * bpb(), boff: 0 }]);

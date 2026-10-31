@@ -98,7 +98,7 @@ function ceLive(c, what) {
   if (what === "fout") return ceMs((c.fade_out || 0) * 1000);
   if (what === "speed") return `${Math.round(sp * 1000) / 10}%`;
   if (what === "pitch") return `${p > 0 ? "+" : ""}${p.toFixed(2)} st`;
-  if (what === "len") return `${ceTime(c.len)} · ${(c.len / spb()).toFixed(2)} beats`;
+  if (what === "len") return `${ceTime(c.len)} · ${clipBeats(c).toFixed(2)} beats`;
   if (what === "marks") return ce.marks.length ? `${ce.marks.length} cut${ce.marks.length === 1 ? "" : "s"} → ${ce.marks.length + 1} clips` : "No cuts yet";
   if (what === "state") return stretching(c) ? "Stretching… (the clip is silent until it's ready)" : "";
   return "";
@@ -198,7 +198,7 @@ function cePitchTab(c) {
   bpmIn.placeholder = "BPM";
   if (ce.bpm) bpmIn.value = ce.bpm;
   bpmIn.onchange = () => { ce.bpm = +bpmIn.value || null; };
-  const songBpm = song.view.meta.bpm;
+  const songBpm = bpmAt(c.start);
   box.append(ceRow("Its tempo", bpmIn,
     ceBtn("Detect", "Find the tempo in the sound", async () => {
       const r = await api.daw_analyze(c.id, "tempo");
@@ -216,7 +216,7 @@ function cePitchTab(c) {
   bars.className = "cebtns";
   for (const n of [1, 2, 4, 8, 16]) {
     bars.append(ceBtn(`${n} bar${n > 1 ? "s" : ""}`, `Stretch it to exactly ${n} bar${n > 1 ? "s" : ""} of the song`, () => {
-      const want = n * bpb() * spb(); // seconds on the timeline
+      const want = secsBetween(c.start, c.start + n * bpbAt(c.start)); // seconds on the timeline
       ceSetRate({ speed: ceSrcLen(c) / want, stretch: true });
     }, "btn sq"));
   }
@@ -241,9 +241,10 @@ function ceChopTab(c) {
       ceRender();
     })));
   const grid = ceSeg([["bar", "Bar"], ["1", "Beat"], ["0.5", "1/8"], ["0.25", "1/16"]], null, (v) => {
-    const step = v === "bar" ? bpb() : +v, b0 = c.start, b1 = c.start + c.len / spb();
+    const b0 = c.start, b1 = c.start + clipBeats(c);
     ce.marks = [];
-    for (let b = Math.ceil((b0 + 1e-6) / step) * step; b < b1 - 1e-6; b += step) ce.marks.push(ceSrcOfBeat(c, b));
+    if (v === "bar") { for (let b = barNext(b0 + 1e-6); b < b1 - 1e-6; b = barNext(b)) ce.marks.push(ceSrcOfBeat(c, b)); }
+    else for (let b = Math.ceil((b0 + 1e-6) / +v) * +v; b < b1 - 1e-6; b += +v) ce.marks.push(ceSrcOfBeat(c, b));
     ceRender();
   });
   box.append(ceRow("On the grid", grid));
@@ -354,16 +355,16 @@ function ceTimeOfSrc(c, src) {
   const r = clipRatio(c), o = c.offset || 0;
   return c.reverse ? (o + c.len * r - src) / r : (src - o) / r;
 }
-const ceSrcOfBeat = (c, beat) => clipSrcAt(c, (beat - c.start) * spb());
+const ceSrcOfBeat = (c, beat) => clipSrcAt(c, secsBetween(c.start, beat));
 
 function ceChop(c) {
-  const s = spb(), r = clipRatio(c), o = c.offset || 0;
+  const r = clipRatio(c), o = c.offset || 0;
   const ts = [...new Set(ce.marks.map((m) => ceTimeOfSrc(c, m)))].filter((t) => t > 0.005 && t < c.len - 0.005).sort((a, b) => a - b);
   if (!ts.length) { toast("Add some cuts first."); return; }
   const edges = [0, ...ts, c.len], ch = [], ids = [];
   for (let k = 0; k + 1 < edges.length; k++) {
     const a = edges[k], b = edges[k + 1];
-    const piece = { start: c.start + a / s, len: b - a, offset: c.reverse ? o + (c.len - b) * r : o + a * r,
+    const piece = { start: c.start + beatsAfter(c.start, a), len: b - a, offset: c.reverse ? o + (c.len - b) * r : o + a * r,
       fade_in: k === 0 ? Math.min(c.fade_in || 0, b - a) : 0, fade_out: k === edges.length - 2 ? Math.min(c.fade_out || 0, b - a) : 0 };
     if (k === 0) { ch.push(["clip", c.id, piece]); ids.push(c.id); }
     else { const id = newId("c"); ch.push(["clip", id, { ...clipFields(c), ...piece }]); ids.push(id); }
@@ -431,7 +432,7 @@ function ceDraw() {
   }
   // the playhead, while the song plays the clip
   if (song.st && song.st.playing) {
-    const t = (curPos() - c.start) * spb();
+    const t = secsBetween(c.start, curPos());
     if (t >= 0 && t <= c.len) {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(x(clipSrcAt(c, t)), 0, 1.5, h);

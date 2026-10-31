@@ -1614,6 +1614,17 @@ impl Engine {
         self.cmd(Cmd::Loop { on, start: (start * sr).round() as i64, end: (end * sr).round() as i64 });
     }
 
+    /// The song's tempo and meter changes for the click: [(start s, bpm, song beat at start, beats per bar,
+    /// song beat of a barline)], in order; empty = one tempo (daw_click's).
+    fn daw_click_map(&self, segs: Vec<(f64, f64, f64, u32, f64)>) {
+        let map = if segs.is_empty() {
+            None
+        } else {
+            Some(Box::new(dsp::ClickMap { segs: segs.into_iter().map(|(start, bpm, beat0, beats, bar0)| dsp::ClickSeg { start, bpm, beat0, beats, bar0 }).collect() }))
+        };
+        self.cmd(Cmd::ClickMap(map));
+    }
+
     /// The click while the timeline plays.
     fn daw_click(&self, on: bool, bpm: f32, beats: u32) {
         self.cmd(Cmd::Click { on, bpm, beats });

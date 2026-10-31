@@ -23,10 +23,61 @@ const song = {
 // ---------- small helpers ----------
 const spb = () => 60 / (song.view ? song.view.meta.bpm : 120);
 const bpb = () => (song.view ? song.view.meta.beats : 4);
+// ---------- the tempo map: tempo and time signature changes (like daw.py's TempoMap) ----------
+// meta.tempo [[beat, bpm]] after the start (meta.bpm), meta.meters [[beat, beats per bar]] (meta.beats)
+let _tm = null, _tmKey = "";
+function tmap() {
+  const m = song.view ? song.view.meta : { bpm: 120, beats: 4 };
+  const key = JSON.stringify([m.bpm, m.beats, m.tempo, m.meters]);
+  if (_tm && key === _tmKey) return _tm;
+  const ch = new Map([[0, Math.min(400, Math.max(20, +m.bpm || 120))]]);
+  for (const x of m.tempo || []) if (Array.isArray(x) && +x[0] > 0 && +x[1] >= 20 && +x[1] <= 400) ch.set(+x[0], +x[1]);
+  const beats = [...ch.keys()].sort((a, b) => a - b), bpms = beats.map((b) => ch.get(b)), secs = [0];
+  for (let i = 1; i < beats.length; i++) secs.push(secs[i - 1] + (beats[i] - beats[i - 1]) * 60 / bpms[i - 1]);
+  const mt = new Map([[0, Math.min(32, Math.max(1, Math.round(+m.beats || 4)))]]);
+  for (const x of m.meters || []) if (Array.isArray(x) && +x[0] > 0 && +x[1] >= 1 && +x[1] <= 32) mt.set(+x[0], Math.round(+x[1]));
+  const mbeats = [...mt.keys()].sort((a, b) => a - b), meters = mbeats.map((b) => mt.get(b));
+  // the bar number each time signature starts at (a change off a barline starts a new bar)
+  const mbar = [0];
+  for (let i = 1; i < mbeats.length; i++) mbar.push(mbar[i - 1] + Math.ceil((mbeats[i] - mbeats[i - 1]) / meters[i - 1] - 1e-9));
+  _tmKey = key;
+  return (_tm = { beats, bpms, secs, mbeats, meters, mbar, steady: beats.length === 1 && mbeats.length === 1 });
+}
+const _seg = (xs, x) => { let i = 0; while (i + 1 < xs.length && xs[i + 1] <= x + 1e-9) i++; return i; };
+function b2s(b) { const t = tmap(), i = _seg(t.beats, b); return t.secs[i] + (b - t.beats[i]) * 60 / t.bpms[i]; }
+function s2b(s) { const t = tmap(), i = _seg(t.secs, s); return t.beats[i] + (s - t.secs[i]) * t.bpms[i] / 60; }
+const bpmAt = (b) => { const t = tmap(); return t.bpms[_seg(t.beats, b)]; };
+// beats per bar at beat b, and where that time signature starts
+function meterAt(b) { const t = tmap(), i = _seg(t.mbeats, Math.max(0, b)); return { at: t.mbeats[i], n: t.meters[i], bar: t.mbar[i], i }; }
+const bpbAt = (b) => meterAt(b).n;
+// the barline at or before beat b, and the one after it
+function barFloor(b) {
+  const m = meterAt(b);
+  return b < 0 ? Math.floor(b / m.n) * m.n : m.at + Math.floor((b - m.at) / m.n + 1e-9) * m.n;
+}
+function barNext(b) {
+  const m = meterAt(b), t = tmap(), nx = barFloor(b) + m.n, ch = t.mbeats[m.i + 1];
+  return ch !== undefined && ch < nx ? ch : nx;
+}
+// a bar number (0-based) and the beat in it
+function barOf(b) {
+  const m = meterAt(b), k = Math.floor((b - m.at) / m.n + 1e-9);
+  return { bar: m.bar + k, beat: b - m.at - k * m.n, n: m.n };
+}
+// the beat a bar (0-based) starts at
+function barBeat(bar) {
+  const t = tmap();
+  let i = 0;
+  while (i + 1 < t.mbar.length && t.mbar[i + 1] <= bar) i++;
+  return t.mbeats[i] + (bar - t.mbar[i]) * t.meters[i];
+}
+// seconds between two beats (a clip's length in seconds, a fade...) and back
+const secsBetween = (a, b) => b2s(b) - b2s(a);
+const beatsAfter = (a, secs) => s2b(b2s(a) + secs) - a;
 const trackRow = (tid) => song.view.tracks.findIndex((t) => t.id === tid);
 const tColor = (t) => (t && !t.mine ? song.colors.partner : song.colors.me);
 // pattern clips are measured in beats (blen), audio clips in seconds (len)
-const clipBeats = (c) => (c.pattern ? c.blen ?? 4 : c.len / spb());
+const clipBeats = (c) => (c.pattern ? c.blen ?? 4 : beatsAfter(c.start || 0, c.len));
 // the finest grid that's at least 12 px wide at this zoom (bar, beat, ... 1/16)
 function zoomGrid() {
   for (const g of [0.0625, 0.125, 0.25, 0.5, 1]) if (g * song.ppb >= 12) return g;
@@ -39,25 +90,28 @@ function snapBeat(b, mode = song.snap) {
     const g = zoomGrid(), r = Math.round(b / g) * g;
     return mode === -3 || Math.abs(r - b) * song.ppb <= 6 ? r : b;
   }
-  const g = mode === 0 ? bpb() : mode;
-  return Math.round(b / g) * g;
+  if (mode === 0) { const a = barFloor(b), z = barNext(b); return b - a < z - b ? a : z; }
+  return Math.round(b / mode) * mode;
 }
 // the snap for a mouse event: Alt turns it around (off → the grid you can see, on → free)
 const snapFor = (ev) => (ev && ev.altKey ? (song.snap === -1 ? -3 : -1) : song.snap);
 function fmtPos(beats) {
-  const n = bpb(), neg = beats < 0, b = Math.abs(beats);
-  const bar = Math.floor(b / n), beat = Math.floor(b % n), tick = Math.floor((b % 1) * 100);
-  return `${neg ? "-" : ""}${bar + 1}.${beat + 1}.${String(tick).padStart(2, "0")}`;
+  if (beats < 0) {  // a count-in: in the first time signature
+    const n = bpb(), b = -beats, bar = Math.floor(b / n), beat = Math.floor(b % n), tick = Math.floor((b % 1) * 100);
+    return `-${bar + 1}.${beat + 1}.${String(tick).padStart(2, "0")}`;
+  }
+  const o = barOf(beats), tick = Math.floor((o.beat % 1) * 100);
+  return `${o.bar + 1}.${Math.floor(o.beat + 1e-9) + 1}.${String(tick).padStart(2, "0")}`;
 }
 function fmtTime(beats) {
-  const s = Math.max(0, beats * spb());
+  const s = Math.max(0, b2s(beats));
   return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
 }
 function curPos() {
   const st = song.st;
   if (!st) return 0;
   if (!st.playing) return st.pos;
-  return st.pos + (performance.now() - song.stAt) / 1000 / spb();
+  return s2b(b2s(st.pos) + (performance.now() - song.stAt) / 1000);
 }
 function decodePeaks(b64) {
   const bin = atob(b64), out = new Int8Array(bin.length);
@@ -203,6 +257,8 @@ function songSetup() {
   $("exX").onclick = () => ($("exportm").hidden = true);
   $("exportm").onclick = (e) => e.target === $("exportm") && ($("exportm").hidden = true);
   song.ruler.addEventListener("pointerdown", rulerDown);
+  song.ruler.addEventListener("contextmenu", rulerContext);
+  song.ruler.addEventListener("dblclick", rulerDbl);
   new ResizeObserver(() => songDraw()).observe($("lanewrap"));
 
   // song menu
@@ -573,9 +629,19 @@ function songLengthBeats() {
   return end + 16 * bpb();
 }
 
-function gridStep() {
+// every bar from beat a to b: fn(bar number, the beat it starts at, its length in beats, bar number)
+function eachBar(a, b, fn) {
+  let k = barOf(Math.max(0, a)).bar;
+  for (let guard = 0; guard < 4000; guard++, k++) {
+    const at = barBeat(k);
+    if (at > b) break;
+    const len = barBeat(k + 1) - at;
+    fn(k, at, len, k);
+  }
+}
+
+function gridStep(n = bpb()) {
   // the finest grid that stays readable
-  const n = bpb();
   if (song.ppb >= 48) return 0.25;
   if (song.ppb >= 12) return 1;
   if (song.ppb * n >= 24) return n;
@@ -602,20 +668,31 @@ function songDraw() {
     ctx.fillRect(0, y + ROW - 1, w, 1);
   });
   // grid
-  const n = bpb(), step = gridStep();
-  const b0 = Math.floor(sx / ppb / step) * step, b1 = (sx + w) / ppb;
   const rowsH = Math.min(h, v.tracks.length * ROW - sy);
-  for (let b = b0; b <= b1; b += step) {
-    const x = Math.round(b * ppb - sx) + 0.5;
-    const bar = Math.abs(b % n) < 1e-6;
-    ctx.fillStyle = bar ? "rgba(255,255,255,0.10)" : Number.isInteger(b) ? "rgba(255,255,255,0.045)" : "rgba(255,255,255,0.02)";
-    ctx.fillRect(x - 0.5, 0, 1, Math.max(0, rowsH));
-  }
+  eachBar(sx / ppb, (sx + w) / ppb, (bar, at, len, k) => {
+    const step = gridStep(len);
+    if (step > len && k % Math.round(step / len)) return; // zoomed far out: every 4th bar
+    for (let b = 0; b < Math.min(len, step > len ? len : 1e9) - 1e-9; b += Math.min(step, len)) {
+      const x = Math.round((at + b) * ppb - sx) + 0.5;
+      const beat = at + b;
+      ctx.fillStyle = b === 0 ? "rgba(255,255,255,0.10)" : Math.abs(b - Math.round(b)) < 1e-6 ? "rgba(255,255,255,0.045)" : "rgba(255,255,255,0.02)";
+      ctx.fillRect(x - 0.5, 0, 1, Math.max(0, rowsH));
+      if (beat > (sx + w) / ppb) break;
+    }
+  });
   // loop
   if (v.meta.loop) {
     const x0 = v.meta.loop_start * ppb - sx, x1 = v.meta.loop_end * ppb - sx;
     ctx.fillStyle = "rgba(79,214,198,0.05)";
     ctx.fillRect(x0, 0, x1 - x0, Math.max(0, rowsH));
+  }
+  // sections: a line where each starts, the selected one lit
+  for (const sc of sections()) {
+    const x0 = sc.a * ppb - sx, x1 = sc.b * ppb - sx;
+    if (x1 < 0 || x0 > w) continue;
+    if (song.selSection && song.selSection.id === sc.m.id) { ctx.fillStyle = sc.color + "14"; ctx.fillRect(x0, 0, x1 - x0, Math.max(0, rowsH)); }
+    ctx.fillStyle = sc.color + "66";
+    ctx.fillRect(Math.round(x0), 0, 1, Math.max(0, rowsH));
   }
   // clips (while dragging: where they'd end up; a copy-drag leaves the originals)
   const d = song.drag, res = d && d.moved ? d.result || {} : {};
@@ -669,7 +746,8 @@ function drawClip(ctx, c, x, y, w, h, track) {
   if (file && file.here) {
     const levels = song.peaks[c.file];
     if (levels) {
-      const sr = file.sr || 48000, secPerPx = spb() / song.ppb;
+      const sr = file.sr || 48000, secPerPx = 60 / bpmAt(c.start) / song.ppb, s0 = b2s(c.start);
+      const tAt = (px) => b2s(c.start + px / song.ppb) - s0; // seconds into the clip at this pixel
       let k = 0;
       while (k + 1 < levels.length && (512 << (k + 1)) <= secPerPx * sr * clipRatio(c)) k++;
       const pk = levels[k], per = 512 << k;
@@ -680,8 +758,9 @@ function drawClip(ctx, c, x, y, w, h, track) {
       const r = clipRatio(c);
       for (let px = px0; px < px1; px++) {
         // the stretch of the file this pixel plays (backwards: read from the end)
-        const a = clipSrcAt(c, px * secPerPx), b = clipSrcAt(c, (px + 1) * secPerPx);
-        const t0 = Math.min(a, b), w = secPerPx * r;
+        const ta = tAt(px), tb = tAt(px + 1);
+        const a = clipSrcAt(c, ta), b = clipSrcAt(c, tb);
+        const t0 = Math.min(a, b), w = (tb - ta) * r;
         let i0 = Math.floor(t0 * sr / per), i1 = Math.max(i0 + 1, Math.floor((t0 + w) * sr / per));
         let lo = 0, hi = 0;
         for (let i = i0; i < i1 && 2 * i + 1 < pk.length; i++) {
@@ -708,7 +787,7 @@ function drawClip(ctx, c, x, y, w, h, track) {
     ctx.fillText(label, Math.max(x, 0) + 8, mid + 4);
   }
   // fades: shade what's faded out, a line where the level goes
-  const fin = (c.fade_in || 0) / spb() * song.ppb, fout = (c.fade_out || 0) / spb() * song.ppb;
+  const fin = fadePx(c, "in", song.ppb), fout = fadePx(c, "out", song.ppb);
   ctx.fillStyle = "rgba(8,7,11,0.55)";
   ctx.strokeStyle = "#ffffffb0";
   ctx.lineWidth = 1;
@@ -802,35 +881,114 @@ function drawPatternClip(ctx, c, x, y, w, h) {
   ctx.stroke();
 }
 
+// the ruler: markers and sections on top, then tempo and time signature changes, then bars and the loop
+const RULER_H = 52, RM = 14, RT = 26; // (markers lane 0..RM, tempo lane RM..RT, bars below RT)
+const MARK_COLORS = ["#ff9548", "#4fd6c6", "#b48cff", "#ffd166", "#ff6b8b", "#6bb6ff", "#8fdc6a"];
+const markers = () => (song.view && song.view.markers) || [];
+const markColor = (m, i) => m.color || MARK_COLORS[i % MARK_COLORS.length];
+// the end of the song (for the last section): the end of the last clip, on a barline
+function songEnd() {
+  let end = 0;
+  for (const c of song.view.clips) end = Math.max(end, c.start + clipBeats(c));
+  for (const m of markers()) end = Math.max(end, m.beat + bpbAt(m.beat));
+  return barFloor(end - 1e-6) < end - 1e-6 ? barNext(end - 1e-6) : end;
+}
+// sections: each section marker until the next one (the last one until the song's end)
+function sections() {
+  const ms = markers().filter((m) => m.section).sort((a, b) => a.beat - b.beat), end = songEnd();
+  return ms.map((m, i) => ({ m, a: m.beat, b: i + 1 < ms.length ? ms[i + 1].beat : Math.max(end, m.beat + bpbAt(m.beat)),
+    color: markColor(m, markers().indexOf(m)) }));
+}
+// the tempo and time signature changes, with the start's
+function tempoTags() {
+  const m = song.view.meta, out = [{ kind: "tempo", beat: 0, v: m.bpm }, { kind: "meter", beat: 0, v: m.beats }];
+  for (const [b, x] of m.tempo || []) out.push({ kind: "tempo", beat: +b, v: +x });
+  for (const [b, x] of m.meters || []) out.push({ kind: "meter", beat: +b, v: +x });
+  return out;
+}
+const tagText = (t) => (t.kind === "tempo" ? `♩ ${+(+t.v).toFixed(2)}` : `${t.v}/4`);
+
 function drawRuler() {
-  const cv = song.ruler, w = $("lanewrap").clientWidth, h = 26;
+  const cv = song.ruler, w = $("lanewrap").clientWidth, h = RULER_H;
   const ctx = sizeCanvas(cv, w, h);
-  const v = song.view, ppb = song.ppb, sx = $("lanes").scrollLeft, n = bpb();
+  const v = song.view, ppb = song.ppb, sx = $("lanes").scrollLeft;
   ctx.fillStyle = "#16141c";
   ctx.fillRect(0, 0, w, h);
+  // sections and markers (and where each is, for the mouse)
+  ctx.font = "600 10px system-ui, sans-serif";
+  const sel = song.selSection, hits = (song.rulerHits = []);
+  for (const sc of sections()) {
+    const x0 = sc.a * ppb - sx, x1 = sc.b * ppb - sx;
+    if (x1 < 0 || x0 > w) continue;
+    const on = sel && sel.id === sc.m.id;
+    ctx.fillStyle = sc.color + (on ? "70" : "38");
+    ctx.fillRect(x0, 1, x1 - x0 - 1, RM - 2);
+    ctx.fillStyle = sc.color;
+    ctx.fillRect(x0, 1, 2, RM - 2);
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, Math.max(0, x1 - x0 - 3), RM); ctx.clip();
+    ctx.fillStyle = on ? "#fff" : "#e6e0ee";
+    ctx.fillText(sc.m.name || "Section", Math.max(x0, 0) + 5, RM - 4);
+    ctx.restore();
+    hits.push({ what: "section", x0, x1, sc, m: sc.m });
+  }
+  markers().forEach((m, i) => {
+    if (m.section) return;
+    const x = m.beat * ppb - sx;
+    if (x < -200 || x > w) return;
+    ctx.fillStyle = markColor(m, i);
+    ctx.beginPath(); ctx.moveTo(x, 1); ctx.lineTo(x + 7, 1); ctx.lineTo(x + 7, RM - 4); ctx.lineTo(x, RM - 1); ctx.fill();
+    ctx.fillStyle = "#d8d2e2";
+    ctx.fillText(m.name || "Marker", x + 10, RM - 4);
+    hits.push({ what: "marker", x0: x - 2, x1: x + 12 + ctx.measureText(m.name || "Marker").width, m });
+  });
+  // tempo and time signature changes
+  ctx.fillStyle = "#1c1a23"; ctx.fillRect(0, RM, w, RT - RM);
+  ctx.font = "600 9.5px system-ui, sans-serif";
+  const tags = tempoTags().sort((a, b) => a.beat - b.beat || (a.kind === "meter" ? -1 : 1));
+  let lastX = -1e9;
+  for (const t of tags) {
+    let x = t.beat * ppb - sx;
+    if (x > w) continue;
+    const tw = ctx.measureText(tagText(t)).width + 8;
+    const drawX = Math.max(x, lastX + 2);  // a meter and a tempo on one beat: side by side
+    lastX = drawX + tw;
+    if (lastX < 0) continue;
+    const dr = song.tagDrag && song.tagDrag.kind === t.kind && song.tagDrag.beat === t.beat;
+    ctx.fillStyle = t.kind === "tempo" ? (dr ? "#ffb070" : "#3a2c22") : (dr ? "#9fe8de" : "#203330");
+    ctx.fillRect(drawX, RM + 1, tw, RT - RM - 2);
+    ctx.fillStyle = t.kind === "tempo" ? "#ffb070" : "#7fe0d4";
+    ctx.fillRect(x, RM + 1, 1, RT - RM - 2);
+    ctx.fillStyle = dr ? "#16141c" : t.kind === "tempo" ? "#ffcf9f" : "#aef0e7";
+    ctx.fillText(tagText(t), drawX + 4, RT - 3);
+    hits.push({ what: "tag", x0: drawX, x1: drawX + tw, t });
+  }
+  ctx.save();
+  ctx.translate(0, RT);
+  ctx.beginPath(); ctx.rect(0, 0, w, h - RT); ctx.clip();
   if (v.meta.loop || song.rulerDrag) {
     const x0 = v.meta.loop_start * ppb - sx, x1 = v.meta.loop_end * ppb - sx;
     ctx.fillStyle = v.meta.loop ? "rgba(79,214,198,0.55)" : "rgba(255,255,255,0.14)";
     ctx.fillRect(x0, 0, x1 - x0, 8);
   }
-  const barPx = ppb * n;
+  const barPx = ppb * bpb();
   const every = barPx >= 36 ? 1 : barPx >= 14 ? 4 : 8;
   ctx.font = "600 10.5px system-ui, sans-serif";
-  for (let bar = Math.max(0, Math.floor(sx / barPx)); bar * barPx - sx < w; bar++) {
-    const x = Math.round(bar * barPx - sx) + 0.5;
+  eachBar(sx / ppb, (sx + w) / ppb, (bar, at, len) => {
+    const x = Math.round(at * ppb - sx) + 0.5;
     if (bar % every === 0) {
       ctx.fillStyle = "#5f586b"; ctx.fillRect(x - 0.5, 10, 1, 16);
       ctx.fillStyle = "#8e879b"; ctx.fillText(String(bar + 1), x + 4, 21);
     } else if (every === 1 || bar % (every / 2) === 0) {
       ctx.fillStyle = "#2f2b38"; ctx.fillRect(x - 0.5, 18, 1, 8);
     }
-    if (barPx >= 60) for (let k = 1; k < n; k++) { ctx.fillStyle = "#2a2634"; ctx.fillRect(Math.round(x + k * ppb), 21, 1, 5); }
-  }
+    if (len * ppb >= 60) for (let k = 1; k < len; k++) { ctx.fillStyle = "#2a2634"; ctx.fillRect(Math.round(x + k * ppb), 21, 1, 5); }
+  });
   // playhead marker
   const px = curPos() * ppb - sx;
   ctx.fillStyle = song.st && song.st.recording ? "#ff6070" : "#efeaf4";
   ctx.beginPath(); ctx.moveTo(px - 5, 12); ctx.lineTo(px + 5, 12); ctx.lineTo(px, 20); ctx.fill();
   hereDrawRuler(ctx, sx);
+  ctx.restore();
 }
 
 function drawOverlay() {
@@ -926,11 +1084,18 @@ function hitClip(beat, row) {
   return null;
 }
 
+// how wide a clip's fade is on screen (fades are in seconds; the tempo can change under them)
+function fadePx(c, which, ppb) {
+  if (which === "in") return beatsAfter(c.start, c.fade_in || 0) * ppb;
+  const end = c.start + clipBeats(c);
+  return (end - s2b(b2s(end) - (c.fade_out || 0))) * ppb;
+}
+
 function hitZone(p) {
   const c = hitClip(p.beat, p.row);
   if (!c) return null;
   const ppb = song.ppb, w = clipBeats(c) * ppb, lx = p.px - c.start * ppb, ly = p.py - (p.row * ROW + 2);
-  const fin = (c.fade_in || 0) / spb() * ppb, fout = (c.fade_out || 0) / spb() * ppb;
+  const fin = fadePx(c, "in", ppb), fout = fadePx(c, "out", ppb);
   if (ly < 14 && w > 30 && !c.pattern) {
     if (Math.abs(lx - Math.max(fin, 5)) <= 6 && lx < w / 2) return { c, zone: "fin" };
     if (Math.abs(lx - Math.min(w - fout, w - 5)) <= 6 && lx >= w / 2) return { c, zone: "fout" };
@@ -1007,7 +1172,7 @@ function lanesDown(e) {
 
 // what a drag would do: {id: {fields, row}} for the clips it changes
 function dragResult(d, q, snap) {
-  const v = song.view, s = spb(), c = d.anchor, out = {};
+  const v = song.view, c = d.anchor, out = {}, cs = b2s(c.start), ce = b2s(c.start + clipBeats(c));
   const clampRow = (r, from) => { const k = Math.max(0, Math.min(v.tracks.length - 1, r)); return isAuto(v.tracks[k]) ? from : k; };
   if (d.zone === "body") {
     const db = Math.max(0, snapBeat(q.beat - d.grab, snap)) - c.start;
@@ -1027,22 +1192,22 @@ function dragResult(d, q, snap) {
     // how much file there is before the clip's start (backwards: after its end)
     const r = clipRatio(c), o = c.offset || 0;
     const room = c.reverse ? fileDur(c) - o - c.len * r : o;
-    const lo = Math.max(0, c.start - room / r / s), hi = c.start + clipBeats(c) - MIN_LEN / s;
+    const lo = Math.max(0, s2b(cs - room / r)), hi = s2b(ce - MIN_LEN);
     const start = Math.min(hi, Math.max(lo, snapBeat(q.beat, snap)));
-    const dt = (start - c.start) * s, len = c.len - dt;
+    const dt = b2s(start) - cs, len = c.len - dt;
     out[c.id] = { start, offset: c.reverse ? o : o + dt * r, len, fade_in: Math.min(c.fade_in || 0, len - (c.fade_out || 0)) };
   } else if (d.zone === "right") {
     const r = clipRatio(c), o = c.offset || 0;
     const room = c.reverse ? o + c.len * r : fileDur(c) - o; // file seconds the clip can reach
-    const lo = c.start + MIN_LEN / s, hi = c.start + room / r / s;
+    const lo = s2b(cs + MIN_LEN), hi = s2b(cs + room / r);
     const end = Math.min(hi, Math.max(lo, snapBeat(q.beat, snap)));
-    const len = (end - c.start) * s;
+    const len = b2s(end) - cs;
     out[c.id] = { len, fade_out: Math.min(c.fade_out || 0, len - (c.fade_in || 0)) };
     if (c.reverse) out[c.id].offset = Math.max(0, o - (len - c.len) * r);
   } else if (d.zone === "fin") {
-    out[c.id] = { fade_in: Math.max(0, Math.min(c.len - (c.fade_out || 0), (q.beat - c.start) * s)) };
+    out[c.id] = { fade_in: Math.max(0, Math.min(c.len - (c.fade_out || 0), b2s(q.beat) - cs)) };
   } else if (d.zone === "fout") {
-    out[c.id] = { fade_out: Math.max(0, Math.min(c.len - (c.fade_in || 0), (c.start + clipBeats(c) - q.beat) * s)) };
+    out[c.id] = { fade_out: Math.max(0, Math.min(c.len - (c.fade_in || 0), ce - b2s(q.beat))) };
   }
   return out;
 }
@@ -1125,7 +1290,7 @@ function selectFrom(c) {
 function insertPattern(p) {
   const pat = curPattern(), t = song.view.tracks[p.row];
   if (!pat || !t || isAuto(t)) return;
-  const at = Math.max(0, Math.floor(p.beat / bpb() + 1e-9) * bpb());
+  const at = Math.max(0, barFloor(p.beat));
   const id = newId("c");
   song.sel = new Set([id]);
   songEdit([["clip", id, { track: t.id, pattern: pat.id, start: at, blen: patLen(pat), boff: 0 }]]);
@@ -1133,7 +1298,7 @@ function insertPattern(p) {
 
 // ---------- editing: split, duplicate, copy/paste, delete ----------
 function splitClips(beat, clips) {
-  const s = spb(), ch = [];
+  const ch = [];
   for (const c of clips) {
     if (beat <= c.start + 1e-6 || beat >= c.start + clipBeats(c) - 1e-6) continue;
     if (c.pattern) {
@@ -1142,7 +1307,7 @@ function splitClips(beat, clips) {
       ch.push(["clip", newId("c"), { ...clipFields(c), start: beat, boff: (c.boff || 0) + lb, blen: c.blen - lb }]);
       continue;
     }
-    const left = (beat - c.start) * s, right = c.len - left, cut = cutOffsets(c, left);
+    const left = secsBetween(c.start, beat), right = c.len - left, cut = cutOffsets(c, left);
     ch.push(["clip", c.id, { offset: cut.left, len: left, fade_out: 0, fade_in: Math.min(c.fade_in || 0, left) }]);
     ch.push(["clip", newId("c"), { ...clipFields(c), start: beat, offset: cut.right, len: right,
       fade_in: 0, fade_out: Math.min(c.fade_out || 0, right) }]);
@@ -1329,9 +1494,155 @@ async function runExport() {
   }
 }
 
-// ---------- mouse: ruler (click = play from here, drag = mark the loop) ----------
+// ---------- mouse: ruler ----------
+// what's under the mouse on the ruler: {lane: "marks" | "tempo" | "bars", beat, hit}
+function rulerAt(ev) {
+  const r = song.ruler.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+  const sx = $("lanes").scrollLeft, lane = y < RM ? "marks" : y < RT ? "tempo" : "bars";
+  const hits = (song.rulerHits || []).filter((h) => x >= h.x0 && x <= h.x1 &&
+    (lane === "marks" ? h.what !== "tag" : lane === "tempo" && h.what === "tag"));
+  // a marker flag wins over the section band it's on
+  const hit = hits.find((h) => h.what === "marker") || hits.find((h) => h.what === "tag") ||
+    hits.find((h) => h.what === "section") || null;
+  return { lane, beat: Math.max(0, (x + sx) / song.ppb), hit, x };
+}
+// the time signature list or the tempo list, with a change at beat b set (v) or taken out (null)
+function setTag(kind, beat, v, from = beat) {
+  const m = song.view.meta, field = kind === "tempo" ? "tempo" : "meters";
+  if (beat <= 1e-9 && from <= 1e-9) {
+    if (v != null) songEdit([["meta", "meta", kind === "tempo" ? { bpm: v } : { beats: v }]]);
+    return;
+  }
+  const list = (m[field] || []).filter(([b]) => Math.abs(b - from) > 1e-6 && Math.abs(b - beat) > 1e-6);
+  if (v != null && beat > 1e-9) list.push([beat, v]);
+  list.sort((a, b) => a[0] - b[0]);
+  songEdit([["meta", "meta", { [field]: list }]]);
+}
+function askTempo(beat, cur) {
+  const s = prompt(`Tempo from bar ${fmtPos(beat).split(".")[0]} (BPM)`, String(+(+cur).toFixed(2)));
+  if (s == null) return;
+  const v = parseFloat(s.replace(",", "."));
+  if (!(v >= 20 && v <= 400)) { toast("A tempo is between 20 and 400 BPM."); return; }
+  setTag("tempo", beat, v);
+}
+function askMeter(beat, cur) {
+  const s = prompt(`Beats per bar from bar ${fmtPos(beat).split(".")[0]} (e.g. 3 for 3/4, 7 for 7/4)`, String(cur));
+  if (s == null) return;
+  const v = parseInt(s.split("/")[0], 10);
+  if (!(v >= 1 && v <= 32)) { toast("Between 1 and 32 beats per bar."); return; }
+  setTag("meter", beat, v);
+}
+function addMarker(beat, section) {
+  const name = prompt(section ? "Section name (e.g. Intro, Verse, Chorus)" : "Marker name", section ? "Verse" : "Marker");
+  if (name == null) return;
+  const id = newId("m");
+  songEdit([["marker", id, { beat, name: name.trim() || (section ? "Section" : "Marker"), section: !!section }]]);
+}
+function selectSection(sc) {
+  song.selSection = { id: sc.m.id };
+  song.sel = new Set(song.view.clips.filter((c) => c.start >= sc.a - 1e-6 && c.start < sc.b - 1e-6).map((c) => c.id));
+  songDraw(); drawRuler();
+}
+async function sectionOp(sc, op) {
+  const n = Math.round((sc.b - sc.a) / bpbAt(sc.a) * 100) / 100;
+  setSongView(await api.daw_time_op(op, sc.a, sc.b));
+  song.selSection = null;
+  toast(op === "delete" ? `"${sc.m.name}" is out (${n} bars); what came after moved up. Ctrl+Z brings it back.`
+    : `"${sc.m.name}" is in twice now; what came after moved ${n} bars later.`);
+}
+function rulerContext(e) {
+  e.preventDefault();
+  if (!song.view) return;
+  const p = rulerAt(e), at = Math.max(0, snapBeat(p.beat, snapFor(e))), bar = Math.max(0, snapBeat(p.beat, 0));
+  const items = [], h = p.hit;
+  if (h && (h.what === "marker" || h.what === "section")) {
+    const m = h.m;
+    items.push([`Rename "${m.name}"…`, "dbl-click", () => { const n = prompt("Name", m.name); if (n && n.trim()) songEdit([["marker", m.id, { name: n.trim() }]]); }]);
+    items.push(["Color: next", "", () => songEdit([["marker", m.id, { color: MARK_COLORS[(MARK_COLORS.indexOf(markColor(m, markers().indexOf(m))) + 1) % MARK_COLORS.length] }]])]);
+    if (h.what === "section") {
+      const sc = h.sc;
+      items.push(["Select the section", "click", () => selectSection(sc)]);
+      items.push(["Loop the section", "", () => songEdit([["meta", "meta", { loop: true, loop_start: sc.a, loop_end: sc.b }]])]);
+      items.push(["Duplicate the section", "", () => sectionOp(sc, "duplicate")]);
+      items.push(["Delete the section (close the gap)", "", () => sectionOp(sc, "delete")]);
+      items.push(["Make it a marker", "", () => songEdit([["marker", m.id, { section: false }]])]);
+    } else items.push(["Make it a section", "", () => songEdit([["marker", m.id, { section: true }]])]);
+    items.push([h.what === "section" ? "Remove the section marker" : "Remove the marker", "", () => songEdit([["marker", m.id, { del: true }]])]);
+  } else if (h && h.what === "tag") {
+    const t = h.t;
+    if (t.kind === "tempo") items.push(["Change the tempo…", "dbl-click", () => askTempo(t.beat, t.v)]);
+    else items.push(["Change the time signature…", "dbl-click", () => askMeter(t.beat, t.v)]);
+    if (t.beat > 0) items.push([t.kind === "tempo" ? "Remove the tempo change" : "Remove the time signature change", "", () => setTag(t.kind, t.beat, null)]);
+  } else {
+    items.push(["Add a marker here", "", () => addMarker(at, false)]);
+    items.push(["Start a section here", "", () => addMarker(bar, true)]);
+    items.push([`Tempo change here (now ${+bpmAt(at).toFixed(2)})…`, "", () => askTempo(at, bpmAt(at))]);
+    items.push([`Time signature from bar ${barOf(bar).bar + 1} (now ${bpbAt(bar)}/4)…`, "", () => askMeter(bar, bpbAt(bar))]);
+    const sc = sections().find((x) => p.beat >= x.a && p.beat < x.b);
+    if (sc) items.push([`Select "${sc.m.name}"`, "", () => selectSection(sc)]);
+  }
+  showCtx(items, e.clientX, e.clientY);
+}
+function rulerDbl(e) {
+  if (!song.view) return;
+  const p = rulerAt(e), h = p.hit;
+  if (h && (h.what === "marker" || h.what === "section")) {
+    const n = prompt("Name", h.m.name);
+    if (n && n.trim()) songEdit([["marker", h.m.id, { name: n.trim() }]]);
+  } else if (h && h.what === "tag") (h.t.kind === "tempo" ? askTempo : askMeter)(h.t.beat, h.t.v);
+  else if (p.lane === "marks") addMarker(Math.max(0, snapBeat(p.beat, 0)), true);
+  else if (p.lane === "tempo") askTempo(Math.max(0, snapBeat(p.beat, snapFor(e))), bpmAt(p.beat));
+}
+// drag a marker, a section's start, or a tempo/time signature change along the ruler
+function rulerDragThing(e, p) {
+  const h = p.hit, cv = song.ruler, x0 = e.clientX, isTag = h.what === "tag";
+  if (isTag && h.t.beat <= 0) return false; // the start's tempo stays at the start
+  let moved = false, beat = isTag ? h.t.beat : h.m.beat;
+  const from = beat, meter = isTag && h.t.kind === "meter";
+  if (isTag) song.tagDrag = { kind: h.t.kind, beat };
+  cv.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    if (!moved && Math.abs(ev.clientX - x0) < 4) return;
+    moved = true;
+    const b = rulerAt(ev).beat;
+    beat = Math.max(isTag ? 1e-3 : 0, snapBeat(b, meter || (!isTag && h.m.section) ? 0 : snapFor(ev)));
+    if (isTag) {
+      song.tagDrag.beat = beat;
+      const m = song.view.meta, f = meter ? "meters" : "tempo";
+      const prev = song.tagDrag.prev ?? from;
+      m[f] = (m[f] || []).map(([b0, v]) => [Math.abs(b0 - prev) < 1e-6 ? beat : b0, v]);
+      song.tagDrag.prev = beat;
+    } else h.m.beat = beat;
+    drawRuler(); songDraw();
+  };
+  const up = () => {
+    cv.removeEventListener("pointermove", move); cv.removeEventListener("pointerup", up);
+    song.tagDrag = null;
+    if (!moved) {
+      if (h.what === "section") selectSection(h.sc);
+      return;
+    }
+    if (isTag) {
+      const m = song.view.meta, f = meter ? "meters" : "tempo";
+      m[f] = (m[f] || []).map(([b0, v]) => [Math.abs(b0 - beat) < 1e-6 ? from : b0, v]); // back; the edit sets it
+      if (beat > 1e-3) setTag(h.t.kind, beat, h.t.v, from); else drawRuler();
+    } else {
+      h.m.beat = from;
+      songEdit([["marker", h.m.id, { beat }]]);
+    }
+  };
+  cv.addEventListener("pointermove", move); cv.addEventListener("pointerup", up);
+  return true;
+}
 function rulerDown(e) {
   if (e.button !== 0 || !song.view) return;
+  const rp = rulerAt(e);
+  if (rp.hit && (rp.hit.what === "marker" || rp.hit.what === "tag" ||
+      (rp.hit.what === "section" && Math.abs(rp.x - rp.hit.x0) <= 6)) && rulerDragThing(e, rp)) return;
+  if (rp.hit && rp.hit.what === "section") {  // a click on a section's band selects it (and drags nothing)
+    selectSection(rp.hit.sc); return;
+  }
+  if (song.selSection) { song.selSection = null; drawRuler(); }
   const cv = song.ruler, r = cv.getBoundingClientRect(), sx = $("lanes").scrollLeft;
   const at = (ev) => Math.max(0, snapBeat((ev.clientX - r.left + sx) / song.ppb, snapFor(ev)));
   const b0 = at(e);
@@ -1591,19 +1902,21 @@ function demoSong() {
       ...Array.from({ length: 8 }, (_, i) => ({ id: "h" + i, pattern: "pa", track: "t4", start: i / 2, len: 0.25, key: 42, vel: i % 2 ? 70 : 100 })),
       ...[[0, 45, 1.5], [1.5, 45, 0.5], [2, 48, 1], [3, 50, 1], [4, 41, 1.5], [5.5, 41, 0.5], [6, 43, 1], [7, 48, 1]].map(([b, k, l], i) => ({ id: "b" + i, pattern: "pb", track: "t5", start: b, len: l, key: k, vel: 100 })),
     ],
+    markers: [{ id: "m1", beat: 0, name: "Intro", section: true }, { id: "m2", beat: 16, name: "Verse", section: true },
+      { id: "m3", beat: 24, name: "drop the bass", section: false }],
     patternMode: null,
     files, me, partner, local: { click: true, countin: true }, conflict: null, shared: true, undo: true, redo: false,
   };
   let v = 1, playing = false, recording = false, recFrom = null, pos = 0, t0 = 0, exportAt = 0;
   const copy = () => JSON.parse(JSON.stringify(view));
-  const now = () => (playing ? pos + (performance.now() - t0) / 1000 / (60 / view.meta.bpm) : pos);
+  const now = () => (playing ? s2b(b2s(pos) + (performance.now() - t0) / 1000) : pos);
   return {
     daw_project: async () => copy(),
     daw_edit: async (changes) => {
       for (const [kind, id, f] of changes) {
         if (kind === "meta") Object.assign(view.meta, f);
         const bus = kind === "track" && (f.bus || view.buses.some((b) => b.id === id));
-        const list = { track: bus ? view.buses : view.tracks, clip: view.clips, pattern: view.patterns, note: view.notes }[kind];
+        const list = { track: bus ? view.buses : view.tracks, clip: view.clips, pattern: view.patterns, note: view.notes, marker: view.markers }[kind];
         if (!list) continue;
         const o = list.find((x) => x.id === id);
         if (f.del) { if (o) list.splice(list.indexOf(o), 1); continue; }
@@ -1611,6 +1924,19 @@ function demoSong() {
         let free = 0;
         while (used.has(free)) free++;
         if (o) Object.assign(o, f); else list.push({ id, ...f, mine: f.owner === me, slot: free });
+      }
+      v++; return copy();
+    },
+    daw_time_op: async (op, a, b) => {
+      // (the real one also moves automation, tempo and time signatures)
+      const L = b - a, dup = op === "duplicate";
+      for (const [list, f] of [[view.clips, "start"], [view.markers, "beat"]]) {
+        for (const o of [...list]) {
+          const x = o[f];
+          if (dup && x >= a && x < b) list.push({ ...o, id: newId("d"), [f]: x + L });
+          if (x >= b) o[f] = dup ? x + L : x - L;
+          else if (x >= a && !dup) list.splice(list.indexOf(o), 1);
+        }
       }
       v++; return copy();
     },
@@ -1673,7 +1999,7 @@ function demoSong() {
     show_file: async () => {},
     daw_presence: async () => {},
     ...demoLibrary(),
-    status: () => ({ v, pos: playing ? pos + (performance.now() - t0) / 1000 / (60 / view.meta.bpm) : pos, playing, recording, recFrom,
+    status: () => ({ v, pos: now(), playing, recording, recFrom,
       levels: playing ? { t1: 0.4, t2: 0.25 } : {}, xfer: { "take-k1.wav": [3_100_000, 4_600_000, "in"] }, notices: [],
       ...demoPartner() }),
   };
