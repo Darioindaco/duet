@@ -1376,6 +1376,9 @@ async function toggleSongMenu() {
   const v = song.view;
   menu.innerHTML = `<div class="macts">
       <button id="mNew"><span>New song</span></button>
+      <button id="mVersions"><span>Versions…</span></button>
+      <button id="mSaveFile"><span>Save as a file…</span></button>
+      <button id="mOpenFile"><span>Open a song file…</span></button>
       <button id="mExport"><span>Export as WAV…</span><kbd>Ctrl+E</kbd></button>
       <button id="mKeys"><span>Keyboard shortcuts…</span><kbd>Ctrl+/</kbd></button>
       <button id="mSound"><span>Audio &amp; MIDI settings</span></button>
@@ -1392,6 +1395,22 @@ async function toggleSongMenu() {
   inp.onchange = () => inp.value.trim() && songEdit([["meta", "meta", { name: inp.value.trim() }]]);
   inp.onkeydown = (e) => e.key === "Enter" && inp.blur();
   $("mExport").onclick = () => { menu.hidden = true; openExport(); };
+  $("mVersions").onclick = () => { menu.hidden = true; openVersions(); };
+  $("mSaveFile").onclick = async () => {
+    menu.hidden = true;
+    const r = await api.daw_save_bundle();
+    if (!r) return;
+    if (r.error) toast(r.error, true);
+    else toast(`Saved, with ${r.files} audio file${r.files === 1 ? "" : "s"}: ${r.path.split(/[\\/]/).pop()}`);
+  };
+  $("mOpenFile").onclick = async () => {
+    if (v.shared && !confirm("Open a song file? Your partner switches to it too (this one stays saved).")) return;
+    menu.hidden = true;
+    const r = await api.daw_open_bundle();
+    if (!r) return;
+    if (r.error) toast(r.error, true);
+    else setSongView(r.view);
+  };
   $("mKeys").onclick = () => { menu.hidden = true; openShortcuts(); };
   $("mSound").onclick = () => { menu.hidden = true; openPanel("sound"); };
   $("mConnect").onclick = () => { menu.hidden = true; openPanel("connect"); };
@@ -1414,6 +1433,48 @@ async function toggleSongMenu() {
     };
     $("songList").append(b);
   }
+}
+
+// ---------- versions: the song as it was, every few minutes while you work ----------
+async function openVersions() {
+  const list = await api.daw_versions();
+  let m = $("versionsM");
+  if (!m) {
+    m = document.createElement("div");
+    m.className = "modal";
+    m.id = "versionsM";
+    m.innerHTML = `<div class="mbox wide" role="dialog" aria-modal="true" aria-labelledby="verTitle">
+      <div class="mhead"><b id="verTitle">Versions</b><span>Kept on this computer</span><button class="x" aria-label="Close">✕</button></div>
+      <div class="mbody"><p class="fine">A version is kept every few minutes while the song changes (all of the last two hours, then one an hour,
+      then one a day). Restoring one is an edit like any other: <b>Undo</b> takes it back, and your partner gets it too.</p>
+      <div class="verlist"></div></div></div>`;
+    document.body.append(m);
+    m.querySelector(".x").onclick = () => (m.hidden = true);
+    m.addEventListener("pointerdown", (e) => { if (e.target === m) m.hidden = true; });
+  }
+  const box = m.querySelector(".verlist");
+  box.innerHTML = list.length ? "" : `<p class="fine">No versions yet: the first is kept a few minutes after you start changing the song.</p>`;
+  let day = "";
+  for (const ver of list) {
+    const t = new Date(ver.time * 1000);
+    const d = t.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
+    if (d !== day) { day = d; box.insertAdjacentHTML("beforeend", `<div class="lbl-sm verday">${esc(d)}</div>`); }
+    const row = document.createElement("div");
+    row.className = "verrow";
+    row.innerHTML = `<b>${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</b>
+      <span>${esc(ver.name || "Untitled")} · ${ver.tracks} track${ver.tracks === 1 ? "" : "s"} · ${ver.clips} clip${ver.clips === 1 ? "" : "s"}${ver.notes ? ` · ${ver.notes} notes` : ""}</span>
+      <button class="btn">Restore</button>`;
+    row.querySelector("button").onclick = async () => {
+      if (!confirm(`Put the song back as it was at ${t.toLocaleString()}? (Undo takes it back.)`)) return;
+      const r = await api.daw_restore(ver.id);
+      if (r.error) { toast(r.error, true); return; }
+      setSongView(r.view);
+      m.hidden = true;
+      toast(`Restored the version from ${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Undo takes it back.`);
+    };
+    box.append(row);
+  }
+  m.hidden = false;
 }
 
 function paintConflict() {
@@ -1596,6 +1657,10 @@ function demoSong() {
       for (let t = Math.ceil(o / 0.5) * 0.5 + 0.02; t < o + L; t += 0.5) hits.push(t);
       return { hits };
     },
+    daw_versions: async () => [0, 7, 19, 64, 1500].map((min, i) => ({ id: "v" + i, time: Date.now() / 1000 - min * 60 - 30, clips: view.clips.length - i, notes: 12, tracks: view.tracks.length, name: view.meta.name })),
+    daw_restore: async () => ({ ok: true, changed: 3, view: copy() }),
+    daw_save_bundle: async () => ({ ok: true, files: 4, path: "/Users/you/Music/Summer jam.duet" }),
+    daw_open_bundle: async () => null,
     daw_projects: async () => [{ pid: "pdemo", name: view.meta.name, modified: Date.now() / 1000, clips: view.clips.length, current: true },
       { pid: "p2", name: "Blues in A", modified: Date.now() / 1000 - 86400, clips: 5, current: false }],
     daw_new: async () => copy(), daw_open: async () => copy(), daw_resolve: async () => copy(),

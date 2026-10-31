@@ -1646,12 +1646,91 @@ def test_stun():
     e.close()
 
 
+def test_versions():
+    """Versions (the song as it was, restored as one undoable edit), a damaged song file (the save before
+    stands in), a crash (said on the next start), and a song file (.duet: the song and its audio) that opens
+    as a song of its own."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-ver-"))
+    d = Daw(e, root / "songs", "me")
+    try:
+        tid = d.view()["tracks"][0]["id"]
+        d.edit([["track", tid, {"arm": True}]])
+        d.set_local("countin", False)
+        d.record(0.0)
+        x = [0.3 * math.sin(2 * math.pi * 220 * i / SR) for i in range(N)]
+        for _ in range(375):
+            e.process(x)
+        d.stop()
+        clip = d.view()["clips"][0]
+        d.edit([["meta", "meta", {"name": "Take one"}]])
+        d.p.save()
+        d._snapshot()
+        vid = d.versions()[0]["id"]
+        # then: a new name, the clip moved, a second track; and back
+        time.sleep(1.1)  # (a version a second: the names are to the second)
+        d.edit([["meta", "meta", {"name": "Take two"}], ["clip", clip["id"], {"start": 7.5}],
+                ["track", "t-new", {"name": "Bass", "order": 2.0, "owner": "me", "src": 0, "vol": 0.8, "pan": 0.0, "rack": []}]])
+        assert len(d.view()["tracks"]) == 2
+        r = d.restore_version(vid)
+        assert r.get("ok"), r
+        v = d.view()
+        assert v["meta"]["name"] == "Take one" and len(v["tracks"]) == 1 and v["clips"][0]["start"] == clip["start"], v["meta"]
+        assert len(d.versions()) >= 2, "the state before the restore is kept as a version too"
+        d.undo()
+        assert d.view()["meta"]["name"] == "Take two", "a restore is undone in one step"
+        # a damaged project.json: the save before it opens instead
+        d.p.save()
+        d.p.save()
+        folder = d.p.folder
+        (folder / "project.json").write_text('{"pid": "broken', encoding="utf-8")
+        from daw import Project
+        p = Project.load(folder)
+        assert p.recovered == "project.json.bak" and p.meta()["name"] == "Take two", (p.recovered, p.meta())
+        d.p.save()
+        # a song file: save it, open it (a copy: the id is here already), the audio comes along
+        bundle = str(root / "take.duet")
+        r = d.save_bundle(bundle)
+        assert r.get("ok") and r["files"] == 1, r
+        r = d.open_bundle(bundle)
+        assert r.get("ok"), r
+        v2 = d.view()
+        assert v2["meta"]["name"] == "Take two" and d.p.pid != p.pid and len(v2["clips"]) == 1
+        assert (d.p.audio_dir / v2["clips"][0]["file"]).is_file(), "the audio came with it"
+        d2_pid = d.p.pid
+    finally:
+        d._running = False  # a crash: no close(), the lock stays
+        e.close()
+    # the next start says so
+    e = Engine()
+    e.start()
+    d = Daw(e, root / "songs", "me")
+    try:
+        notes = d.view().get("notices") or d.notices
+        assert any("didn't close properly" in n for n in notes), notes
+        assert d.p.pid == d2_pid
+        print(f"versions: ok  (restored as one edit and undone, a damaged song file opened from its .bak, "
+              f"a crash said on the next start, a .duet song file with its audio)")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_effects_cpu()
     test_two_engines()
     test_auto_buffer()
     test_daw()
     test_song_edit()
+    test_versions()
     test_instruments()
     test_patterns()
     test_live()

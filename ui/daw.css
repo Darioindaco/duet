@@ -440,3 +440,11 @@ header > .spacer { flex-shrink: 1; }
 .tunecv[hidden], .cewave[hidden], .cehint[hidden] { display: none !important; }
 .tunepanel .tkey { width: auto; min-width: 190px; }
 .cerow > label.tcheck, .tcheck { width: auto; flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: 14px; cursor: pointer; }
+
+/* versions */
+.verlist { display: flex; flex-direction: column; gap: 4px; max-height: 55vh; overflow: auto; }
+.verday { margin: 10px 0 2px; text-transform: capitalize; }
+.verrow { display: flex; align-items: center; gap: 12px; padding: 7px 10px; border-radius: 9px; background: rgba(255,255,255,0.03); border: 1px solid var(--line-2); }
+.verrow b { font-variant-numeric: tabular-nums; min-width: 48px; }
+.verrow span { flex: 1; min-width: 0; color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.verrow .btn { padding: 5px 12px; font-size: 12px; }

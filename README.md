@@ -270,10 +270,22 @@ hear it, either of you can change it, and the export sounds exactly like it.
   too. What you play live can't be read early: a slow plugin on your own input
   delays it by its latency, as in any DAW.
 
-Songs are saved by themselves. The song name opens the song menu: rename it,
-start a new one, or open an older one (your partner switches along). If you
-both had a different song open when you connected, Duet asks which one to use;
-the other one stays saved.
+Songs are saved by themselves, a second after every change (written aside and
+synced first, so a crash or a power cut can't leave half a file; the save before
+stays as a spare). The song name opens the song menu: rename it, start a new one,
+or open an older one (your partner switches along). If you both had a different
+song open when you connected, Duet asks which one to use; the other one stays saved.
+
+- **Versions…** A version is kept every few minutes while the song changes (all
+  of the last two hours, then one an hour for two days, then one a day for two
+  months). *Restore* puts the song back as it was, as one edit: *Undo* takes it
+  back, and your partner gets it like any edit.
+- **If something goes wrong:** when Duet didn't close properly (a crash, the
+  power), it says so on the next start and how recent your song is. A damaged song
+  file opens from the save before it, or the newest version.
+- **Save as a file… / Open a song file…** The song and all its audio in one
+  `.duet` file: to keep, to move to another computer, or to send. Opening one makes
+  it a song of its own (a copy, if you have it already).
 
 ## Automation
 

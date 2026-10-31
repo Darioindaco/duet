@@ -39,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 import traceback
 from pathlib import Path
 
@@ -183,6 +184,14 @@ def track_key(tid: str) -> int:
     return int.from_bytes(hashlib.blake2s(tid.encode(), digest_size=4).digest(), "big") or 1
 
 
+SNAPSHOT_EVERY = 300.0  # seconds between versions while the song changes
+
+
+def fmt_ago(seconds: float) -> str:
+    s = max(0, int(seconds))
+    return f"{s} s" if s < 90 else f"{s // 60} min" if s < 5400 else f"{s // 3600} h"
+
+
 def new_id(prefix: str = "") -> str:
     return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
 
@@ -199,6 +208,7 @@ class Project:
         # this machine only: mute/solo per track, click, count-in, and what the
         # live strips ("L0", the partner's "R0"...) send to the song's buses
         self.local = {"mute": {}, "solo": {}, "click": True, "countin": True, "livesends": {}}
+        self.recovered: str | None = None  # the file it was loaded from, when project.json couldn't be read
 
     @property
     def audio_dir(self) -> Path:
@@ -260,18 +270,87 @@ class Project:
 
     # --- disk -------------------------------------------------------------------
 
-    def save(self):
-        self.folder.mkdir(parents=True, exist_ok=True)
-        data = {"pid": self.pid, "clock": self.clock, "objs": self.objs,
+    def data(self) -> dict:
+        return {"pid": self.pid, "clock": self.clock, "objs": self.objs,
                 "stamps": {k: {i: {f: list(s) for f, s in d.items()} for i, d in v.items()} for k, v in self.stamps.items()}}
-        for name, content in (("project.json", data), ("local.json", self.local)):
+
+    def save(self):
+        """To disk, so that a crash or a power cut can't leave half a file: written aside, synced, then put in
+        place; the save before stays as project.json.bak."""
+        self.folder.mkdir(parents=True, exist_ok=True)
+        for name, content in (("project.json", self.data()), ("local.json", self.local)):
             tmp = self.folder / (name + ".tmp")
-            tmp.write_text(json.dumps(content), encoding="utf-8")
-            os.replace(tmp, self.folder / name)
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(json.dumps(content))
+                f.flush()
+                os.fsync(f.fileno())
+            dst = self.folder / name
+            if name == "project.json" and dst.exists():
+                try:
+                    shutil.copyfile(dst, self.folder / "project.json.bak")
+                except OSError:
+                    pass
+            os.replace(tmp, dst)
+
+    # --- versions: the song as it was, every few minutes while you work -----------------
+
+    @property
+    def history_dir(self) -> Path:
+        return self.folder / "history"
+
+    def snapshot(self, now: float | None = None):
+        """Keeps this state as a version: history/<time>.json. Old ones are thinned out: everything from the
+        last two hours, then one an hour for two days, then one a day for 60 days."""
+        now = now or time.time()
+        self.history_dir.mkdir(parents=True, exist_ok=True)
+        name = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+        tmp = self.history_dir / (name + ".tmp")
+        tmp.write_text(json.dumps(self.data()), encoding="utf-8")
+        os.replace(tmp, self.history_dir / (name + ".json"))
+        keep, seen = [], set()
+        for f in sorted(self.history_dir.glob("*.json"), reverse=True):
+            age = now - f.stat().st_mtime
+            bucket = f.stem if age < 7200 else f.stem[:11] if age < 172800 else f.stem[:8] if age < 5184000 else None
+            if bucket is not None and bucket not in seen and len(keep) < 300:
+                seen.add(bucket)
+                keep.append(f)
+            else:
+                f.unlink(missing_ok=True)
+
+    def versions(self) -> list[dict]:
+        out = []
+        for f in sorted(self.history_dir.glob("*.json"), reverse=True) if self.history_dir.exists() else []:
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                objs = d.get("objs", {})
+                live = lambda k: sum(1 for o in objs.get(k, {}).values() if not o.get("del"))
+                out.append({"id": f.stem, "time": f.stat().st_mtime, "clips": live("clip"), "notes": live("note"),
+                            "tracks": live("track"), "name": objs.get("meta", {}).get("meta", {}).get("name", "")})
+            except (OSError, ValueError):
+                continue
+        return out
 
     @classmethod
     def load(cls, folder: Path) -> "Project":
-        data = json.loads((folder / "project.json").read_text(encoding="utf-8"))
+        """The song in `folder`. If project.json can't be read (a crash mid-write on an old version, a
+        damaged disk), the save before it, then the newest version, stand in; `recovered` says which."""
+        tries = [folder / "project.json", folder / "project.json.bak"]
+        hist = folder / "history"
+        if hist.exists():
+            tries += sorted(hist.glob("*.json"), reverse=True)
+        err = None
+        for i, f in enumerate(tries):
+            try:
+                p = cls._load_file(folder, f)
+                p.recovered = None if i == 0 else f.name
+                return p
+            except (OSError, ValueError, KeyError) as e:
+                err = err or e
+        raise err if err else OSError(f"no song in {folder}")
+
+    @classmethod
+    def _load_file(cls, folder: Path, path: Path) -> "Project":
+        data = json.loads(path.read_text(encoding="utf-8"))
         p = cls(data["pid"], folder)
         p.clock = int(data.get("clock", 0))
         for k in KINDS:
@@ -298,12 +377,28 @@ class Daw:
         engine.file_dir(str(self.incoming))
         self.p = self._open_last()
         self.version = 1
+        # versions: one every few minutes while the song changes
+        self.last_snapshot = time.time()
+        self.unsnapped = False
         self.connected = False
         self.partner: str | None = None
         self.partner_pid: str | None = None
         self.conflict: dict | None = None
         self.notices: list[str] = []
         self.ui_signals: list[str] = []
+        # Duet didn't close properly last time (a crash, the power): say what was kept
+        self.lockfile = root / "running.lock"
+        try:
+            if self.lockfile.exists():
+                age = time.time() - (self.p.folder / "project.json").stat().st_mtime
+                self.notices.append(f"Duet didn't close properly last time. Your song is as it was {fmt_ago(age)} before that"
+                                    " (Song menu → Versions… has earlier ones).")
+            root.mkdir(parents=True, exist_ok=True)
+            self.lockfile.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
+        if self.p.recovered:
+            self.notices.append(f"The song file was damaged: it was opened from {self.p.recovered}.")
         self.outbox: dict[tuple, list] = {}
         self.last_flush = 0.0
         self.dirty = False
@@ -406,6 +501,8 @@ class Daw:
         if self.rec or self._playing():
             self._stop(broadcast=False)
         self.p.save()
+        if self.unsnapped:
+            self._snapshot()
         for key in list(self.loaded):
             self.e.daw_unload(key)
         self.loaded.clear()
@@ -441,6 +538,101 @@ class Daw:
         if self.connected:
             self._send({"t": "snap", "adopt": True, "name": self.p.meta()["name"], "ops": self.p.all_ops()})
             self.partner_pid = self.p.pid
+
+    # --- versions and song files ------------------------------------------------------
+
+    def _snapshot(self):
+        try:
+            self.p.snapshot()
+        except OSError:
+            traceback.print_exc()
+        self.last_snapshot = time.time()
+        self.unsnapped = False
+
+    def versions(self) -> list[dict]:
+        with self.lock:
+            return self.p.versions()
+
+    def restore_version(self, vid: str) -> dict:
+        """The song back as it was in version `vid`, as one edit (so Undo takes it back, and your partner gets
+        it like any edit). The state before is kept as a version first."""
+        with self.lock:
+            path = self.p.history_dir / f"{vid}.json"
+            if not safe(vid) or not path.exists():
+                return {"error": "That version is gone."}
+            try:
+                old = Project._load_file(self.p.folder, path)
+            except (OSError, ValueError, KeyError) as e:
+                return {"error": f"Couldn't read that version: {e}"}
+            self.p.save()
+            self._snapshot()
+            changes = []
+            for kind in KINDS:
+                if kind == "file":
+                    continue  # the audio stays; clips that point at it come back with their fields
+                cur, then = self.p.objs[kind], old.objs[kind]
+                for oid, o in then.items():
+                    now_o = cur.get(oid, {})
+                    diff = {f: v for f, v in o.items() if f in FIELDS[kind] and now_o.get(f) != v}
+                    if not o.get("del") and now_o.get("del"):
+                        diff["del"] = False
+                    if diff:
+                        changes.append([kind, oid, json.loads(json.dumps(diff))])
+                for oid, o in cur.items():
+                    if oid not in then and not o.get("del") and kind != "meta":
+                        changes.append([kind, oid, {"del": True}])
+            if changes:
+                self._do(changes)
+            return {"ok": True, "changed": len(changes)}
+
+    def save_bundle(self, dst: str) -> dict:
+        """The song and all its audio in one file (a zip: project.json and audio/), to keep, move to
+        another computer or send."""
+        with self.lock:
+            self.p.save()
+            data = json.dumps(self.p.data())
+            files = sorted({k for k, o in self.p.objs["file"].items() if not o.get("del")}
+                           | {c.get("file") for c in self.p.live("clip").values() if c.get("file")})
+            audio = [(f, self.p.audio_dir / f) for f in files if safe(f) and (self.p.audio_dir / f).is_file()]
+        tmp = Path(dst + ".part")
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+                z.writestr("duet.json", json.dumps({"format": "duet-song", "version": 1}))
+                z.writestr("project.json", data)
+                for name, path in audio:
+                    z.write(path, f"audio/{name}")
+            os.replace(tmp, dst)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            return {"error": f"Couldn't write {Path(dst).name}: {e}"}
+        return {"ok": True, "files": len(audio), "path": dst}
+
+    def open_bundle(self, src: str) -> dict:
+        """A song file (save_bundle's) as a song of its own, opened (and shared, if connected). If a song with
+        its id is here already, it comes in as a copy."""
+        try:
+            with zipfile.ZipFile(src) as z:
+                names = z.namelist()
+                if "project.json" not in names:
+                    return {"error": "That isn't a Duet song file."}
+                data = json.loads(z.read("project.json").decode("utf-8"))
+                pid = data.get("pid") if safe(str(data.get("pid", ""))) else None
+                if not pid or (self.root / pid).exists():
+                    pid = new_id("p")
+                data["pid"] = pid
+                folder = self.root / pid
+                (folder / "audio").mkdir(parents=True, exist_ok=True)
+                for n in names:
+                    if n.startswith("audio/") and safe(n[6:]):
+                        with z.open(n) as fsrc, open(folder / "audio" / n[6:], "wb") as fdst:
+                            shutil.copyfileobj(fsrc, fdst, 1 << 20)
+                (folder / "project.json").write_text(json.dumps(data), encoding="utf-8")
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as e:
+            return {"error": f"Couldn't open it: {e}"}
+        with self.lock:
+            self._switch(Project.load(folder))
+            self._share_project()
+        return {"ok": True}
 
     # --- edits ---------------------------------------------------------------------
 
@@ -1608,10 +1800,13 @@ class Daw:
                 self._send({"t": "sum", "d": self.p.digest()})
             if self.dirty and now - self.changed_at > 1.0:
                 self.dirty = False
+                self.unsnapped = True
                 try:
                     self.p.save()
                 except OSError:
                     traceback.print_exc()
+            if self.unsnapped and time.time() - self.last_snapshot > SNAPSHOT_EVERY:
+                self._snapshot()
 
     def _files(self, now: float):
         received, _sent, failed = self.e.file_drain()
@@ -1757,6 +1952,9 @@ class Daw:
                 self._stop(broadcast=False)
             try:
                 self.p.save()
+                if self.unsnapped:
+                    self._snapshot()
+                self.lockfile.unlink(missing_ok=True)
             except OSError:
                 pass
 

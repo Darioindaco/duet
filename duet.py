@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import random
 import socket
@@ -273,6 +274,34 @@ class Api:
     def daw_open(self, pid):
         self._daw.open_project(pid)
         return self._daw.view()
+
+    def daw_versions(self):
+        return self._daw.versions()
+
+    def daw_restore(self, vid):
+        r = self._daw.restore_version(str(vid))
+        return {**r, "view": self._daw.view()}
+
+    def daw_save_bundle(self):
+        """Save the song and its audio as one .duet file (asks where)."""
+        name = re.sub(r'[\\/:*?"<>|]+', "_", self._daw.p.meta()["name"]).strip() or "Song"
+        picked = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename=f"{name}.duet",
+                                                 file_types=("Duet song (*.duet)",))
+        if not picked:
+            return None
+        path = picked if isinstance(picked, str) else picked[0]
+        if not path.lower().endswith(".duet"):
+            path += ".duet"
+        return self._daw.save_bundle(path)
+
+    def daw_open_bundle(self):
+        """Open a .duet song file (asks which)."""
+        picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
+                                                 file_types=("Duet song (*.duet)", "All files (*.*)"))
+        if not picked:
+            return None
+        r = self._daw.open_bundle(picked[0] if not isinstance(picked, str) else picked)
+        return {**r, "view": self._daw.view()}
 
     def daw_resolve(self, choice):
         self._daw.resolve(choice)
