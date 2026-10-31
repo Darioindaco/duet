@@ -14,6 +14,7 @@ mod fx;
 mod instr;
 mod jitter;
 mod livenotes;
+mod loudness;
 mod midi;
 mod mix;
 mod net;
@@ -102,7 +103,7 @@ struct DawCtl {
 struct ExportJob {
     done: Arc<std::sync::atomic::AtomicU64>,
     total: u64,
-    worker: std::thread::JoinHandle<Result<Vec<String>, String>>,
+    worker: std::thread::JoinHandle<Result<daw::ExportOut, String>>,
 }
 
 struct RecSession {
@@ -1671,8 +1672,10 @@ impl Engine {
     /// Render the song (seconds start..end) to WAV files in the background:
     /// the mix to `mix` (if given) and stems = [(track slot, path)]. Uses the
     /// song tracks' current faders, pans, mute/solo and effects.
-    #[pyo3(signature = (mix, stems, start, end))]
-    fn daw_export(&self, mix: Option<String>, stems: Vec<(usize, String)>, start: f64, end: f64) -> PyResult<()> {
+    /// normalize: a loudness (LUFS) to turn the mix to, true peak at most -1 dBTP.
+    #[pyo3(signature = (mix, stems, start, end, normalize=None))]
+    fn daw_export(&self, mix: Option<String>, stems: Vec<(usize, String)>, start: f64, end: f64,
+                  normalize: Option<f64>) -> PyResult<()> {
         let sr = self.samplerate() as u32;
         self.reroute();
         let (tracks, master, master_rack, wiring) = {
@@ -1728,7 +1731,7 @@ impl Engine {
                     tl.autos = daw::auto_lanes(autos, sr);
                     tl
                 };
-                daw::render(&tl, tracks, wiring, master_rack, master, sr, a, b, mix, &done2)
+                daw::render_ex(&tl, tracks, wiring, master_rack, master, sr, a, b, mix, normalize, &done2)
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         d.export = Some(ExportJob { done, total: (b - a) as u64, worker });
@@ -1857,9 +1860,21 @@ impl Engine {
             if let Some(j) = d.export.take() {
                 let r = PyDict::new(py);
                 match j.worker.join() {
-                    Ok(Ok(warnings)) => {
+                    Ok(Ok(o)) => {
                         r.set_item("ok", true)?;
-                        r.set_item("warnings", warnings)?;
+                        r.set_item("warnings", o.warnings)?;
+                        if let Some(l) = o.loudness {
+                            let ld = PyDict::new(py);
+                            let f = |x: f64| if x.is_finite() { Some((x * 10.0).round() / 10.0) } else { None };
+                            // after normalizing: what the file is now
+                            ld.set_item("integrated", f(l.integrated + o.gain_db))?;
+                            ld.set_item("range", f(l.range))?;
+                            ld.set_item("true_peak", f(l.true_peak_db + o.gain_db))?;
+                            ld.set_item("max_short", f(l.max_short + o.gain_db))?;
+                            ld.set_item("gain", f(o.gain_db))?;
+                            ld.set_item("before", f(l.integrated))?;
+                            r.set_item("loudness", ld)?;
+                        }
                     }
                     Ok(Err(e)) => {
                         r.set_item("ok", false)?;
@@ -1953,6 +1968,11 @@ impl Engine {
         d.set_item("local_levels", s.local_levels.iter().map(|l| l.get()).collect::<Vec<_>>())?;
         d.set_item("remote_levels", s.remote_levels.iter().map(|l| l.get()).collect::<Vec<_>>())?;
         d.set_item("master_level", s.master_level.get())?;
+        let v = |x: f32| if x > -150.0 { Some(((x * 10.0).round() / 10.0) as f64) } else { None };
+        d.set_item("lufs_m", v(s.lufs_m.get()))?;
+        d.set_item("lufs_s", v(s.lufs_s.get()))?;
+        d.set_item("lufs_i", v(s.lufs_i.get()))?;
+        d.set_item("true_peak", v(s.true_peak.get()))?;
         d.set_item("remote_channels", s.remote_channels.load(Relaxed))?;
         d.set_item("sent_channels", s.sent_channels.load(Relaxed))?;
         d.set_item("in_channels", s.in_channels.load(Relaxed))?;

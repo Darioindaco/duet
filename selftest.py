@@ -220,8 +220,20 @@ def test_song_edit():
             with wave.open(f) as w:
                 secs = w.getnframes() / w.getframerate()
                 assert w.getnchannels() == 2 and w.getsampwidth() == 3 and abs(secs - (clip["len"] + 2.0)) < 0.05, (f, secs)
+        loud = st["result"]["loudness"]
+        assert loud and loud["integrated"] is not None and loud["true_peak"] is not None and not loud["gain"], loud
+        peak0 = wave_peak(out / "mix.wav")
+        # normalized to -16 LUFS: the file comes out that loud (turned by the gain it says)
+        res = d.export(str(out / "norm.wav"), None, loop=False, normalize=-16.0)
+        while (st2 := e.daw_export_status())["result"] is None:
+            time.sleep(0.02)
+        l2 = st2["result"]["loudness"]
+        assert abs(l2["integrated"] - (-16.0)) < 0.15 and abs(l2["gain"] - (-16.0 - loud["integrated"])) < 0.15, (loud, l2)
+        peak1 = wave_peak(out / "norm.wav")
+        assert abs(20 * math.log10(peak1 / peak0) - l2["gain"]) < 0.2, (peak0, peak1, l2)
+        assert not (out / "norm.part.wav").exists()
         print(f"song edit: ok  (split, undo/redo incl. the take, export: {len(res['files'])} files of {secs:.2f} s "
-              f"in {time.monotonic() - t0:.2f} s)")
+              f"in {time.monotonic() - t0:.2f} s; {loud['integrated']} LUFS, normalized to {l2['integrated']})")
     finally:
         d.close()
         e.close()

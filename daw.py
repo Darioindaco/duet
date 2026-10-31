@@ -1330,7 +1330,7 @@ class Daw:
 
     # --- export --------------------------------------------------------------------
 
-    def export(self, mix: str | None, stems_dir: str | None, loop: bool) -> dict:
+    def export(self, mix: str | None, stems_dir: str | None, loop: bool, normalize: float | None = None) -> dict:
         """Render the song (or just the loop) to WAV: the mix, and with stems_dir
         every track on its own too. Runs in the background (engine.daw_export_status)."""
         with self.lock:
@@ -1356,7 +1356,7 @@ class Daw:
             missing = sum(1 for c in clips if c.get("file") and c.get("file") not in self.loaded)
             self.e.mixer(True)  # plugin settings changed in their own windows: into the render too
             try:
-                self.e.daw_export(mix, stems, start, end)
+                self.e.daw_export(mix, stems, start, end, normalize)
             except Exception as exc:
                 return {"error": str(exc)}
             note = (f"{missing} clip{'s are' if missing != 1 else ' is'} still on the way from your partner "
@@ -2313,6 +2313,8 @@ class Daw:
             return {"v": self.version, "pos": tm.s2b(s["daw_pos"]) if playing else self.cursor, "playing": playing,
                     "recording": bool(s["daw_recording"]) or bool(self.rec and playing),
                     "recFrom": tm.s2b(self.rec["punch"]) if self.rec else None,
+                    # the master's loudness: momentary, short-term, integrated (since play), true peak
+                    "lufs": [s.get("lufs_m"), s.get("lufs_s"), s.get("lufs_i"), s.get("true_peak")],
                     "levels": levels, "xfer": xfer, "notices": notices,
                     "partnerHere": self._partner_here(), "partnerNotes": live,
                     "processing": self.e.daw_processing(),

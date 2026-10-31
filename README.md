@@ -269,6 +269,15 @@ another program), the whole song or just the loop. It renders faster than real
 time and the sound keeps running meanwhile. What you hear is what you get: the
 faders, pans, effects, mute and solo as you have them.
 
+**Loudness.** The status bar at the bottom shows the master's loudness while you
+play: short-term LUFS (3 s), integrated LUFS since you pressed play (*I*) and the
+true peak (*TP*, red above −1 dBTP), measured the EBU R128 way. After an export it
+says what the mix came to (integrated LUFS, loudness range, true peak). *Loudness*
+in the export window turns the mix to a target — −14 LUFS for Spotify/YouTube,
+−16 for Apple Music, −9 loud/club, −23 broadcast — never past −1 dBTP true peak
+(if it would, it goes as loud as it can and says so: a limiter on the master gets
+it louder). Stems are left as they are.
+
 Each track also has a strip in the **Mixer** (under *Song*) with volume, pan
 and its own effects, NAM amps and VST3 plugins included; *FX* on a track header
 takes you there. Volume, pan and effects are part of the song (you both hear

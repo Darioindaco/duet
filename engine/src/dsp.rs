@@ -145,6 +145,11 @@ pub struct Shared {
     pub local_levels: [AtomicF32; MAX_LOCAL],
     pub remote_levels: [AtomicF32; MAX_REMOTE],
     pub master_level: AtomicF32,
+    /// the master's loudness: momentary, short-term, integrated (since play) in LUFS, true peak (dBTP)
+    pub lufs_m: AtomicF32,
+    pub lufs_s: AtomicF32,
+    pub lufs_i: AtomicF32,
+    pub true_peak: AtomicF32,
     pub remote_channels: AtomicU64,
     pub sent_channels: AtomicU64,
     pub underruns: AtomicU64,
@@ -399,6 +404,8 @@ pub struct Dsp {
     mix_l: Vec<f32>,
     mix_r: Vec<f32>,
     master_level: f32,
+    /// (not real-time-free to make: made with the Dsp and when the rate changes, outside the callback)
+    loud: crate::loudness::Loudness,
     metro: Metro,
     /// partner's block number minus ours, learned from what the jitter buffer plays
     remote_offset: Option<i64>,
@@ -464,6 +471,7 @@ impl Dsp {
             mix_l: vec![0.0; MAX_FRAME],
             mix_r: vec![0.0; MAX_FRAME],
             master_level: 0.0,
+            loud: crate::loudness::Loudness::new(samplerate as f32),
             metro: Metro::new(),
             remote_offset: None,
             live_sends: [[None; crate::mix::MAX_SENDS]; MAX_LOCAL + MAX_REMOTE],
@@ -507,6 +515,9 @@ impl Dsp {
             // timeline and starts again from a position in seconds
             self.tp.playing = false;
             self.stop_recording();
+        }
+        if samplerate != self.samplerate {
+            self.loud = crate::loudness::Loudness::new(samplerate as f32);
         }
         self.samplerate = samplerate;
         self.frame = frame;
@@ -654,6 +665,7 @@ impl Dsp {
                     }
                 }
                 Cmd::Play { pos, click_until, rec } => {
+                    self.loud.reset(); // integrated loudness and true peak: from this play on
                     self.stop_recording();
                     self.release_tracks();
                     self.tp.playing = true;
@@ -990,9 +1002,12 @@ impl Dsp {
             let (l, r) = (self.mix_l[k] * m, self.mix_r[k] * m);
             out[2 * k] = l;
             out[2 * k + 1] = r;
+            self.mix_l[k] = l;
+            self.mix_r[k] = r;
             pk = pk.max(l.abs()).max(r.abs());
         }
         self.master_level = pk.max(self.master_level * 0.9);
+        self.loud.process(&self.mix_l[..n], &self.mix_r[..n]);
 
         // tempo-synced plugins follow the song while it plays, the metronome otherwise
         let tempo = if self.tp.playing {
@@ -1069,6 +1084,11 @@ impl Dsp {
         sh.daw_pos.store(self.tp.pos, Relaxed);
         sh.daw_playing.store(self.tp.playing, Relaxed);
         sh.master_level.set(self.master_level);
+        let db = |x: f64| if x.is_finite() { x as f32 } else { -200.0 };
+        sh.lufs_m.set(db(self.loud.momentary));
+        sh.lufs_s.set(db(self.loud.short));
+        sh.lufs_i.set(db(self.loud.integrated()));
+        sh.true_peak.set(if self.loud.true_peak > 0.0 { 20.0 * self.loud.true_peak.log10() } else { -200.0 });
         sh.remote_channels.store(self.remote_count as u64, Relaxed);
         let st = self.jitter.stats;
         sh.underruns.store(st.underruns, Relaxed);

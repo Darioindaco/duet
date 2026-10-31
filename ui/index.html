@@ -649,6 +649,8 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
         <div class="seg" id="exWhat"><button data-v="mix">The mix</button><button data-v="stems">The mix + every track on its own</button></div></div>
       <div class="field"><label>Which part</label>
         <div class="seg" id="exRange"><button data-v="song">The whole song</button><button data-v="loop">Just the loop</button></div></div>
+      <div class="field"><label>Loudness</label>
+        <div class="seg" id="exNorm" title="Turn the mix up or down to this loudness (integrated LUFS), never past -1 dBTP true peak"><button data-v="">As it is</button><button data-v="-14">−14 LUFS · streaming</button><button data-v="-16">−16 · Apple</button><button data-v="-9">−9 · loud/club</button><button data-v="-23">−23 · broadcast</button></div></div>
       <p class="fine" id="exNote"></p>
       <div class="exprog" id="exProg" hidden><i></i></div>
       <div class="row"><button class="btn primary" id="exGo">Export…</button><button class="btn" id="exShow" hidden>Show the file</button></div>
@@ -1763,7 +1765,8 @@ function paint(s) {
     `<span${hot(st.underruns)}>Dropouts <b>${st.underruns}</b></span>` +
     `<span${hot(st.lost + st.late)}>Lost <b>${st.lost + st.late}</b></span>` +
     `<span${hot(st.xruns)}>Glitches <b>${st.xruns}</b></span>` +
-    `<span${s.dspLoad > 0.7 ? ' class="hot"' : ""} title="How much of each audio block the effects and NAM models use">DSP <b>${Math.round((s.dspLoad || 0) * 100)}%</b></span>`;
+    `<span${s.dspLoad > 0.7 ? ' class="hot"' : ""} title="How much of each audio block the effects and NAM models use">DSP <b>${Math.round((s.dspLoad || 0) * 100)}%</b></span>` +
+    lufsText(s);
   if (st.underruns > 50 && !ui.bufAuto && !paint.tipped) { paint.tipped = true; toast("Hearing crackles? Press + on the safety buffer a step or two."); }
 }
 
@@ -2112,7 +2115,7 @@ function demoApi() {
         latency: { network: on ? 7.1 : null, buffer: 8.0, card: 5.3, block: 2.7 },
         levels: { local: [lv(1.3, 0), lv(0.7, 1), 0, 0], remote: on ? [lv(0.9, 2), lv(1.1, 3), 0, 0, 0, 0, 0, 0] : [0, 0, 0, 0, 0, 0, 0, 0], master: lv(1, 1.5) },
         remoteChannels: on ? 2 : 0,
-        stats: { depth: 3, underruns: 2, lost: 0, late: 1, trimmed: 0, xruns: 0 }, dspLoad: 0.24, warning: "", signals: [],
+        stats: { depth: 3, underruns: 2, lost: 0, late: 1, trimmed: 0, xruns: 0 }, dspLoad: 0.24, lufs_s: -13.6, lufs_i: -14.2, lufs_m: -12.9, true_peak: -0.6, warning: "", signals: [],
         daw: songDemo.status() };
     },
   };

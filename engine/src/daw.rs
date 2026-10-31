@@ -805,8 +805,29 @@ pub struct TrackMix {
 /// instances of its own so the live audio keeps running. `done` counts
 /// rendered frames. Returns warnings (effects that couldn't load).
 #[allow(clippy::too_many_arguments)]
-pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, master_rack: Vec<SlotCfg>, master: f32,
+pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, wiring: Box<Wiring>, master_rack: Vec<SlotCfg>, master: f32,
               sr: u32, start: i64, end: i64, mix: Option<PathBuf>, done: &AtomicU64) -> Result<Vec<String>, String> {
+    render_ex(tl, tracks, wiring, master_rack, master, sr, start, end, mix, None, done).map(|o| o.warnings)
+}
+
+/// What an export came to: warnings, the mix's loudness (as it was rendered, before any
+/// normalizing) and the gain normalizing put on it (dB).
+pub struct ExportOut {
+    pub warnings: Vec<String>,
+    pub loudness: Option<crate::loudness::Report>,
+    pub gain_db: f64,
+}
+
+/// The true peak a normalized mix may reach (dBTP).
+pub const NORMALIZE_CEILING: f64 = -1.0;
+
+/// Render, measuring the mix's loudness; with `normalize` (a target in LUFS) the mix is
+/// turned up or down to it (not past NORMALIZE_CEILING true peak): written as floats first,
+/// measured, then written again with the gain.
+#[allow(clippy::too_many_arguments)]
+pub fn render_ex(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, master_rack: Vec<SlotCfg>, master: f32,
+                 sr: u32, start: i64, end: i64, mix: Option<PathBuf>, normalize: Option<f64>, done: &AtomicU64)
+                 -> Result<ExportOut, String> {
     const BLOCK: usize = 512;
     type Wav = hound::WavWriter<std::io::BufWriter<std::fs::File>>;
     let spec = hound::WavSpec { channels: 2, sample_rate: sr, bits_per_sample: 24, sample_format: hound::SampleFormat::Int };
@@ -846,10 +867,22 @@ pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, mas
         }
     }
     let mut master_rack = build_rack(master_rack, "the master", &mut warnings);
-    let mut mixw = match &mix {
-        Some(p) => Some(create(p)?),
+    // normalizing: the mix as floats in a file next to it first (nothing clipped yet)
+    let tmp = match (&mix, normalize) {
+        (Some(p), Some(_)) => Some(p.with_extension("part.wav")),
+        _ => None,
+    };
+    let fspec = hound::WavSpec { channels: 2, sample_rate: sr, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+    let mut mixw = match (&mix, &tmp) {
+        (Some(p), None) => Some(create(p)?),
+        _ => None,
+    };
+    let mut tmpw = match &tmp {
+        Some(p) => Some(hound::WavWriter::create(p, fspec).map_err(|e| format!("can't write {}: {e}", p.display()))?),
         None => None,
     };
+    let mut meter = crate::loudness::Loudness::new(sr as f32);
+    let (mut ml, mut mr) = (vec![0f32; BLOCK], vec![0f32; BLOCK]);
     let mut bufs = TrackBufs::new();
     // run in early so slow plugins are full when `start` comes out of them, and
     // on past the end by the master rack's delay
@@ -876,13 +909,28 @@ pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, mas
             }
         }
         master_rack.process(&mut l[..n], &mut r[..n], &|slot| bufs.key(slot, n));
+        let mut m = 0;
+        for k in 0..n {
+            let at = x + k as i64 - m_lat; // what comes out of the master rack now
+            if at >= start && at < end {
+                ml[m] = l[k] * master;
+                mr[m] = r[k] * master;
+                m += 1;
+            }
+        }
+        if mix.is_some() {
+            meter.process(&ml[..m], &mr[..m]);
+        }
         if let Some(w) = mixw.as_mut() {
-            for k in 0..n {
-                let at = x + k as i64 - m_lat; // what comes out of the master rack now
-                if at >= start && at < end {
-                    put(w, l[k] * master)?;
-                    put(w, r[k] * master)?;
-                }
+            for k in 0..m {
+                put(w, ml[k])?;
+                put(w, mr[k])?;
+            }
+        }
+        if let Some(w) = tmpw.as_mut() {
+            for k in 0..m {
+                w.write_sample(ml[k]).map_err(|e| e.to_string())?;
+                w.write_sample(mr[k]).map_err(|e| e.to_string())?;
             }
         }
         x += n as i64;
@@ -894,7 +942,32 @@ pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, mas
     if let Some(w) = mixw {
         w.finalize().map_err(|e| e.to_string())?;
     }
-    Ok(warnings)
+    let report = mix.as_ref().map(|_| meter.report());
+    let mut gain_db = 0.0;
+    if let (Some(w), Some(tp), Some(path), Some(target), Some(rep)) = (tmpw, &tmp, &mix, normalize, &report) {
+        w.finalize().map_err(|e| e.to_string())?;
+        if rep.integrated.is_finite() {
+            gain_db = target - rep.integrated;
+            if rep.true_peak_db.is_finite() && rep.true_peak_db + gain_db > NORMALIZE_CEILING {
+                gain_db = NORMALIZE_CEILING - rep.true_peak_db;
+                warnings.push(format!(
+                    "it would peak over {NORMALIZE_CEILING} dBTP at {target} LUFS: turned up only to {:.1} LUFS (a limiter on the master gets it louder)",
+                    rep.integrated + gain_db));
+            }
+        } else {
+            warnings.push("it's silent: nothing to normalize".into());
+        }
+        let g = 10f64.powf(gain_db / 20.0) as f32;
+        let mut rd = hound::WavReader::open(tp).map_err(|e| e.to_string())?;
+        let mut out = create(path)?;
+        for v in rd.samples::<f32>() {
+            put(&mut out, v.map_err(|e| e.to_string())? * g)?;
+        }
+        out.finalize().map_err(|e| e.to_string())?;
+        drop(rd);
+        let _ = std::fs::remove_file(tp);
+    }
+    Ok(ExportOut { warnings, loudness: report, gain_db })
 }
 
 #[cfg(test)]

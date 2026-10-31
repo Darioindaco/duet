@@ -352,7 +352,9 @@ class Api:
             if not mix.lower().endswith(".wav"):
                 mix += ".wav"
             stems = None
-        return self._daw.export(mix, stems, bool(opts.get("loop")))
+        norm = opts.get("normalize")
+        norm = float(norm) if isinstance(norm, (int, float)) and -40 <= norm <= 0 else None
+        return self._daw.export(mix, stems, bool(opts.get("loop")), norm)
 
     def daw_export_status(self):
         return self._engine.daw_export_status()

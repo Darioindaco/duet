@@ -1526,7 +1526,15 @@ function showCtx(items, x, y) {
 function hideCtx() { const m = $("ctxMenu"); if (m) m.hidden = true; }
 
 // ---------- export ----------
-const exp = { what: "mix", range: "song" };
+const exp = { what: "mix", range: "song", norm: "" };
+// the master's loudness, for the status bar (from the engine's state)
+function lufsText(s) {
+  const f = (x) => (x == null ? "–" : x.toFixed(1).replace("-", "−"));
+  if (s.lufs_s == null && s.lufs_i == null) return "";
+  const tp = s.true_peak;
+  return `<span title="The master's loudness: short-term (3 s), integrated since you pressed play, true peak">` +
+    `LUFS <b>${f(s.lufs_s)}</b> · I <b>${f(s.lufs_i)}</b> · TP <b${tp != null && tp > -1 ? ' class="hot"' : ""}>${f(tp)}</b></span>`;
+}
 function openExport() {
   const m = song.view.meta;
   exp.range = m.loop ? exp.range : "song";
@@ -1537,15 +1545,22 @@ function openExport() {
       b.onclick = () => { exp[key] = b.dataset.v; seg2(id, key, values); };
     }
   };
-  seg2("exWhat", "what"); seg2("exRange", "range");
+  seg2("exWhat", "what"); seg2("exRange", "range"); seg2("exNorm", "norm");
   $("exNote").textContent = m.loop ? "" : "Turn on the loop to export just that part.";
   $("exProg").hidden = true; $("exShow").hidden = true; $("exGo").disabled = false;
   $("exportm").hidden = false;
 }
 
+function loudReport(l) {
+  if (!l || l.integrated == null) return "";
+  const f = (x) => (x == null ? "–" : x.toFixed(1).replace("-", "−"));
+  const g = l.gain ? ` (turned ${l.gain > 0 ? "up" : "down"} ${Math.abs(l.gain).toFixed(1)} dB)` : "";
+  return `The mix: ${f(l.integrated)} LUFS integrated, ${f(l.range)} LU range, true peak ${f(l.true_peak)} dBTP${g}.`;
+}
+
 async function runExport() {
   $("exGo").disabled = true;
-  const res = await api.daw_export({ stems: exp.what === "stems", loop: exp.range === "loop" });
+  const res = await api.daw_export({ stems: exp.what === "stems", loop: exp.range === "loop", normalize: exp.norm === "" ? null : +exp.norm });
   if (!res || res.cancelled) { $("exGo").disabled = false; return; }
   if (res.error) { toast(res.error, true); $("exGo").disabled = false; return; }
   $("exProg").hidden = false;
@@ -1557,7 +1572,7 @@ async function runExport() {
       if (st.result.ok) {
         const n = res.files.length, name = res.files[0].split(/[\\/]/).pop();
         $("exNote").textContent = (n > 1 ? `Saved ${n} files, with ${name}.` : `Saved ${name}.`)
-          + [res.note, ...(st.result.warnings || [])].filter(Boolean).map((x) => " " + x).join("");
+          + [loudReport(st.result.loudness), res.note, ...(st.result.warnings || [])].filter(Boolean).map((x) => " " + x).join("");
         $("exShow").hidden = false;
         $("exShow").onclick = () => api.show_file(res.files[0]);
       } else {
@@ -1986,7 +2001,7 @@ function demoSong() {
     patternMode: null,
     files, me, partner, local: { click: true, countin: true, punch: false }, conflict: null, shared: true, undo: true, redo: false,
   };
-  let v = 1, playing = false, recording = false, recFrom = null, pos = 0, t0 = 0, exportAt = 0;
+  let v = 1, playing = false, recording = false, recFrom = null, pos = 0, t0 = 0, exportAt = 0, mockNorm = null;
   const copy = () => JSON.parse(JSON.stringify(view));
   const now = () => (playing ? s2b(b2s(pos) + (performance.now() - t0) / 1000) : pos);
   return {
@@ -2102,10 +2117,11 @@ function demoSong() {
       { pid: "p2", name: "Blues in A", modified: Date.now() / 1000 - 86400, clips: 5, current: false }],
     daw_new: async () => copy(), daw_open: async () => copy(), daw_resolve: async () => copy(),
     daw_undo: async () => copy(), daw_redo: async () => copy(),
-    daw_export: async (o) => { exportAt = performance.now(); return { ok: true, note: "", files: o.stems ? ["/Users/you/Music/Summer jam (stems)/Summer jam.wav", "a", "b", "c"] : ["/Users/you/Music/Summer jam.wav"] }; },
+    daw_export: async (o) => { mockNorm = o.normalize; exportAt = performance.now(); return { ok: true, note: "", files: o.stems ? ["/Users/you/Music/Summer jam (stems)/Summer jam.wav", "a", "b", "c"] : ["/Users/you/Music/Summer jam.wav"] }; },
     daw_export_status: async () => {
       const p = Math.min(1, (performance.now() - exportAt) / 1500);
-      return p < 1 ? { running: true, progress: p, result: null } : { running: false, progress: 1, result: { ok: true, warnings: [] } };
+      return p < 1 ? { running: true, progress: p, result: null } : { running: false, progress: 1, result: { ok: true, warnings: [],
+        loudness: mockNorm == null ? { integrated: -11.3, range: 6.4, true_peak: 0.4, gain: null } : { integrated: mockNorm, range: 6.4, true_peak: mockNorm + 11.7, gain: mockNorm + 11.3 } } };
     },
     show_file: async () => {},
     daw_presence: async () => {},
