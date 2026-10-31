@@ -382,7 +382,7 @@ function ceDraw() {
   if (!c || !cv || $("clipEd").hidden) return;
   const w = cv.clientWidth, h = cv.clientHeight;
   if (!w || !h) return;
-  const ctx = sizeCanvas(cv, w, h), { a, b } = ce.view, x = (t) => (t - a) / (b - a) * w;
+  const ctx = sizeCanvas(cv, w, h, false), { a, b } = ce.view, x = (t) => (t - a) / (b - a) * w;
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#0e0d12";
   ctx.fillRect(0, 0, w, h);

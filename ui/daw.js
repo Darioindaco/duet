@@ -531,11 +531,18 @@ function openTrackFx(t) {
 }
 
 // ---------- drawing ----------
-function sizeCanvas(cv, w, h) {
+// Sizes a canvas's pixels to w×h CSS pixels (its client size). With `css` it also fixes its CSS size;
+// leave that off for a canvas whose size comes from the stylesheet (width: 100%), or it can't follow the
+// window any more. (The CSS size includes the border: with box-sizing: border-box, setting the client size
+// as the width would take the border off it at every redraw, and the canvas would shrink 2 px a frame.)
+function sizeCanvas(cv, w, h, css = true) {
   const dpr = window.devicePixelRatio || 1;
   if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
     cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
-    cv.style.width = w + "px"; cv.style.height = h + "px";
+    if (css) {
+      const bx = cv.offsetWidth - cv.clientWidth, by = cv.offsetHeight - cv.clientHeight;
+      cv.style.width = w + bx + "px"; cv.style.height = h + by + "px";
+    }
   }
   const ctx = cv.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

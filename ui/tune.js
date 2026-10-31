@@ -216,7 +216,7 @@ function tuneDraw() {
   if (!c || !cv || ce.tab !== "tune") return;
   const w = cv.clientWidth, h = cv.clientHeight;
   if (!w || !h) return;
-  const ctx = sizeCanvas(cv, w, h), g = tuneGeom(c, w, h);
+  const ctx = sizeCanvas(cv, w, h, false), g = tuneGeom(c, w, h);
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#0e0d12";
   ctx.fillRect(0, 0, w, h);
