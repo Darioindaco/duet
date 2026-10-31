@@ -368,6 +368,10 @@ the shared song (your partner sees every note you place, and you theirs).
   or hold *Alt*). The bars underneath are the velocities: drag them up or down
   (or *Alt + scroll* on a note). Click a key on the left to hear it. The other
   channels' notes show faintly behind, to write against.
+  **🖌 Paint** (or *B*) is the paint brush, like FL's: hold the mouse and drag,
+  and it paints a note every note length (the length of the last note you drew)
+  at the pitch under the mouse — move up or down while dragging for runs and
+  rolls. *P* (or *B* again) is back to the pencil.
 
   | | |
   |---|---|

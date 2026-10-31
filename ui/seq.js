@@ -19,6 +19,7 @@ const seq = {
   pat: null, channel: null, allPads: {},
   ppb: 96, rowH: 16, snap: 0.25, lastLen: null,
   sel: new Set(), drag: null, prTop: null,
+  tool: "draw", // or "paint": hold and drag to paint a row of notes (B toggles, like FL's brush)
 };
 
 // ---------- what the song holds ----------
@@ -38,6 +39,8 @@ function patColor(pid) {
 // ---------- setup ----------
 function seqSetup() {
   seq.ppb = store.get("prZoom", 96);
+  setPrTool(store.get("prTool", "draw"));
+  $("prPaint").onclick = () => setPrTool(seq.tool === "paint" ? "draw" : "paint");
   seq.snap = store.get("prSnap", 0.25);
   $("patSel").onchange = () => {
     const v = $("patSel").value;
@@ -83,6 +86,8 @@ function seqKeys(e) {
   } else if (chordKey(e)) { e.preventDefault(); }
   else if (e.key === "Escape") { quantClose(); seq.sel.clear(); prDraw(); }
   else if (e.key.startsWith("Arrow") && seq.sel.size) { e.preventDefault(); nudgeSel(e); }
+  else if (!ctrl && !e.altKey && k === "b") { e.preventDefault(); setPrTool(seq.tool === "paint" ? "draw" : "paint"); }
+  else if (!ctrl && !e.altKey && k === "p") { e.preventDefault(); setPrTool("draw"); }
   else if (!ctrl) return;
   else if (k === "a") { e.preventDefault(); for (const n of patNotes(seq.pat, seq.channel)) seq.sel.add(n.id); prDraw(); }
   else if (k === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
@@ -578,6 +583,7 @@ function prDraw() {
     ? [...own, ...(d.moved ? d.sel.map((nn) => ({ ...nn, ...d.res[nn.id], id: "copy" + nn.id })) : [])]
     : own.map((nn) => (d && d.moved && d.res[nn.id] ? { ...nn, ...d.res[nn.id] } : nn));
   if (d && d.ghost) notes.push(d.ghost);
+  if (d && d.ghosts) notes.push(...d.ghosts);
   for (const nn of notes) {
     const x = nn.start * ppb - sx, y = (hi - nn.key) * rh - sy, nw = Math.max(3, nn.len * ppb - 1);
     if (x > w || x + nw < 0 || y > h || y + rh < 0) continue;
@@ -665,7 +671,7 @@ function prHover(e) {
   seq.mouse = pt.inside ? pt : null;
   if (seq.drag || e.buttons) return;
   const h = pt.inside ? prHit(pt) : null;
-  $("prLanes").style.cursor = h ? (h.zone === "end" ? "e-resize" : (e.ctrlKey || e.metaKey) ? "copy" : "grab") : "crosshair";
+  $("prLanes").style.cursor = h ? (h.zone === "end" ? "e-resize" : (e.ctrlKey || e.metaKey) ? "copy" : "grab") : seq.tool === "paint" ? "cell" : "crosshair";
 }
 
 // Left: draw a note / move it / stretch its end (ctrl: move a copy). Shift or
@@ -686,6 +692,13 @@ function prDown(e) {
   let d;
   if (!h && (e.shiftKey || e.ctrlKey || e.metaKey)) {
     d = { mode: "box", b0: pt.beat, k0: pt.key, b1: pt.beat, k1: pt.key, keep: new Set(seq.sel), moved: false, res: {} };
+  } else if (!h && seq.tool === "paint") {
+    // the brush: a note every note-length along where you drag, at the pitch the mouse is on
+    const len = seq.lastLen || (drums ? STEP : 1), g = seq.snap || STEP;
+    const start0 = Math.max(0, Math.floor(pt.beat / g) * g);
+    d = { mode: "paint", len, start0, ghosts: [], done: new Set(), lastK: 0, moved: true, res: {} };
+    seq.sel.clear();
+    paintAt(d, 0, pt.key, p, t);
   } else if (!h) {
     // draw a new note, and drag to stretch it
     const start = Math.max(0, Math.floor(pt.beat / (seq.snap || STEP)) * (seq.snap || STEP));
@@ -709,6 +722,12 @@ function prDown(e) {
       const b0 = Math.min(d.b0, d.b1), b1 = Math.max(d.b0, d.b1), k0 = Math.min(d.k0, d.k1), k1 = Math.max(d.k0, d.k1);
       seq.sel = new Set(d.keep);
       for (const n of patNotes(p.id, t.id)) if (n.key >= k0 && n.key <= k1 && n.start < b1 && n.start + n.len > b0) seq.sel.add(n.id);
+    } else if (d.mode === "paint") {
+      const k = Math.floor((q.beat - d.start0) / d.len);
+      // a fast drag skips cells: fill them in, at the pitch you're on now
+      const from = Math.min(k, d.lastK), to = Math.max(k, d.lastK);
+      for (let j = from; j <= to; j++) paintAt(d, j, q.key, p, t);
+      d.lastK = k;
     } else if (d.mode === "new") {
       // sideways: longer; up and down: another pitch, which you hear
       d.ghost.len = Math.max(seq.snap || STEP, prSnap(q.beat, ev.altKey) - d.ghost.start) || d.ghost.len;
@@ -736,6 +755,10 @@ function prDown(e) {
     releaseHeld();
     seq.drag = null;
     if (d.mode === "box") { /* the selection is already made */ }
+    else if (d.mode === "paint") {
+      const ch = d.ghosts.map((g) => { const id = newId("n"); seq.sel.add(id); return ["note", id, { pattern: g.pattern, track: g.track, start: g.start, len: g.len, key: g.key, vel: g.vel }]; });
+      if (ch.length) songEdit(ch);
+    }
     else if (d.mode === "new") {
       const id = newId("n");
       seq.lastLen = d.ghost.len;
@@ -752,6 +775,25 @@ function prDown(e) {
   lanes.addEventListener("pointermove", move);
   lanes.addEventListener("pointerup", up);
   prDraw();
+}
+
+function setPrTool(tool) {
+  seq.tool = tool === "paint" ? "paint" : "draw";
+  store.set("prTool", seq.tool);
+  const b = $("prPaint");
+  if (b) b.classList.toggle("on", seq.tool === "paint");
+}
+
+// the brush puts a note in cell j (j note-lengths from where it started), unless one's there already
+function paintAt(d, j, key, p, t) {
+  const start = d.start0 + j * d.len;
+  if (start < -1e-9 || d.done.has(j)) return;
+  key = Math.max(0, Math.min(127, key));
+  const taken = patNotes(p.id, t.id).some((n) => n.key === key && n.start < start + d.len - 1e-6 && n.start + n.len > start + 1e-6);
+  d.done.add(j);
+  if (taken) return;
+  d.ghosts.push({ id: "paint" + j, pattern: p.id, track: t.id, start, len: d.len, key, vel: 100 });
+  releaseHeld(); holdNote(t, key); // each painted note sounds
 }
 
 // right button: erase what's under it, and everything you drag over; one undo step for the lot
