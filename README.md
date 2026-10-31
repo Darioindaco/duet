@@ -328,6 +328,8 @@ the shared song (your partner sees every note you place, and you theirs).
   | Quantize | *Ctrl+Q*, with a bar to pick the grid (triplets too), the strength and whether the ends line up |
   | Humanize | *Ctrl+H* loosens the timing and velocity a little |
   | Legato | *Ctrl+L*: every note lasts until the next one |
+  | Browse chords | select one note, hold *Shift* and press *↑/↓* (or scroll): every chord on that note plays and shows where it would go (the ones that fit the song's key first); *←/→* turn it to its inversions; let go of *Shift* to keep it, *Esc* to keep the note. Select the chord again and *Shift + ↑/↓* goes on from where you left it |
+  | Chord progressions | *Chords*: pick a key (it becomes the song's key, for your partner too) and a progression (Pop I–V–vi–IV, Andalusian, Epic, Trap, the 12-bar blues, ...; shown as chords in that key), how long each chord lasts, the octave, sevenths or a bass note; click one to hear it, *Write it* puts it in the pattern from the selection (or the start), each chord voiced close to the one before |
   | Move | arrows: a semitone (*Shift* / *Ctrl*: an octave), a grid step left/right |
   | Delete, undo | *Delete*, *Ctrl+Z* / *Ctrl+Y* |
 

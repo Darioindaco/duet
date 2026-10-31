@@ -69,6 +69,7 @@ function seqSetup() {
   new ResizeObserver(() => prDraw()).observe($("prWrap"));
   document.addEventListener("keydown", seqKeys);
   quantSetup();
+  chordSetup();
 }
 
 function seqKeys(e) {
@@ -79,7 +80,8 @@ function seqKeys(e) {
     e.preventDefault();
     const ids = [...seq.sel]; seq.sel.clear();
     songEdit(ids.map((id) => ["note", id, { del: true }]));
-  } else if (e.key === "Escape") { quantClose(); seq.sel.clear(); prDraw(); }
+  } else if (chordKey(e)) { e.preventDefault(); }
+  else if (e.key === "Escape") { quantClose(); seq.sel.clear(); prDraw(); }
   else if (e.key.startsWith("Arrow") && seq.sel.size) { e.preventDefault(); nudgeSel(e); }
   else if (!ctrl) return;
   else if (k === "a") { e.preventDefault(); for (const n of patNotes(seq.pat, seq.channel)) seq.sel.add(n.id); prDraw(); }
@@ -166,7 +168,7 @@ function legato() {
   songEdit(ch);
 }
 
-// arrows: up/down a semitone (shift or ctrl: an octave), left/right a grid step (shift: 1/32)
+// arrows: up/down a semitone (shift or ctrl: an octave; shift on one note browses chords, chords.js), left/right a grid step (shift: 1/32)
 function nudgeSel(e) {
   const ns = patNotes(seq.pat, seq.channel).filter((n) => seq.sel.has(n.id));
   if (!ns.length) return;
@@ -182,6 +184,7 @@ function nudgeSel(e) {
 
 // ctrl + scroll: zoom. alt + scroll over a note: its velocity (or the selection's)
 function prWheel(e) {
+  if (chordWheel(e)) { e.preventDefault(); return; }
   if (e.ctrlKey || e.metaKey) { e.preventDefault(); prZoom(e.deltaY < 0 ? 1.15 : 1 / 1.15); return; }
   if (!e.altKey) return;
   const h = prHit(prPoint(e));
@@ -607,6 +610,7 @@ function prDraw() {
     ctx.strokeStyle = "rgba(239,234,244,0.6)";
     ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
   }
+  chordDrawPreview(ctx, sx, sy, hi, ppb, rh, col);
   hereDrawRoll(ctx, sx, sy, hi, w, h);
   velDraw(notes, t, sx);
 }

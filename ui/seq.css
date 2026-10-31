@@ -60,3 +60,20 @@
 #viewSeq { grid-template-rows: 1fr; }
 .ctools .fxb { white-space: nowrap; }
 .minipr { display: block; width: calc(16 * (var(--stepw) + 2px) + 72px); height: 34px; border-radius: 6px; cursor: pointer; }
+
+/* chords: the progression panel */
+.prhead .cpbtn { padding: 4px 10px; font-size: 12px; border-radius: 8px; flex: none; }
+.rollcard { position: relative; }
+.chordpop { position: absolute; top: 40px; right: 12px; z-index: 30; width: min(440px, calc(100% - 24px)); max-height: calc(100% - 52px); overflow: auto;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 16px 50px rgba(0,0,0,0.55); padding: 10px 12px; }
+.cphead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.cprow { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+.cprow label { font-size: 12px; color: var(--muted); }
+.cprow select { width: auto; padding: 5px 24px 5px 8px; font-size: 12px; border-radius: 8px; }
+.cprow .cpgo { margin-left: auto; }
+.cplist { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.cpitem { text-align: left; background: rgba(255,255,255,0.04); border: 1px solid var(--line-2); border-radius: 9px; padding: 6px 8px; cursor: pointer; color: var(--text); }
+.cpitem b { display: block; font-size: 12px; }
+.cpitem span { display: block; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cpitem .cpnames { color: var(--text); opacity: 0.85; }
+.cpitem.on { border-color: var(--me); background: color-mix(in srgb, var(--me) 16%, transparent); }

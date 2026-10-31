@@ -48,7 +48,7 @@ META_DEFAULTS = {"name": "Untitled", "bpm": 120.0, "beats": 4, "loop": False, "l
                  "master_rack": []}
 # per field, what the UI may set (anything else in an edit is ignored)
 FIELDS = {
-    "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end", "master_rack"},
+    "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end", "master_rack", "key"},
     # bus: a mixer track others feed (no clips); out: the bus it goes to (else
     # the master); sends: {bus: level}
     # auto: an automation lane instead of a track ({"target": track id or

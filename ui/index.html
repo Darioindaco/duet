@@ -542,7 +542,8 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
               <button class="ttog" id="qEnds" title="Also line up where the notes end">Ends</button>
               <button class="qx" id="qX" aria-label="Close" title="Done (Esc)">✕</button></div>
             <div class="spacer"></div>
-            <span class="prhint" title="Shift/ctrl + drag on empty space: select a box · ctrl + drag a note: copy · arrows: move the selection · ctrl+C / X / V: copy, cut, paste at the mouse · ctrl+B: duplicate · ctrl+Q: quantize · ctrl+H: humanize · ctrl+L: legato · alt + scroll on a note: velocity">Click: note · right-drag: erase · shift-drag: select · ctrl+Q / H / B / L · hover for more</span>
+            <span class="prhint" title="Shift/ctrl + drag on empty space: select a box · ctrl + drag a note: copy · arrows: move the selection · ctrl+C / X / V: copy, cut, paste at the mouse · ctrl+B: duplicate · ctrl+Q: quantize · ctrl+H: humanize · ctrl+L: legato · alt + scroll on a note: velocity · one note selected, hold Shift + ↑/↓ or scroll: chords on it (←/→ inversions), let go to keep">Click: note · right-drag: erase · shift-drag: select · ctrl+Q / H / B / L · hover for more</span>
+            <button class="btn sq cpbtn" id="prChords" title="Chord progressions in a key (and: select a note, hold Shift and press ↑/↓ or scroll to browse chords on it)">Chords</button>
             <select id="prSnap" aria-label="Snap"></select>
             <div class="zoom"><button id="prZoomOut" aria-label="Zoom out">−</button><button id="prZoomIn" aria-label="Zoom in">+</button></div></div>
           <div class="prwrap" id="prWrap">
@@ -695,6 +696,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="keys.js"></script>
 <script src="instr.js"></script>
 <script src="seq.js"></script>
+<script src="chords.js"></script>
 <script src="presence.js"></script>
 <script src="mixer.js"></script>
 <script src="browser.js"></script>
