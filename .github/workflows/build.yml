@@ -4,6 +4,7 @@ name: build
 # minutes once. So every push gets a quick test on Linux (the engine's unit
 # tests and the whole self-test, no sound card needed), and the Mac apps are
 # only built for main, or when you ask: Actions → build → Run workflow.
+# Windows likewise ([release]), or on its own with [windows] in the commit message.
 on:
   push:
   workflow_dispatch:
@@ -95,6 +96,60 @@ jobs:
           name: Duet-mac-${{ matrix.arch }}
           path: Duet-mac-${{ matrix.arch }}.zip
 
+  # Windows: Duet.exe (one file). Built with the Mac apps for a release, or on its own
+  # with [windows] in the commit message.
+  windows:
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[release]') || contains(github.event.head_commit.message, '[windows]')
+    runs-on: windows-latest
+    env:
+      # the ASIO bindings are made with bindgen, which needs libclang (LLVM is on the runner)
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      PYTHONIOENCODING: utf-8
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - name: Install
+        run: pip install -r requirements.txt pyinstaller maturin
+      - name: Build the Rust engine
+        run: pip install ./engine
+      - name: Engine unit tests
+        working-directory: engine
+        run: cargo test --release
+      - name: Build the test VST3 plugins (for the host tests in the self-test)
+        working-directory: engine
+        run: cargo build --release --example test_gain --example test_synth
+      - name: The stem model (for the stems self-test; skipped if it isn't published yet)
+        run: |
+          curl -fsSL -o htdemucs.onnx https://github.com/${{ github.repository }}/releases/download/models-htdemucs-1/htdemucs.onnx \
+            && echo "DUET_STEM_MODEL=$PWD/htdemucs.onnx" >> "$GITHUB_ENV" || echo "no model release yet"
+      - name: Self-test
+        run: python selftest.py
+      - name: Build Duet.exe
+        run: pyinstaller --noconfirm duet.spec
+      - name: Smoke test (app must start and stay up)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\Duet.exe -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { Write-Error "app exited early (code $($p.ExitCode))"; exit 1 }
+          Write-Host "app is running"
+          Stop-Process -Id $p.Id -Force
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\Duet.exe -DestinationPath Duet-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Duet-windows
+          path: Duet-windows.zip
+
   # the stem splitter's model (Demucs htdemucs as ONNX), made once from Meta's
   # published weights and kept as a release of its own: a commit with [models]
   # in its message makes it again (the app checks the file's SHA-256)
@@ -126,10 +181,13 @@ jobs:
             --notes "Demucs htdemucs (Meta, MIT licence) exported to ONNX for Duet's stem splitter by tools/export_demucs.py. Duet downloads it by itself the first time you split a clip into stems."
 
   # a manual run (Actions -> build -> Run workflow), a version tag (v1.2.3) or a
-  # commit with [release] in its message also publishes the Mac apps as a release, on the Releases page
+  # commit with [release] in its message also publishes the apps as a release, on the Releases page
+  # (the Mac apps are a must; Windows goes in when its build made it)
   release:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[release]')
-    needs: [test, mac]
+    if: >-
+      !cancelled() && needs.test.result == 'success' && needs.mac.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[release]'))
+    needs: [test, mac, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -145,4 +203,4 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"; else tag="build-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"; fi
           gh release create "$tag" dist/*.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Duet ${tag}" \
-            --notes "Mac builds of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Apple Silicon (M1 and newer): Duet-mac-apple-silicon.zip; older Intel Macs: Duet-mac-intel.zip. Unsigned: the first time, right-click the app -> Open (or run: xattr -cr Duet.app)."
+            --notes "Builds of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Mac: Apple Silicon (M1 and newer) Duet-mac-apple-silicon.zip, older Intel Macs Duet-mac-intel.zip; unsigned: the first time, right-click the app -> Open (or run: xattr -cr Duet.app). Windows (if it's there): Duet-windows.zip, unzip and run Duet.exe; SmartScreen warns because it isn't signed: More info -> Run anyway."
