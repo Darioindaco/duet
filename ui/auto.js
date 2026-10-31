@@ -185,7 +185,7 @@ function autoDown(e, p, t) {
   let pts = autoPoints(t).map((q) => q.slice());
   let i = autoHit(t, p);
   if (i >= 0 && e.altKey) { autoRemovePoint(t, i); return; }
-  const at = (q) => Math.max(0, e.altKey || q.alt ? q.beat : snapBeat(q.beat, song.snap === 0 ? 1 : song.snap));
+  const at = (q) => Math.max(0, snapBeat(q.beat, q.alt !== undefined ? (q.alt ? (song.snap === -1 ? -3 : -1) : song.snap) : snapFor(e)));
   if (i < 0) {
     pts.push([at(p), +autoV(p.py, y).toFixed(4)]);
     pts.sort((a, b) => a[0] - b[0]);

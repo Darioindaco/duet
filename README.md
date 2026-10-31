@@ -135,7 +135,8 @@ matters for what you hear of each other live, not for what ends up in the song.
 | | |
 |---|---|
 | Select | click; shift-click for more; drag a box on empty space; ctrl+A for all |
-| Move | drag it, also to another track (snaps to the grid; hold *Alt* to move freely) |
+| Move | drag it, also to another track |
+| Snap | the magnet button: *Off* (the default: moving, trimming, splitting, pasting and the playhead all go exactly where you put them), *Smart* (free, but a grid line within a few pixels catches it), or a fixed grid (bar to 1/16). *Alt* turns it around while you drag or click: with snap off, it snaps to the grid you can see; with snap on, it's free |
 | Copy while moving | hold *Ctrl* (*Cmd* on a Mac) while you drag |
 | Trim | drag its left or right edge |
 | Fade in / out | drag the little square in its top left / top right corner |

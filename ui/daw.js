@@ -8,12 +8,13 @@
 // songSetup(), so the main script's helpers ($, ui, api, toast…) exist by then.
 
 const ROW = 64;          // track height, px
-const SNAPS = [["Bar", 0], ["Beat", 1], ["1/2", 0.5], ["1/4", 0.25], ["Off", -1]];
+// -1 off (free), -2 smart (free, but a grid line within a few pixels catches it), else the grid in beats (0 = a bar)
+const SNAPS = [["Off", -1], ["Smart", -2], ["Bar", 0], ["Beat", 1], ["1/2", 0.5], ["1/4", 0.25], ["1/8", 0.125], ["1/16", 0.0625]];
 const song = {
   view: null, v: -1, st: null, stAt: 0, fetching: false,
   peaks: {}, peakReq: {},
   sel: new Set(), selTrack: null,
-  ppb: 22, snap: 1,          // pixels per beat, snap (beats; 0 = bar, -1 = off)
+  ppb: 22, snap: -1,         // pixels per beat, snap (beats; 0 = bar, -1 = off, -2 = smart)
   drag: null, rulerDrag: null, headBusy: false, pendingHeads: false,
   cv: null, ov: null, ruler: null, raf: 0, follow: true,
   colors: { me: "#ff9548", partner: "#4fd6c6" },
@@ -26,11 +27,23 @@ const trackRow = (tid) => song.view.tracks.findIndex((t) => t.id === tid);
 const tColor = (t) => (t && !t.mine ? song.colors.partner : song.colors.me);
 // pattern clips are measured in beats (blen), audio clips in seconds (len)
 const clipBeats = (c) => (c.pattern ? c.blen ?? 4 : c.len / spb());
+// the finest grid that's at least 12 px wide at this zoom (bar, beat, ... 1/16)
+function zoomGrid() {
+  for (const g of [0.0625, 0.125, 0.25, 0.5, 1]) if (g * song.ppb >= 12) return g;
+  return bpb();
+}
 function snapBeat(b, mode = song.snap) {
-  if (mode < 0) return b;
+  if (mode === -1) return b;
+  if (mode === -2 || mode === -3) {
+    // smart: only when a line of the grid you can see is within 6 px; -3: always to that grid
+    const g = zoomGrid(), r = Math.round(b / g) * g;
+    return mode === -3 || Math.abs(r - b) * song.ppb <= 6 ? r : b;
+  }
   const g = mode === 0 ? bpb() : mode;
   return Math.round(b / g) * g;
 }
+// the snap for a mouse event: Alt turns it around (off → the grid you can see, on → free)
+const snapFor = (ev) => (ev && ev.altKey ? (song.snap === -1 ? -3 : -1) : song.snap);
 function fmtPos(beats) {
   const n = bpb(), neg = beats < 0, b = Math.abs(beats);
   const bar = Math.floor(b / n), beat = Math.floor(b % n), tick = Math.floor((b % 1) * 100);
@@ -124,7 +137,8 @@ function songSetup() {
   song.colors.me = css.getPropertyValue("--me").trim() || song.colors.me;
   song.colors.partner = css.getPropertyValue("--partner").trim() || song.colors.partner;
   song.ppb = store.get("songZoom", 22);
-  song.snap = store.get("songSnap", 1);
+  song.snap = store.get("songSnap", -1);
+  if (!SNAPS.some(([, v]) => v === song.snap)) song.snap = -1;
   song.cv = $("lanesCv"); song.ov = $("lanesOv"); song.ruler = $("ruler");
 
   // transport
@@ -145,9 +159,11 @@ function songSetup() {
   };
   // snap: a small magnet button with a menu
   const paintSnap = () => {
-    const label = (SNAPS.find(([, v]) => v === song.snap) || SNAPS[1])[0];
+    const label = (SNAPS.find(([, v]) => v === song.snap) || SNAPS[0])[0];
     $("snapLbl").textContent = label;
-    $("snapBtn").title = `Snap to grid: ${label} (hold Alt to move freely)`;
+    $("snapBtn").classList.toggle("on", song.snap !== -1);
+    $("snapBtn").title = song.snap === -1 ? "Snap: off, everything moves freely (hold Alt to snap to the grid you see)"
+      : song.snap === -2 ? "Snap: smart, free, but a grid line close by catches it (hold Alt: free)" : `Snap to grid: ${label} (hold Alt to move freely)`;
   };
   paintSnap();
   $("snapBtn").onclick = () => {
@@ -938,7 +954,7 @@ const cutOffsets = (c, t) => {
   return c.reverse ? { left: o + (c.len - t) * r, right: o } : { left: o, right: o + t * r };
 };
 const fileDur = (c) => { const f = song.view.files[c.file]; return f && f.frames ? f.frames / f.sr : Infinity; };
-const gridOf = (mode) => (mode < 0 ? 0 : mode === 0 ? bpb() : mode);
+const gridOf = (mode) => (mode === -1 ? 0 : mode < 0 ? zoomGrid() : mode === 0 ? bpb() : mode);
 const selClips = () => song.view.clips.filter((c) => song.sel.has(c.id));
 const MIN_LEN = 0.05; // seconds
 
@@ -973,7 +989,7 @@ function lanesDown(e) {
   const move = (ev) => {
     if (!d.moved && Math.hypot(ev.clientX - d.x0, ev.clientY - d.y0) < 4) return;
     d.moved = true;
-    d.result = dragResult(d, lanePoint(ev), ev.altKey ? -1 : song.snap);
+    d.result = dragResult(d, lanePoint(ev), snapFor(ev));
     songDraw();
   };
   const up = () => {
@@ -1075,7 +1091,7 @@ function bandSelect(e, p) {
     song.band = null;
     if (!b.moved) {
       if (!e.shiftKey) song.sel.clear();
-      const at = Math.max(0, snapBeat(p.beat));
+      const at = Math.max(0, snapBeat(p.beat, snapFor(e)));
       api.daw_locate(at);
       if (song.st && !song.st.playing) song.st.pos = at;
     }
@@ -1207,7 +1223,7 @@ function lanesContext(e) {
   if (h) {
     const c = h.c;
     if (!song.sel.has(c.id)) { song.sel.clear(); song.sel.add(c.id); songDraw(); }
-    const at = snapBeat(p.beat);
+    const at = snapBeat(p.beat, snapFor(e));
     const n = song.sel.size;
     items.push(["Split here", "S", () => splitClips(at > c.start && at < c.start + clipBeats(c) ? at : p.beat, selClips())]);
     items.push([n > 1 ? `Duplicate ${n} clips` : "Duplicate", "Ctrl+D", duplicateSel]);
@@ -1227,7 +1243,7 @@ function lanesContext(e) {
   } else {
     const pat = curPattern();
     if (pat) items.push([`Put "${pat.name}" here`, "dbl-click", () => insertPattern(p)]);
-    items.push(["Paste here", "Ctrl+V", () => paste(Math.max(0, snapBeat(p.beat)), p.row), !song.clipboard]);
+    items.push(["Paste here", "Ctrl+V", () => paste(Math.max(0, snapBeat(p.beat, snapFor(e))), p.row), !song.clipboard]);
     items.push(["Add a track", "", addTrack]);
     if (row) items.push([`Automate ${row.name || "this track"}…`, "", () => autoMenu(row.id, e.clientX, e.clientY)]);
     items.push(["Automate the master…", "", () => autoMenu("master", e.clientX, e.clientY)]);
@@ -1317,7 +1333,7 @@ async function runExport() {
 function rulerDown(e) {
   if (e.button !== 0 || !song.view) return;
   const cv = song.ruler, r = cv.getBoundingClientRect(), sx = $("lanes").scrollLeft;
-  const at = (ev) => Math.max(0, snapBeat((ev.clientX - r.left + sx) / song.ppb, song.snap < 0 ? 1 : song.snap));
+  const at = (ev) => Math.max(0, snapBeat((ev.clientX - r.left + sx) / song.ppb, snapFor(ev)));
   const b0 = at(e);
   song.rulerDrag = { b0, moved: false };
   cv.setPointerCapture(e.pointerId);
