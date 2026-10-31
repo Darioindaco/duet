@@ -44,7 +44,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14          # Apple Silicon (M1 and newer)
+          - os: macos-15          # Apple Silicon (M1 and newer); macos-14 runners stopped starting
             arch: apple-silicon
             rustflags: ""
             cargo_args: ""
