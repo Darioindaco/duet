@@ -23,7 +23,7 @@ pub struct Analyzer {
     scratch: Vec<Complex<f32>>,
     /// which FFT bins make each band
     edges: Vec<(usize, usize)>,
-    pub bands: [f32; BANDS],
+    pub bands: Vec<f32>,
     // correlation: decaying sums
     lr: f64,
     ll: f64,
@@ -33,12 +33,16 @@ pub struct Analyzer {
 
 impl Analyzer {
     pub fn new(sr: f32) -> Self {
+        Self::with_bands(sr, BANDS, 20.0)
+    }
+
+    /// `nb` bands from 20 Hz to 20 kHz, updated `rate` times a second.
+    pub fn with_bands(sr: f32, nb: usize, rate: f32) -> Self {
         let fft = RealFftPlanner::<f32>::new().plan_fft_forward(N);
         let window = (0..N).map(|k| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * k as f32 / N as f32).cos()).collect();
-        // 31 bands from 20 Hz to 20 kHz, a third of an octave each
-        let edges = (0..BANDS)
+        let edges = (0..nb)
             .map(|b| {
-                let f = |x: f32| 20.0 * 1000f32.powf(x / BANDS as f32);
+                let f = |x: f32| 20.0 * 1000f32.powf(x / nb as f32);
                 let bin = |hz: f32| ((hz / sr * N as f32).round() as usize).clamp(1, N / 2);
                 let (a, z) = (bin(f(b as f32)), bin(f(b as f32 + 1.0)));
                 (a, z.max(a + 1))
@@ -50,14 +54,14 @@ impl Analyzer {
             at: 0,
             filled: 0,
             since: 0,
-            hop: (sr / 20.0) as usize, // twenty times a second
+            hop: (sr / rate) as usize,
             input: vec![0.0; N],
             spec: fft.make_output_vec(),
             scratch,
             fft,
             window,
             edges,
-            bands: [-120.0; BANDS],
+            bands: vec![-120.0; nb],
             lr: 0.0,
             ll: 0.0,
             rr: 0.0,

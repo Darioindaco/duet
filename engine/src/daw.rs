@@ -846,7 +846,7 @@ pub struct TrackMix {
 #[allow(clippy::too_many_arguments)]
 pub fn render(tl: &Timeline, tracks: Vec<TrackMix>, wiring: Box<Wiring>, master_rack: Vec<SlotCfg>, master: f32,
               sr: u32, start: i64, end: i64, mix: Option<PathBuf>, done: &AtomicU64) -> Result<Vec<String>, String> {
-    render_ex(tl, tracks, wiring, master_rack, master, sr, start, end, mix, None, done).map(|o| o.warnings)
+    render_ex(tl, tracks, wiring, master_rack, master, sr, start, end, mix, None, done, None).map(|o| o.warnings)
 }
 
 /// What an export came to: warnings, the mix's loudness (as it was rendered, before any
@@ -865,7 +865,8 @@ pub const NORMALIZE_CEILING: f64 = -1.0;
 /// measured, then written again with the gain.
 #[allow(clippy::too_many_arguments)]
 pub fn render_ex(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, master_rack: Vec<SlotCfg>, master: f32,
-                 sr: u32, start: i64, end: i64, mix: Option<PathBuf>, normalize: Option<f64>, done: &AtomicU64)
+                 sr: u32, start: i64, end: i64, mix: Option<PathBuf>, normalize: Option<f64>, done: &AtomicU64,
+                 clock: Option<&(crate::dsp::ClickMap, f32)>)
                  -> Result<ExportOut, String> {
     const BLOCK: usize = 512;
     type Wav = hound::WavWriter<std::io::BufWriter<std::fs::File>>;
@@ -934,6 +935,12 @@ pub fn render_ex(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, 
         l[..n].fill(0.0);
         r[..n].fill(0.0);
         let play = Play { segs: [(0, x, n), (0, 0, 0)], nseg: 1, looping: None };
+        if let Some((map, bpm)) = clock {
+            // tempo-synced effects follow the song here too
+            let sec = x as f64 / sr as f64;
+            let (beat, bpm) = map.at(sec).map(|(b, s)| (b, s.bpm)).unwrap_or((sec * *bpm as f64 / 60.0, *bpm as f64));
+            crate::kit::set_song_time(crate::kit::SongTime { beat, bpm, playing: true });
+        }
         apply_automation(tl, x, &mut strips, &mut master_rack);
         render_tracks(&mut strips, &mut wiring, &mut bufs, Some(tl), Some(&play), n, &mut l[..n], &mut r[..n]);
         // stems: the tracks as they leave their faders (no master rack: no delay)

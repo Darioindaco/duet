@@ -13,6 +13,8 @@ mod dsp;
 mod fx;
 mod instr;
 mod jitter;
+mod kit;
+mod plugins;
 mod livenotes;
 mod analyzer;
 #[cfg(target_os = "macos")]
@@ -66,6 +68,8 @@ struct Ctl {
     routes: Vec<Route>,
     /// what the audio thread's wiring was last built from
     wired: Option<WireKey>,
+    /// the song's tempo (map, and the tempo without one), for tempo-synced effects in an export
+    clock: (dsp::ClickMap, f32),
 }
 
 /// Everything the wiring depends on except send levels (those change without a rebuild).
@@ -430,6 +434,7 @@ impl Engine {
         let socket = Arc::new(socket);
         let shared = Arc::new(Shared {
             rack_meters: (0..(MAX_LOCAL + MAX_REMOTE + MAX_TRACKS + 1) * fx::MAX_SLOTS * 3).map(|_| Default::default()).collect(),
+            rack_scope: (0..(MAX_LOCAL + MAX_REMOTE + MAX_TRACKS + 1) * fx::MAX_SLOTS * fx::SCOPE_N).map(|_| Default::default()).collect(),
             ..Default::default()
         });
         let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(1024);
@@ -459,6 +464,7 @@ impl Engine {
                 master_strip: StripMirror { s: StripSettings::remote(), rack: vec![], inst: None },
                 routes: vec![Route::default(); MAX_TRACKS],
                 wired: None,
+                clock: (dsp::ClickMap::default(), 120.0),
             }),
             cmds: Mutex::new(cmd_tx),
             incoming: Mutex::new(Some(pkt_tx)),
@@ -704,8 +710,8 @@ impl Engine {
                 slot.on = value != 0.0;
                 self.cmd(Cmd::RackOn(t, pos, slot.on));
             } else {
-                if slot.kind != fx::COMP {
-                    return Err(PyValueError::new_err("only a compressor listens to another track"));
+                if !fx::takes_key(slot.kind) {
+                    return Err(PyValueError::new_err("this effect can't listen to another track"));
                 }
                 slot.key = (value >= 0.0 && (value as usize) < MAX_TRACKS).then_some(value as usize);
                 // a fresh one (a compressor is cheap to build) carries the new key in
@@ -720,8 +726,16 @@ impl Engine {
         } else {
             let k = param_index(slot.kind, key)
                 .ok_or_else(|| PyValueError::new_err(format!("{} has no {key}", FX[slot.kind].name)))?;
+            let sr = self.samplerate();
+            let lat = slot.latency(sr);
             slot.p[k] = value as f32;
+            let moved = slot.latency(sr) != lat;
             self.cmd(Cmd::RackParam(t, pos, k, value as f32));
+            if moved {
+                // oversampling changed how late this effect is: everything else lines up again
+                drop(c);
+                self.reroute();
+            }
         }
         Ok(())
     }
@@ -1090,6 +1104,24 @@ impl Engine {
         }).collect())
     }
 
+    /// What the effect at `pos` draws in its window besides the meters (an EQ's spectra, a
+    /// multiband's band levels): up to fx::SCOPE_N numbers, its own layout (plugins.rs).
+    fn rack_scope(&self, target: &str, pos: usize) -> PyResult<Vec<f32>> {
+        let t = parse_target(target)?;
+        let si = match t {
+            Target::Local(i) => i,
+            Target::Remote(i) => MAX_LOCAL + i,
+            Target::Track(i) => MAX_LOCAL + MAX_REMOTE + i,
+            Target::Master => MAX_LOCAL + MAX_REMOTE + MAX_TRACKS,
+        };
+        if pos >= fx::MAX_SLOTS {
+            return Ok(Vec::new());
+        }
+        let m = &self.inner.shared.rack_scope;
+        let b = (si * fx::MAX_SLOTS + pos) * fx::SCOPE_N;
+        Ok((0..fx::SCOPE_N).map(|i| m[b + i].get()).collect())
+    }
+
     /// Put a VST3 plugin into a rack. Loads and starts it (this can take a moment).
     #[pyo3(signature = (target, path, cid, name, pos=None))]
     fn rack_add_vst(&self, py: Python<'_>, target: &str, path: String, cid: String, name: String, pos: Option<usize>) -> PyResult<usize> {
@@ -1225,7 +1257,7 @@ impl Engine {
                 for (i, name) in FX[slot.kind].params.iter().enumerate() {
                     e.set_item(*name, slot.p[i])?;
                 }
-                if slot.kind == fx::COMP {
+                if fx::takes_key(slot.kind) {
                     e.set_item("key", slot.key)?;
                 }
                 if slot.kind == fx::NAM {
@@ -1673,11 +1705,13 @@ impl Engine {
         } else {
             Some(Box::new(dsp::ClickMap { segs: segs.into_iter().map(|(start, bpm, beat0, beats, bar0)| dsp::ClickSeg { start, bpm, beat0, beats, bar0 }).collect() }))
         };
+        self.inner.ctl.lock().unwrap().clock.0 = map.as_deref().cloned().unwrap_or_default();
         self.cmd(Cmd::ClickMap(map));
     }
 
     /// The click while the timeline plays.
     fn daw_click(&self, on: bool, bpm: f32, beats: u32) {
+        self.inner.ctl.lock().unwrap().clock.1 = bpm;
         self.cmd(Cmd::Click { on, bpm, beats });
     }
 
@@ -1728,7 +1762,7 @@ impl Engine {
                   normalize: Option<f64>) -> PyResult<()> {
         let sr = self.samplerate() as u32;
         self.reroute();
-        let (tracks, master, master_rack, wiring) = {
+        let (tracks, master, master_rack, wiring, clock) = {
             let c = self.inner.ctl.lock().unwrap();
             let tracks: Vec<daw::TrackMix> = c
                 .tracks
@@ -1749,7 +1783,7 @@ impl Engine {
                 active: k.active, routes: &c.routes, rack_lat: k.rack_lat, inst_lat: k.inst_lat,
                 keys: k.keys, master_lat: k.master_lat, max_pad: 2 * sr as usize,
             });
-            (tracks, c.master, c.master_strip.rack.clone(), wiring)
+            (tracks, c.master, c.master_strip.rack.clone(), wiring, c.clock.clone())
         };
         let mut d = self.inner.daw.lock().unwrap();
         if d.export.as_ref().is_some_and(|j| !j.worker.is_finished()) {
@@ -1781,7 +1815,7 @@ impl Engine {
                     tl.autos = daw::auto_lanes(autos, sr);
                     tl
                 };
-                daw::render_ex(&tl, tracks, wiring, master_rack, master, sr, a, b, mix, normalize, &done2)
+                daw::render_ex(&tl, tracks, wiring, master_rack, master, sr, a, b, mix, normalize, &done2, Some(&clock))
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         d.export = Some(ExportJob { done, total: (b - a) as u64, worker });

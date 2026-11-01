@@ -10,13 +10,20 @@
 
 use std::f32::consts::PI;
 
-pub const N_KINDS: usize = 10;
+pub const N_KINDS: usize = 15;
 pub const NAM: usize = 6;
 pub const VST: usize = 7;
 pub const EQ: usize = 8;
 pub const LIMITER: usize = 9;
 pub const COMP: usize = 0;
-pub const MAX_PARAMS: usize = 32;
+pub const EQPRO: usize = 10;
+pub const CLIPPER: usize = 11;
+pub const MULTI: usize = 12;
+pub const SATURATE: usize = 13;
+pub const SHAPER: usize = 14;
+pub const MAX_PARAMS: usize = 80;
+/// what an effect can show in its window besides the meters (spectra, band levels), per slot
+pub const SCOPE_N: usize = 136;
 pub const MAX_SLOTS: usize = 8;
 
 pub type Params = [f32; MAX_PARAMS];
@@ -25,6 +32,13 @@ pub struct FxInfo {
     pub name: &'static str,
     pub params: &'static [&'static str],
     pub defaults: Params,
+    /// knobs that jump instead of glide: switches and choices
+    pub stepped: &'static [&'static str],
+}
+
+/// Effects that can listen to another track (a sidechain).
+pub fn takes_key(kind: usize) -> bool {
+    matches!(kind, COMP | SHAPER)
 }
 
 /// The first values given, the rest 0.
@@ -38,25 +52,43 @@ const fn d<const N: usize>(a: [f32; N]) -> Params {
     out
 }
 
+/// EQ Pro: 8 bands of on, type, freq, gain, q, slope, ch, dyn, thr (plugins.rs), then output and auto gain
+const EQPRO_PARAMS: [&str; 74] = ["b1on", "b1type", "b1freq", "b1gain", "b1q", "b1slope", "b1ch", "b1dyn", "b1thr", "b2on", "b2type", "b2freq", "b2gain", "b2q", "b2slope", "b2ch", "b2dyn", "b2thr", "b3on", "b3type", "b3freq", "b3gain", "b3q", "b3slope", "b3ch", "b3dyn", "b3thr", "b4on", "b4type", "b4freq", "b4gain", "b4q", "b4slope", "b4ch", "b4dyn", "b4thr", "b5on", "b5type", "b5freq", "b5gain", "b5q", "b5slope", "b5ch", "b5dyn", "b5thr", "b6on", "b6type", "b6freq", "b6gain", "b6q", "b6slope", "b6ch", "b6dyn", "b6thr", "b7on", "b7type", "b7freq", "b7gain", "b7q", "b7slope", "b7ch", "b7dyn", "b7thr", "b8on", "b8type", "b8freq", "b8gain", "b8q", "b8slope", "b8ch", "b8dyn", "b8thr", "output", "auto"];
+const EQPRO_DEFAULTS: Params = d([0.0, 0.5, 0.1326, 0.5, 0.3767, 0.5, 0.0, 0.5, 0.6, 0.0, 0.0, 0.2594, 0.5, 0.3767, 0.5, 0.0, 0.5, 0.6, 0.0, 0.0, 0.392, 0.5, 0.3767, 0.5, 0.0, 0.5, 0.6, 0.0, 0.0, 0.534, 0.5, 0.3767, 0.5, 0.0, 0.5, 0.6, 0.0, 0.0, 0.6667, 0.5, 0.3767, 0.5, 0.0, 0.5, 0.6, 0.0, 0.0, 0.7993, 0.5, 0.3767, 0.5, 0.0, 0.5, 0.6, 0.0, 0.0, 0.8997, 0.5, 0.3767, 0.5, 0.0, 0.5, 0.6, 0.0, 0.6667, 0.9677, 0.5, 0.3767, 0.5, 0.0, 0.5, 0.6, 0.5, 0.0]);
+const EQPRO_STEPPED: [&str; 33] = ["b1on", "b1type", "b1slope", "b1ch", "b2on", "b2type", "b2slope", "b2ch", "b3on", "b3type", "b3slope", "b3ch", "b4on", "b4type", "b4slope", "b4ch", "b5on", "b5type", "b5slope", "b5ch", "b6on", "b6type", "b6slope", "b6ch", "b7on", "b7type", "b7slope", "b7ch", "b8on", "b8type", "b8slope", "b8ch", "auto"];
+
 pub const FX: [FxInfo; N_KINDS] = [
     // attack 0.1..100 ms, release 10 ms..1 s (the defaults are the old fixed 5 ms / 150 ms)
-    FxInfo { name: "comp", params: &["threshold", "ratio", "makeup", "attack", "release"], defaults: d([0.5, 0.5, 0.3, 0.566, 0.588]) },
-    FxInfo { name: "drive", params: &["drive", "tone", "level"], defaults: d([0.4, 0.5, 0.5]) },
-    FxInfo { name: "chorus", params: &["rate", "depth", "mix"], defaults: d([0.3, 0.5, 0.5]) },
+    // knee 0..24 dB, mix (parallel), schp: the detector's low cut 20..500 Hz (0 = off), char: clean, glue, punch, smooth
+    FxInfo { name: "comp", params: &["threshold", "ratio", "makeup", "attack", "release", "knee", "mix", "schp", "char"],
+             defaults: d([0.5, 0.5, 0.3, 0.566, 0.588, 0.0, 1.0, 0.0, 0.0]), stepped: &["char"] },
+    FxInfo { name: "drive", params: &["drive", "tone", "level"], defaults: d([0.4, 0.5, 0.5]), stepped: &[] },
+    FxInfo { name: "chorus", params: &["rate", "depth", "mix"], defaults: d([0.3, 0.5, 0.5]), stepped: &[] },
     // stereo: 0 = both sides together (tremolo) .. 1 = opposite (auto-pan)
-    FxInfo { name: "tremolo", params: &["rate", "depth", "stereo"], defaults: d([0.4, 0.6, 0.0]) },
+    FxInfo { name: "tremolo", params: &["rate", "depth", "stereo"], defaults: d([0.4, 0.6, 0.0]), stepped: &[] },
     // dry 1 = the dry signal at full level (as on a channel); 0 for a send bus
-    FxInfo { name: "delay", params: &["time", "feedback", "mix", "pingpong", "dry"], defaults: d([0.35, 0.4, 0.35, 0.0, 1.0]) },
-    FxInfo { name: "reverb", params: &["size", "damp", "mix", "width", "dry"], defaults: d([0.6, 0.4, 0.3, 1.0, 1.0]) },
+    FxInfo { name: "delay", params: &["time", "feedback", "mix", "pingpong", "dry"], defaults: d([0.35, 0.4, 0.35, 0.0, 1.0]), stepped: &[] },
+    FxInfo { name: "reverb", params: &["size", "damp", "mix", "width", "dry"], defaults: d([0.6, 0.4, 0.3, 1.0, 1.0]), stepped: &[] },
     // input/output: -12..+12 dB around the middle of the knob
-    FxInfo { name: "nam", params: &["input", "output"], defaults: d([0.5, 0.5]) },
+    FxInfo { name: "nam", params: &["input", "output"], defaults: d([0.5, 0.5]), stepped: &[] },
     // a VST3 plugin; its own controls live in its own window
-    FxInfo { name: "vst", params: &["mix"], defaults: d([1.0]) },
+    FxInfo { name: "vst", params: &["mix"], defaults: d([1.0]), stepped: &[] },
     // gains -15..+15 dB in the middle of the knob; lowcut 0 / highcut 1 = off
     FxInfo { name: "eq", params: &["lowcut", "low", "lowfreq", "mid", "midfreq", "q", "high", "highfreq", "highcut"],
-             defaults: d([0.0, 0.5, 0.402, 0.5, 0.5, 0.343, 0.5, 0.727, 1.0]) },
+             defaults: d([0.0, 0.5, 0.402, 0.5, 0.5, 0.343, 0.5, 0.727, 1.0]), stepped: &[] },
     // gain 0..+24 dB in, ceiling -12..0 dB, release 10 ms..1 s
-    FxInfo { name: "limiter", params: &["gain", "ceiling", "release"], defaults: d([0.0, 0.992, 0.4]) },
+    // link: 0 each side on its own .. 1 both together; tp: true peak (between the samples too)
+    FxInfo { name: "limiter", params: &["gain", "ceiling", "release", "link", "tp"], defaults: d([0.0, 0.992, 0.4, 1.0, 1.0]), stepped: &["tp"] },
+    FxInfo { name: "eqpro", params: &EQPRO_PARAMS, defaults: EQPRO_DEFAULTS, stepped: &EQPRO_STEPPED },
+    FxInfo { name: "clipper", params: &["input", "ceiling", "knee", "os", "mix", "output", "delta"],
+             defaults: d([0.0, 1.0, 0.3, 0.667, 1.0, 0.5, 0.0]), stepped: &["os", "delta"] },
+    FxInfo { name: "multi", params: &["depth", "time", "upward", "downward", "input", "output", "xlow", "xhigh",
+             "lowdown", "lowup", "lowgain", "middown", "midup", "midgain", "highdown", "highup", "highgain"],
+             defaults: d([0.5, 0.5, 1.0, 1.0, 0.3333, 0.5, 0.2493, 0.3697, 0.5, 0.3333, 0.5, 0.5, 0.3333, 0.5, 0.5, 0.3333, 0.5]), stepped: &[] },
+    FxInfo { name: "saturate", params: &["drive", "mode", "bias", "tone", "mix", "output", "os", "auto"],
+             defaults: d([0.25, 0.0, 0.0, 0.5, 1.0, 0.5, 0.333, 1.0]), stepped: &["mode", "os", "auto"] },
+    FxInfo { name: "shaper", params: &["depth", "rate", "shape", "curve", "hold", "phase", "trig", "thresh", "band", "xover", "mix", "smooth"],
+             defaults: d([1.0, 0.5, 0.0, 0.5, 0.1, 0.0, 0.0, 0.5, 0.0, 0.3486, 1.0, 0.0]), stepped: &["rate", "shape", "trig", "band"] },
 ];
 
 /// Tempo for tempo-synced plugins: the metronome's, written by the audio thread.
@@ -146,6 +178,8 @@ impl SlotCfg {
         match self.kind {
             VST => self.vst.as_ref().filter(|_| self.error.is_none()).map_or(0, |v| v.latency),
             LIMITER => Limiter::lookahead(sr) as u32,
+            CLIPPER => crate::kit::Oversampler::latency(crate::kit::choice(self.p[crate::plugins::CLIP_OS], 4)),
+            SATURATE => crate::kit::Oversampler::latency(crate::kit::choice(self.p[crate::plugins::SAT_OS], 4)),
             _ => 0,
         }
     }
@@ -186,6 +220,10 @@ pub trait Effect: Send {
     fn gain_reduction(&self) -> f32 {
         0.0
     }
+    /// What its window draws besides the meters (at most SCOPE_N values: spectra, band levels).
+    fn scope(&self) -> &[f32] {
+        &[]
+    }
     /// Effects that can follow a sample-rate change in place (keeping their
     /// state) say so; the rest are rebuilt.
     fn set_sample_rate(&mut self, _sr: f32) -> bool {
@@ -225,6 +263,11 @@ pub fn make(cfg: &SlotCfg, sr: f32) -> Result<Box<dyn Effect>, String> {
         }),
         EQ => Box::new(Eq::new(sr)),
         LIMITER => Box::new(Limiter::new(sr)),
+        EQPRO => Box::new(crate::plugins::EqPro::new(sr)),
+        CLIPPER => Box::new(crate::plugins::Clipper::new(sr)),
+        MULTI => Box::new(crate::plugins::Multiband::new(sr)),
+        SATURATE => Box::new(crate::plugins::Saturator::new(sr)),
+        SHAPER => Box::new(crate::plugins::Shaper::new(sr)),
         _ => {
             let v = cfg.vst.as_ref().ok_or("no plugin chosen")?;
             Box::new(VstEffect { proc: crate::vst::VstProc::create(&v.path, &v.cid, v.state.as_deref(), sr as f64)? })
@@ -239,6 +282,8 @@ pub struct Slot {
     /// the knobs as the effect hears them: following cfg.p over ~15 ms, so a turn (or automation)
     /// doesn't zipper
     sm: Params,
+    /// which knobs jump (FxInfo::stepped), a bit each
+    stepped: u128,
     fresh: bool,
     sr: f32,
     /// for the plugin's window: peaks in and out, and how much it turns down (dB)
@@ -252,8 +297,6 @@ pub struct SlotMeter {
     pub gr: f32,
 }
 
-/// Knobs that jump instead of glide (switches, choices), per effect kind: a bit per parameter.
-pub const STEPPED: [u32; N_KINDS] = [0; N_KINDS];
 
 impl Slot {
     /// For a NAM slot with a model this also fills in `cfg.info`.
@@ -291,7 +334,9 @@ impl Slot {
     }
 
     pub fn wrap(cfg: SlotCfg, fx: Box<dyn Effect>, sr: f32) -> Box<Slot> {
-        Box::new(Slot { sm: cfg.p, cfg, fx, fresh: true, sr, meter: SlotMeter::default() })
+        let info = &FX[cfg.kind.min(N_KINDS - 1)];
+        let stepped = info.params.iter().enumerate().filter(|(_, n)| info.stepped.contains(n)).fold(0u128, |m, (i, _)| m | 1 << i);
+        Box::new(Slot { sm: cfg.p, cfg, fx, stepped, fresh: true, sr, meter: SlotMeter::default() })
     }
 
     /// One block through the effect (on or off), with the knobs smoothed and the meters kept.
@@ -309,7 +354,7 @@ impl Slot {
             self.fresh = false;
         } else {
             let a = 1.0 - (-(n as f32) / (0.015 * self.sr)).exp();
-            let stepped = STEPPED[self.cfg.kind.min(N_KINDS - 1)];
+            let stepped = self.stepped;
             for i in 0..MAX_PARAMS {
                 if stepped & (1 << i) != 0 {
                     self.sm[i] = self.cfg.p[i];
@@ -511,11 +556,28 @@ struct Compressor {
     env: f32,
     sr: f32,
     gr: f32,
+    /// the gain it applies now (punch: the detector listens to the output)
+    g: f32,
+    hp: [crate::kit::Biquad; 2],
+    hp_at: f32,
 }
 
 impl Compressor {
     fn new(sr: f32) -> Self {
-        Compressor { env: 0.0, sr, gr: 0.0 }
+        Compressor { env: 0.0, sr, gr: 0.0, g: 1.0, hp: [crate::kit::Biquad::new(); 2], hp_at: -1.0 }
+    }
+}
+
+/// How much to turn down (dB) at `over` dB above the threshold, with a soft knee `w` dB wide.
+#[inline]
+fn comp_curve(over: f32, ratio: f32, w: f32) -> f32 {
+    let s = 1.0 - 1.0 / ratio;
+    if w > 0.01 && 2.0 * over.abs() <= w {
+        s * (over + w / 2.0).powi(2) / (2.0 * w)
+    } else if over > 0.0 {
+        s * over
+    } else {
+        0.0
     }
 }
 
@@ -524,36 +586,75 @@ impl Effect for Compressor {
         self.process_keyed(p, l, r, None);
     }
     /// Stereo-linked: both sides get the same gain, from the louder one (or
-    /// from the key: a kick that pushes the bass down).
+    /// from the key: a kick that pushes the bass down). Characters: clean (peak), glue (RMS, a
+    /// bus compressor), punch (listens to its own output, fast, a little grit), smooth (lets go
+    /// slower the more it's pressing, like an optical one).
     fn process_keyed(&mut self, p: &Params, l: &mut [f32], r: &mut [f32], key: Key) {
         let thr_db = -40.0 + 36.0 * p[0]; // -40 .. -4 dBFS
         let ratio = 1.0 + 11.0 * p[1]; // 1:1 .. 12:1
         let makeup = 18.0 * p[2];
-        let att_s = 0.0001 * 1000f32.powf(p[3]); // 0.1 .. 100 ms
+        let character = crate::kit::choice(p[8], 4);
+        let mut att_s = 0.0001 * 1000f32.powf(p[3]); // 0.1 .. 100 ms
         let rel_s = 0.01 * 100f32.powf(p[4]); // 10 ms .. 1 s
+        if character == 3 {
+            att_s = att_s.max(0.01);
+        }
+        let knee = 24.0 * p[5];
+        let mix = p[6];
+        let sc_on = p[7] > 0.005;
+        if sc_on {
+            let f = 20.0 * 25f32.powf(p[7]);
+            if (f - self.hp_at).abs() > 0.01 {
+                self.hp_at = f;
+                let c = crate::kit::rbj::highpass(f as f64, 0.7071, self.sr as f64);
+                self.hp[0].c = c;
+                self.hp[1].c = c;
+            }
+        }
         let att = 1.0 - (-1.0 / (att_s * self.sr)).exp();
-        let rel = 1.0 - (-1.0 / (rel_s * self.sr)).exp();
         let mut most = 0f32;
         for k in 0..l.len() {
-            let a = match key {
-                Some((kl, kr)) if k < kl.len() => kl[k].abs().max(kr[k].abs()),
-                Some(_) => 0.0,
-                None => l[k].abs().max(r[k].abs()),
+            let (mut a, mut b) = match key {
+                Some((kl, kr)) if k < kl.len() => (kl[k], kr[k]),
+                Some(_) => (0.0, 0.0),
+                None if character == 2 => (l[k] * self.g, r[k] * self.g),
+                None => (l[k], r[k]),
             };
-            let c = if a > self.env { att } else { rel };
-            self.env += (a - self.env) * c;
-            let env_db = 20.0 * (self.env + 1e-9).log10();
-            let over = (env_db - thr_db).max(0.0);
-            let red = over - over / ratio;
+            if sc_on {
+                a = self.hp[0].run(a);
+                b = self.hp[1].run(b);
+            }
+            let det = if character == 1 { 0.5 * (a * a + b * b) } else { a.abs().max(b.abs()) };
+            // smooth: the deeper it presses, the slower it lets go
+            let rel_now = if character == 3 { rel_s * (1.0 + self.gr_now() / 4.0) } else { rel_s };
+            let rel = 1.0 - (-1.0 / (rel_now * self.sr)).exp();
+            let c = if det > self.env { att } else { rel };
+            self.env += (det - self.env) * c;
+            let env_db = if character == 1 { 10.0 * (self.env + 1e-18).log10() } else { 20.0 * (self.env + 1e-9).log10() };
+            let red = comp_curve(env_db - thr_db, ratio, knee);
             most = most.max(red);
-            let g = db_to_lin(-red + makeup);
-            l[k] *= g;
-            r[k] *= g;
+            self.g = db_to_lin(-red);
+            let g = self.g * db_to_lin(makeup);
+            let (mut wl, mut wr) = (l[k] * g, r[k] * g);
+            if character == 2 && red > 0.0 {
+                // a touch of grit while it works
+                wl = (wl * 1.1).tanh() / 1.1;
+                wr = (wr * 1.1).tanh() / 1.1;
+            }
+            l[k] += (wl - l[k]) * mix;
+            r[k] += (wr - r[k]) * mix;
         }
         self.gr = most;
     }
     fn gain_reduction(&self) -> f32 {
         self.gr
+    }
+}
+
+impl Compressor {
+    #[inline]
+    fn gr_now(&self) -> f32 {
+        -20.0 * self.g.max(1e-6).log10()
     }
 }
 
@@ -766,7 +867,7 @@ impl Effect for Reverb {
 pub struct Coefs(pub [f32; 5]);
 
 impl Coefs {
-    const FLAT: Coefs = Coefs([1.0, 0.0, 0.0, 0.0, 0.0]);
+    pub const FLAT: Coefs = Coefs([1.0, 0.0, 0.0, 0.0, 0.0]);
 
     fn norm(b: [f64; 3], a: [f64; 3]) -> Coefs {
         Coefs([(b[0] / a[0]) as f32, (b[1] / a[0]) as f32, (b[2] / a[0]) as f32, (a[1] / a[0]) as f32, (a[2] / a[0]) as f32])
@@ -806,7 +907,6 @@ impl Coefs {
         }
     }
     /// Gain in dB at frequency f (the UI draws the same curve).
-    #[cfg(test)]
     pub fn db_at(&self, f: f64, sr: f64) -> f64 {
         let [b0, b1, b2, a1, a2] = self.0.map(|v| v as f64);
         let w = 2.0 * std::f64::consts::PI * f / sr;
@@ -909,13 +1009,42 @@ pub struct Limiter {
     sr: f32,
     la: usize,
     ring: [Ring; 2],
-    // the smallest gain needed over the look-ahead window (a monotonic queue)
-    q_val: Vec<f32>,
-    q_at: Vec<u64>,
-    q_head: usize,
-    q_len: usize,
+    // the smallest gain needed over the look-ahead window, per side (monotonic queues)
+    q: [MinQueue; 2],
     n: u64,
-    env: f32,
+    env: [f32; 2],
+    tp: crate::kit::TruePeak,
+}
+
+/// The smallest value pushed in the last `len` pushes.
+struct MinQueue {
+    val: Vec<f32>,
+    at: Vec<u64>,
+    head: usize,
+    len: usize,
+}
+
+impl MinQueue {
+    fn new(cap: usize) -> Self {
+        MinQueue { val: vec![0.0; cap], at: vec![0; cap], head: 0, len: 0 }
+    }
+    fn push(&mut self, v: f32, n: u64, window: usize) {
+        let cap = self.val.len();
+        while self.len > 0 && self.val[(self.head + self.len - 1) % cap] >= v {
+            self.len -= 1;
+        }
+        let i = (self.head + self.len) % cap;
+        self.val[i] = v;
+        self.at[i] = n;
+        self.len += 1;
+        while self.at[self.head] + (window as u64) < n {
+            self.head = (self.head + 1) % cap;
+            self.len -= 1;
+        }
+    }
+    fn min(&self) -> f32 {
+        self.val[self.head]
+    }
 }
 
 impl Limiter {
@@ -928,22 +1057,7 @@ impl Limiter {
         let la = Self::lookahead(sr);
         Limiter {
             sr, la, ring: [Ring::new(la + 1), Ring::new(la + 1)],
-            q_val: vec![0.0; la + 2], q_at: vec![0; la + 2], q_head: 0, q_len: 0, n: 0, env: 1.0,
-        }
-    }
-
-    fn q_push(&mut self, v: f32) {
-        let cap = self.q_val.len();
-        while self.q_len > 0 && self.q_val[(self.q_head + self.q_len - 1) % cap] >= v {
-            self.q_len -= 1;
-        }
-        let i = (self.q_head + self.q_len) % cap;
-        self.q_val[i] = v;
-        self.q_at[i] = self.n;
-        self.q_len += 1;
-        while self.q_at[self.q_head] + (self.la as u64) < self.n {
-            self.q_head = (self.q_head + 1) % cap;
-            self.q_len -= 1;
+            q: [MinQueue::new(la + 2), MinQueue::new(la + 2)], n: 0, env: [1.0; 2], tp: crate::kit::TruePeak::new(),
         }
     }
 }
@@ -953,32 +1067,39 @@ impl Effect for Limiter {
         let gin = db_to_lin(24.0 * p[0]);
         let ceil = db_to_lin(-12.0 + 12.0 * p[1]);
         let rel_s = 0.01 * 100f32.powf(p[2]);
+        let link = p[3];
+        let true_peak = p[4] >= 0.5;
         let rel = 1.0 - (-1.0 / (rel_s * self.sr)).exp();
         let att = 1.0 - (-3.0 / self.la as f32).exp(); // there in about the look-ahead
         for k in 0..l.len() {
             let (xl, xr) = (l[k] * gin, r[k] * gin);
-            let peak = xl.abs().max(xr.abs());
-            self.q_push(if peak > ceil { ceil / peak } else { 1.0 });
+            let (pl, pr) = if true_peak { (self.tp.peak(0, xl), self.tp.peak(1, xr)) } else { (xl.abs(), xr.abs()) };
+            let both = pl.max(pr);
+            for (side, pk) in [(0, pl), (1, pr)] {
+                let pk = pk + (both - pk) * link;
+                self.q[side].push(if pk > ceil { ceil / pk } else { 1.0 }, self.n, self.la);
+                let want = self.q[side].min();
+                self.env[side] += (want - self.env[side]) * if want < self.env[side] { att } else { rel };
+            }
             self.n += 1;
-            let want = self.q_val[self.q_head];
-            self.env += (want - self.env) * if want < self.env { att } else { rel };
             self.ring[0].write(xl);
             self.ring[1].write(xr);
-            let g = self.env;
             // the hard limit catches what the smoothing didn't quite reach
-            l[k] = (self.ring[0].tap(self.la + 1) * g).clamp(-ceil, ceil);
-            r[k] = (self.ring[1].tap(self.la + 1) * g).clamp(-ceil, ceil);
+            l[k] = (self.ring[0].tap(self.la + 1) * self.env[0]).clamp(-ceil, ceil);
+            r[k] = (self.ring[1].tap(self.la + 1) * self.env[1]).clamp(-ceil, ceil);
         }
     }
     fn reset(&mut self) {
         for r in self.ring.iter_mut() {
             r.clear();
         }
-        self.q_len = 0;
-        self.env = 1.0;
+        for q in self.q.iter_mut() {
+            q.len = 0;
+        }
+        self.env = [1.0; 2];
     }
     fn gain_reduction(&self) -> f32 {
-        -20.0 * self.env.max(1e-6).log10()
+        -20.0 * self.env[0].min(self.env[1]).max(1e-6).log10()
     }
 }
 
@@ -1087,16 +1208,35 @@ mod tests {
     }
 
     #[test]
+    fn limiter_true_peak_catches_what_falls_between_the_samples() {
+        // a sine at a quarter of the rate, phased so every sample is at 0.707 of its real peak
+        let x: Vec<f32> = (0..48000).map(|i| (PI / 2.0 * i as f32 + PI / 4.0).sin()).collect();
+        let mut s = SlotCfg::new(LIMITER);
+        s.p[1] = 0.5; // -6 dB
+        let ceil = db_to_lin(-6.0);
+        let (l, _) = run(&mut rack_of(&[s.clone()]), &x, 128);
+        let mut tp = crate::kit::TruePeak::new();
+        let real = l[24000..].iter().map(|v| tp.peak(0, *v)).fold(0f32, f32::max);
+        assert!(real <= ceil * 1.02, "true peak {real} over {ceil}");
+        s.p[4] = 0.0;
+        let (l, _) = run(&mut rack_of(&[s]), &x, 128);
+        let mut tp = crate::kit::TruePeak::new();
+        let real = l[24000..].iter().map(|v| tp.peak(0, *v)).fold(0f32, f32::max);
+        assert!(real > ceil * 1.2, "sample peaks only: {real}");
+    }
+
+    #[test]
     fn limiter_holds_the_ceiling_and_reports_its_delay() {
         let mut s = SlotCfg::new(LIMITER);
         s.p[0] = 0.5; // +12 dB in
         s.p[1] = 0.5; // ceiling -6 dB
+        s.p[4] = 0.0; // sample peaks (white noise really does go higher between its samples)
         let ceil = db_to_lin(-6.0);
         assert_eq!(s.latency(48000.0), Limiter::lookahead(48000.0) as u32);
         let x = noise(48000);
         let (l, r) = run(&mut rack_of(&[s.clone()]), &x, 128);
         assert!(peak(&l) <= ceil + 1e-6 && peak(&r) <= ceil + 1e-6, "{}", peak(&l));
-        assert!(peak(&l) > ceil * 0.9, "and loud");
+        assert!(peak(&l) > ceil * 0.9, "and loud {} vs {}", peak(&l), ceil);
         // an impulse comes out exactly the look-ahead later
         s.p[0] = 0.0;
         s.p[1] = 1.0;

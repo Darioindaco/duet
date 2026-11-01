@@ -525,3 +525,22 @@ header .phere { flex-shrink: 0; }
 .pkin { width: 56px; height: 16px; margin-top: -2px; padding: 0 3px; border-radius: 4px; border: 1px solid var(--c); background: #08070b; color: var(--text); font: 700 10.5px ui-monospace, monospace; text-align: center; }
 .pk > .keysel { margin: 0 10px 12px; width: calc(100% - 20px); box-sizing: border-box; }
 .pk > .mnote { margin: 8px 10px 0; }
+.pk.eqpro { width: 660px; }
+.pk.multi { width: 600px; }
+.pk.shaper { width: 600px; }
+.eqpwrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.eqpbands { display: flex; gap: 4px; justify-content: center; }
+.eqpbands button { width: 26px; height: 20px; border-radius: 5px; border: 1px solid color-mix(in srgb, var(--b) 50%, transparent); background: transparent; color: var(--b); font: 800 10.5px system-ui, sans-serif; cursor: pointer; opacity: 0.45; }
+.eqpbands button.on { opacity: 1; background: color-mix(in srgb, var(--b) 18%, transparent); }
+.eqpbands button.sel { outline: 2px solid var(--b); outline-offset: 1px; opacity: 1; }
+.pkchoice, .pktoggle { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 6px; min-width: 62px; padding-bottom: 1px; }
+.pkseg { display: flex; border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); margin-top: 14px; }
+.pkseg button { padding: 4px 7px; border: 0; background: rgba(0,0,0,0.3); color: var(--muted); font: 700 10.5px system-ui, sans-serif; cursor: pointer; }
+.pkseg button + button { border-left: 1px solid rgba(255,255,255,0.08); }
+.pkseg button.on { background: var(--c); color: #0b0a0f; }
+.pkdrop { margin-top: 14px; min-width: 84px; padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.35); color: var(--text); font: 700 10.5px system-ui, sans-serif; cursor: pointer; text-align: left; }
+.pkdrop::after { content: " ▾"; opacity: 0.5; float: right; }
+.pktoggle button { margin-top: 18px; width: 34px; height: 18px; border-radius: 9px; border: 1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.45); position: relative; cursor: pointer; padding: 0; }
+.pktoggle button i { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #6b6878; transition: left 0.12s, background 0.12s; }
+.pktoggle button.on { background: color-mix(in srgb, var(--c) 30%, #000); border-color: var(--c); }
+.pktoggle button.on i { left: 18px; background: var(--c); box-shadow: 0 0 8px var(--c); }

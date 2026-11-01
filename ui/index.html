@@ -769,8 +769,11 @@ const FX = [
     ["size", "Size", pct], ["damp", "Damp", pct], ["mix", "Mix", pct], ["width", "Width", pct], ["dry", "Dry", pct]] },
   { id: "nam", name: "NAM Amp", sub: "neural amp model", color: "#e7dccb", knobs: [
     ["input", "Input", (v) => fmtTrim(v)], ["output", "Output", (v) => fmtTrim(v)]] },
+  ...PK_FX,
   { id: "vst", name: "VST3", sub: "plugin", color: "#9fb4ff", knobs: [["mix", "Mix", pct]] },
 ];
+// the compressor and limiter grew knobs (plugkit.js has them all)
+for (const f of FX) if (f.id === "comp" || f.id === "limiter") f.knobs = pkKnobs(f.id);
 function fmtTrim(v) { const db = -12 + 24 * v; return (db > 0.05 ? "+" : "") + db.toFixed(1) + " dB"; }
 const FX_DEFAULTS = {
   comp: { threshold: 0.5, ratio: 0.5, makeup: 0.3, attack: 0.566, release: 0.588 }, drive: { drive: 0.4, tone: 0.5, level: 0.5 },
@@ -780,7 +783,10 @@ const FX_DEFAULTS = {
   vst: { mix: 1 },
   eq: { lowcut: 0, low: 0.5, lowfreq: 0.402, mid: 0.5, midfreq: 0.5, q: 0.343, high: 0.5, highfreq: 0.727, highcut: 1 },
   limiter: { gain: 0, ceiling: 0.992, release: 0.4 },
+  ...PK_DEFAULTS,
 };
+Object.assign(FX_DEFAULTS.comp, PK_NEW_DEFAULTS.comp);
+Object.assign(FX_DEFAULTS.limiter, PK_NEW_DEFAULTS.limiter);
 
 // ---------- persistence (per machine, best effort) ----------
 const store = {
@@ -1668,7 +1674,14 @@ async function fxToggle(t, pos) {
 
 // "+" on a strip: an effect, a VST, or a preset for the whole rack
 function addFxMenu(t, x, y) {
-  const items = FX.filter((f) => f.id !== "vst").map((f) => [f.name, "", () => addFx(t, f.id)]);
+  // by kind, Duet's pro plugins first in each
+  const GROUPS = { EQ: ["eqpro", "eq"], Dynamics: ["comp", "multi", "limiter", "clipper"], Color: ["saturate", "drive", "nam"],
+    Space: ["reverb", "delay"], Movement: ["shaper", "chorus", "tremolo"] };
+  const items = [];
+  for (const [g, ids] of Object.entries(GROUPS)) {
+    items.push(["— " + g + " —", "", () => {}, true]);
+    for (const id of ids) { const f = FXMETA[id]; if (f) items.push(["   " + f.name, f.sub, () => addFx(t, f.id)]); }
+  }
   items.push(["VST3 plugin…", "", () => { ui.sel = t; selectStrip(t); openVstBrowser(); }]);
   if (t !== "M") for (const name of init.presets) items.push(["Preset: " + name, "", async () => {
     if (stripCfg(t).rack.length && !confirm(`Replace the effects on ${stripName(t)} with the "${name}" preset?`)) return;
@@ -2118,9 +2131,22 @@ function demoApi() {
     rack_preset: async (tg, name) => { target(tg).rack = PRESET_RACKS[name].map((k) => slot(k)); return copy(); },
     rack_load: async (tg, slots) => { target(tg).rack = slots; },
     // made-up levels that move like music: a beat at 96, a little lower after a compressor
+    // made-up pictures for the plugin windows: a spectrum like a mix, bands that move, a pump in time
+    rack_scope: async (tg, pos) => {
+      const sl = target(tg).rack[pos], t = performance.now() / 1000, beat = (t * 1.6) % 1, hit = Math.exp(-beat * 5);
+      if (!sl) return [];
+      if (sl.kind === "eqpro") {
+        const pre = Array.from({ length: 64 }, (_, i) => -22 - i * 0.55 - (i < 6 ? (6 - i) * 3 : 0) + 7 * hit * (i < 14 ? 1 : 0.3) + 3 * Math.sin(t * 2 + i * 0.6) * Math.random());
+        const post = pre.map((v, i) => v + (sl.b3on >= 0.5 ? 0 : 0) + Math.sin(i * 0.4) * 0.8);
+        return [...pre, ...post, ...Array.from({ length: 8 }, (_, i) => -24 + 48 * (sl[`b${i + 1}gain`] ?? 0.5) + (-24 + 48 * (sl[`b${i + 1}dyn`] ?? 0.5)) * hit)];
+      }
+      if (sl.kind === "multi") return [0, 1, 2].flatMap((b) => { const lv = -20 - b * 6 + 12 * hit - 4 * Math.random(); return [lv, lv > -26 ? -(lv + 26) * 0.6 : (-40 - lv) > 0 ? 0 : 6]; });
+      if (sl.kind === "shaper") { const ph = (t * 96 / 60) % 1; return [ph, 1 - (sl.depth ?? 1) * (1 - Math.min(1, ph / 0.6) ** 0.5)]; }
+      return [];
+    },
     rack_meters: async (tg) => target(tg).rack.map((sl) => {
       const t = performance.now() / 1000, beat = Math.exp(-((t * 1.6) % 1) * 5), lvl = 0.25 + 0.55 * beat + 0.05 * Math.random();
-      const gr = sl.on && (sl.kind === "comp" || sl.kind === "limiter") ? Math.max(0, 20 * Math.log10(lvl / 0.3)) * (sl.kind === "comp" ? 0.6 : 1) : 0;
+      const gr = sl.on && ["comp", "limiter", "clipper", "multi", "shaper"].includes(sl.kind) ? Math.max(0, 20 * Math.log10(lvl / 0.3)) * (sl.kind === "comp" ? 0.6 : 1) : 0;
       return [lvl, sl.on ? lvl * 10 ** (-gr / 20) * 1.1 : lvl, gr];
     }),
     send_signal: async () => {},

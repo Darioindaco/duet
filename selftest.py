@@ -1219,8 +1219,9 @@ def test_effects_cpu():
     """Worst realistic load: 4 inputs, each with every built-in effect (a full
     rack: an empty NAM slot does nothing anyway), monitored, all in stereo."""
     e = Engine()
-    kinds = [fx["name"] for fx in Engine.effects() if fx["name"] not in ("vst", "nam")]  # a VST slot needs a plugin
-    assert len(kinds) == 8, kinds
+    every = [fx["name"] for fx in Engine.effects() if fx["name"] not in ("vst", "nam")]  # a VST slot needs a plugin
+    assert len(every) == 13, every
+    kinds = [k for k in every if k not in ("eqpro", "clipper", "multi", "saturate", "shaper")]
     try:
         e.rack_add("L0", "vst")
         raise AssertionError("adding a VST slot without a plugin should be refused")
@@ -1241,6 +1242,27 @@ def test_effects_cpu():
     print(f"effects: ok  (4 strips x 8 effects: {us:.1f} us per block of {N / SR * 1e6:.0f} us)")
     assert us < 1500, us
     assert set(Engine.presets()) == {"Clean", "Dreamy", "Crunch", "Vocal", "Surf"}
+    # Duet's own pro plugins, set heavy: all 8 EQ bands on and dynamic, 8x oversampling
+    pro = ["eqpro", "multi", "clipper", "saturate", "shaper", "comp", "limiter", "eq"]
+    for i in range(4):
+        t = f"L{i}"
+        e.rack_load(t, [{"kind": k, "on": True} for k in pro])
+        for b in range(1, 9):
+            e.rack_set(t, 0, f"b{b}on", 1)
+            e.rack_set(t, 0, f"b{b}dyn", 0.3)
+        e.rack_set(t, 2, "os", 1.0)
+        e.rack_set(t, 3, "os", 1.0)
+    for _ in range(600):
+        out = e.process(x, 4)
+    assert np.all(np.isfinite(out))
+    us2 = e.state()["cpu_us"]
+    print(f"effects: ok  (4 strips x 8 pro plugins, 8x oversampling: {us2:.1f} us per block of {N / SR * 1e6:.0f} us)")
+    assert us2 < 3000, us2
+    # the EQ Pro's window: spectra before and after, and where each band is now
+    sc = e.rack_scope("L0", 0)
+    assert len(sc) == 136 and max(sc[:64]) > -60, sc[:8]
+    # 8x oversampling makes a slot late; the strip reports it
+    assert e.mixer()["local"][0]["rack"][2]["os"] == 1.0
     e.rack_preset("L0", "Crunch")
     assert [s["kind"] for s in e.mixer()["local"][0]["rack"]] == ["comp", "drive", "reverb"]
     e.rack_preset("L0", "Vocal")

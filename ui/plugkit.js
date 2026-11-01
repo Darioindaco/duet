@@ -12,13 +12,33 @@
 
 // ---------- what each knob means ----------
 // [key, label, kind, a, b, unit, extra]: lin a..b, log a..b, pct; "off" values at the ends
+const EQP_TYPES = ["Bell", "Low shelf", "High shelf", "Low cut", "High cut", "Notch", "Band pass"];
 const PK_SPEC = {
   eq: [["lowcut", "Low cut", "log", 20, 800, "Hz", { offBelow: 0.005 }], ["low", "Low", "lin", -15, 15, "dB"], ["lowfreq", "Low freq", "log", 30, 600, "Hz"],
     ["mid", "Mid", "lin", -15, 15, "dB"], ["midfreq", "Mid freq", "log", 100, 10000, "Hz"], ["q", "Q", "log", 0.3, 9.99, ""],
     ["high", "High", "lin", -15, 15, "dB"], ["highfreq", "High freq", "log", 1500, 15000, "Hz"], ["highcut", "High cut", "log", 1000, 20000, "Hz", { offAbove: 0.995 }]],
   comp: [["threshold", "Threshold", "lin", -40, -4, "dB"], ["ratio", "Ratio", "lin", 1, 12, ":1"], ["attack", "Attack", "log", 0.1, 100, "ms"],
-    ["release", "Release", "log", 10, 1000, "ms"], ["makeup", "Makeup", "lin", 0, 18, "dB"]],
-  limiter: [["gain", "Input gain", "lin", 0, 24, "dB"], ["ceiling", "Ceiling", "lin", -12, 0, "dB"], ["release", "Release", "log", 10, 1000, "ms"]],
+    ["release", "Release", "log", 10, 1000, "ms"], ["makeup", "Makeup", "lin", 0, 18, "dB"], ["knee", "Knee", "lin", 0, 24, "dB"],
+    ["mix", "Mix", "pct"], ["schp", "SC low cut", "log", 20, 500, "Hz", { offBelow: 0.005 }], ["char", "Character", "choice", ["Clean", "Glue", "Punch", "Smooth"]]],
+  limiter: [["gain", "Input gain", "lin", 0, 24, "dB"], ["ceiling", "Ceiling", "lin", -12, 0, "dB"], ["release", "Release", "log", 10, 1000, "ms"],
+    ["link", "Stereo link", "pct"], ["tp", "True peak", "toggle"]],
+  clipper: [["input", "Input", "lin", 0, 24, "dB"], ["ceiling", "Ceiling", "lin", -24, 0, "dB"], ["knee", "Softness", "pct"],
+    ["os", "Oversampling", "choice", ["Off", "2x", "4x", "8x"]], ["mix", "Mix", "pct"], ["output", "Output", "lin", -12, 12, "dB"], ["delta", "Delta", "toggle"]],
+  saturate: [["drive", "Drive", "lin", 0, 36, "dB"], ["mode", "Mode", "choice", ["Tape", "Tube", "Transistor", "Fuzz", "Rectify"]], ["bias", "Asymmetry", "pct"],
+    ["tone", "Tilt", "lin", -6, 6, "dB"], ["mix", "Mix", "pct"], ["output", "Output", "lin", -12, 12, "dB"],
+    ["os", "Oversampling", "choice", ["Off", "2x", "4x", "8x"]], ["auto", "Auto gain", "toggle"]],
+  multi: [["depth", "Depth", "pct"], ["time", "Time", "log", 0.1, 10, "x"], ["upward", "Upward", "pct"], ["downward", "Downward", "pct"],
+    ["input", "Input", "lin", -12, 24, "dB"], ["output", "Output", "lin", -12, 12, "dB"], ["xlow", "Low / mid", "log", 40, 1000, "Hz"], ["xhigh", "Mid / high", "log", 1000, 12000, "Hz"],
+    ...["low", "mid", "high"].flatMap((b) => [[b + "down", "Down", "lin", -60, 0, "dB"], [b + "up", "Up", "lin", -60, 0, "dB"], [b + "gain", "Gain", "lin", -24, 24, "dB"]])],
+  shaper: [["depth", "Depth", "pct"], ["rate", "Rate", "choice", ["1/32", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars"]],
+    ["shape", "Shape", "choice", ["Pump", "Sine", "Square", "Saw down", "Saw up", "Gate"]], ["curve", "Curve", "pct"], ["hold", "Hold", "lin", 0, 50, "%"],
+    ["phase", "Phase", "lin", 0, 360, "°"], ["trig", "Trigger", "choice", ["Tempo", "Sidechain"]], ["thresh", "Threshold", "lin", -48, 0, "dB"],
+    ["band", "Band", "choice", ["Full", "Lows", "Highs"]], ["xover", "Split", "log", 40, 2000, "Hz"], ["mix", "Mix", "pct"], ["smooth", "Smooth", "log", 0.5, 20, "ms"]],
+  eqpro: [...Array.from({ length: 8 }, (_, i) => i + 1).flatMap((b) => [
+    [`b${b}on`, "On", "toggle"], [`b${b}type`, "Type", "choice", EQP_TYPES], [`b${b}freq`, "Freq", "log", 20, 20000, "Hz"],
+    [`b${b}gain`, "Gain", "lin", -24, 24, "dB"], [`b${b}q`, "Q", "log", 0.1, 18, ""], [`b${b}slope`, "Slope", "choice", ["12 dB", "24 dB", "48 dB"]],
+    [`b${b}ch`, "Channel", "choice", ["Stereo", "Mid", "Side", "Left", "Right"]], [`b${b}dyn`, "Dynamic", "lin", -24, 24, "dB"], [`b${b}thr`, "Threshold", "lin", -60, 0, "dB"]]),
+    ["output", "Output", "lin", -24, 24, "dB"], ["auto", "Auto gain", "toggle"]],
   drive: [["drive", "Drive", "pct"], ["tone", "Tone", "pct"], ["level", "Level", "pct"]],
   chorus: [["rate", "Rate", "lin", 0.1, 3.1, "Hz"], ["depth", "Depth", "pct"], ["mix", "Mix", "pct"]],
   tremolo: [["rate", "Rate", "lin", 0.5, 12, "Hz"], ["depth", "Depth", "pct"], ["stereo", "Stereo", "pct"]],
@@ -30,8 +50,21 @@ const PK_SPEC = {
 // which knobs sit together, and under which heading
 const PK_GROUPS = {
   eq: [["Cuts", ["lowcut", "highcut"]], ["Low", ["low", "lowfreq"]], ["Mid", ["mid", "midfreq", "q"]], ["High", ["high", "highfreq"]]],
-  comp: [["Detector", ["threshold", "ratio"]], ["Timing", ["attack", "release"]], ["Output", ["makeup"]]],
-  limiter: [["", ["gain", "ceiling", "release"]]],
+  comp: [["Detector", ["threshold", "ratio", "knee"]], ["Timing", ["attack", "release"]], ["Output", ["makeup", "mix"]], ["Character", ["char", "schp"]]],
+  limiter: [["Limit", ["gain", "ceiling", "release"]], ["Stereo", ["link", "tp"]]],
+  clipper: [["Clip", ["input", "ceiling", "knee"]], ["Quality", ["os", "delta"]], ["Output", ["mix", "output"]]],
+  saturate: [["Color", ["mode", "drive", "bias", "tone"]], ["Output", ["mix", "output", "auto"]], ["Quality", ["os"]]],
+  multi: [["Amount", ["depth", "time", "upward", "downward"]], ["Low", ["lowdown", "lowup", "lowgain"]], ["Mid", ["middown", "midup", "midgain"]],
+    ["High", ["highdown", "highup", "highgain"]], ["Split", ["xlow", "xhigh"]], ["Gain", ["input", "output"]]],
+  shaper: [["Shape", ["shape", "rate", "depth", "curve", "hold", "phase"]], ["Trigger", ["trig", "thresh"]], ["Band", ["band", "xover"]], ["Output", ["mix", "smooth"]]],
+  // the selected band's knobs (the display picks the band)
+  eqpro: (slot, st) => {
+    const b = (st.band ?? 0) + 1;
+    const type = pkReal(pkSpec("eqpro", `b${b}type`), slot[`b${b}type`] ?? PK_DEFAULTS.eqpro[`b${b}type`]);
+    const cut = type === 3 || type === 4, flat = type >= 3;
+    return [[`Band ${b}`, [`b${b}on`, `b${b}type`, `b${b}freq`, ...(flat ? [] : [`b${b}gain`]), `b${b}q`, ...(cut ? [`b${b}slope`] : []), `b${b}ch`]],
+      ...(flat ? [] : [["Dynamic", [`b${b}dyn`, `b${b}thr`]]]), ["Output", ["output", "auto"]]];
+  },
   delay: [["Echo", ["time", "feedback", "pingpong"]], ["Mix", ["mix", "dry"]]],
   reverb: [["Room", ["size", "damp", "width"]], ["Mix", ["mix", "dry"]]],
 };
@@ -39,17 +72,25 @@ const PK_GROUPS = {
 function pkSpec(kind, key) { return (PK_SPEC[kind] || []).find((s) => s[0] === key); }
 function pkReal(spec, v) {
   const [, , k, a, b] = spec;
+  if (k === "choice") return Math.round(v * (a.length - 1));
+  if (k === "toggle") return v >= 0.5 ? 1 : 0;
   return k === "log" ? a * (b / a) ** v : k === "lin" ? a + (b - a) * v : v * 100;
 }
 function pkNorm(spec, real) {
   const [, , k, a, b] = spec;
+  if (k === "choice") return Math.max(0, Math.min(1, real / Math.max(1, a.length - 1)));
+  if (k === "toggle") return real ? 1 : 0;
   const v = k === "log" ? Math.log(Math.max(1e-9, real) / a) / Math.log(b / a) : k === "lin" ? (real - a) / (b - a) : real / 100;
   return Math.max(0, Math.min(1, v));
 }
 function pkFmt(spec, v) {
   const x = spec[6] || {};
   if ((x.offBelow != null && v < x.offBelow) || (x.offAbove != null && v >= x.offAbove)) return "off";
+  if (spec[2] === "choice") return spec[3][pkReal(spec, v)];
+  if (spec[2] === "toggle") return v >= 0.5 ? "On" : "Off";
   const r = pkReal(spec, v), u = spec[5] ?? "%";
+  if (u === "x") return r.toFixed(r < 1 ? 2 : 1) + "x";
+  if (u === "°") return Math.round(r) + "°";
   if (u === "Hz" && r < 10) return r.toFixed(2) + " Hz";
   if (u === "Hz") return r >= 1000 ? (r / 1000).toFixed(r >= 10000 ? 1 : 2) + " kHz" : Math.round(r) + " Hz";
   if (u === "ms") return r >= 1000 ? (r / 1000).toFixed(2) + " s" : r >= 10 ? Math.round(r) + " ms" : r.toFixed(1) + " ms";
@@ -170,6 +211,55 @@ function pkKnob(o) {
   return el;
 }
 
+// ---------- a choice and a switch (the same shape as a knob: setValue, onChange, onGesture) ----------
+function pkChoice(o) {
+  const opts = o.spec[3], el = document.createElement("div");
+  el.className = "pkchoice";
+  el.style.setProperty("--c", o.color);
+  let v = o.value;
+  const idx = () => Math.round(v * (opts.length - 1));
+  // a few short options: side by side; more: a menu
+  const seg = opts.length <= 4 && opts.join("").length <= 18;
+  el.innerHTML = (seg ? `<div class="pkseg">${opts.map((x, i) => `<button data-i="${i}">${esc(x)}</button>`).join("")}</div>`
+    : `<button class="pkdrop"></button>`) + `<div class="pkl">${esc(o.label)}</div>`;
+  const pick = (i) => {
+    const nv = opts.length > 1 ? i / (opts.length - 1) : 0;
+    if (Math.abs(nv - v) < 1e-6) return;
+    o.onGesture?.(); v = nv; render(); o.onChange(v);
+  };
+  const render = () => {
+    if (seg) el.querySelectorAll("button").forEach((b) => b.classList.toggle("on", +b.dataset.i === idx()));
+    else el.querySelector(".pkdrop").textContent = opts[idx()];
+  };
+  if (seg) el.querySelectorAll("button").forEach((b) => (b.onclick = () => pick(+b.dataset.i)));
+  else el.querySelector(".pkdrop").onclick = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    showCtx(opts.map((x, i) => [(i === idx() ? "✓ " : "   ") + x, "", () => pick(i)]), r.left, r.bottom + 2);
+  };
+  el.addEventListener("wheel", (e) => { e.preventDefault(); pick(Math.max(0, Math.min(opts.length - 1, idx() + Math.sign(e.deltaY)))); }, { passive: false });
+  el.setValue = (nv) => { v = nv; render(); };
+  render();
+  return el;
+}
+
+function pkToggle(o) {
+  const el = document.createElement("div");
+  el.className = "pktoggle";
+  el.style.setProperty("--c", o.color);
+  el.innerHTML = `<button role="switch"><i></i></button><div class="pkl">${esc(o.label)}</div>`;
+  const b = el.querySelector("button");
+  let v = o.value;
+  const render = () => { b.classList.toggle("on", v >= 0.5); b.setAttribute("aria-checked", v >= 0.5); };
+  b.onclick = () => { o.onGesture?.(); v = v >= 0.5 ? 0 : 1; render(); o.onChange(v); };
+  el.setValue = (nv) => { v = nv; render(); };
+  render();
+  return el;
+}
+
+function pkControl(o) {
+  return o.spec?.[2] === "choice" ? pkChoice(o) : o.spec?.[2] === "toggle" ? pkToggle(o) : pkKnob(o);
+}
+
 // ---------- a meter ----------
 function pkMeter(label, kind = "level") {
   const el = document.createElement("div");
@@ -209,6 +299,8 @@ function pkPanel(w, slot) {
     slot[k] = v;
     api.rack_set(t, pos, k, v);
     if (from !== "knob") knobs[k]?.setValue(v);
+    // a band that changes type gets the knobs that type has
+    if (typeof PK_GROUPS[kind] === "function" && /type$/.test(k)) requestAnimationFrame(renderKnobs);
     display?.redraw?.();
     saveMixer();
   };
@@ -287,20 +379,29 @@ function pkPanel(w, slot) {
   // --- the display and the meters
   const mid = document.createElement("div");
   mid.className = "pkmid";
-  const display = PK_DISPLAY[kind]?.(slot, color, setParam, gesture, t, pos);
+  st.band ??= 0;
+  const display = PK_DISPLAY[kind]?.(slot, color, setParam, gesture, t, pos, st);
   if (display) mid.append(display);
   const meters = document.createElement("div");
   meters.className = "pkmeters";
-  const mIn = pkMeter("In"), mOut = pkMeter("Out"), mGr = kind === "comp" || kind === "limiter" ? pkMeter("GR", "gr") : null;
+  const mIn = pkMeter("In"), mOut = pkMeter("Out"), mGr = PK_GR.has(kind) ? pkMeter("GR", "gr") : null;
   meters.append(mIn, ...(mGr ? [mGr] : []), mOut);
   mid.append(meters);
   root.append(mid);
   w.meter = (m) => { mIn.set(m[0]); mOut.set(m[1]); mGr?.set(m[2]); display?.live?.(m); };
+  w.scope = display?.scope ? (sc) => display.scope(sc) : null;
+  if (display) display.select = (b) => { st.band = b; renderKnobs(); display.redraw?.(); };
+  root.classList.add(kind);
 
   // --- the knobs, grouped
-  const groups = PK_GROUPS[kind] || [["", spec.map((s) => s[0])]];
   const row = document.createElement("div");
   row.className = "pkknobs";
+  root.append(row);
+  function renderKnobs() {
+  row.replaceChildren();
+  for (const k of Object.keys(knobs)) delete knobs[k];
+  const g0 = PK_GROUPS[kind];
+  const groups = typeof g0 === "function" ? g0(slot, st) : g0 || [["", spec.map((s) => s[0])]];
   for (const [title, keys] of groups) {
     const g = document.createElement("div");
     g.className = "pkgroup";
@@ -310,7 +411,7 @@ function pkPanel(w, slot) {
     for (const k of keys) {
       const s = pkSpec(kind, k);
       if (!s) continue;
-      const kn = pkKnob({ label: s[1], value: slot[k] ?? FX_DEFAULTS[kind][k], def: FX_DEFAULTS[kind][k], spec: s, color,
+      const kn = pkControl({ label: s[1], value: slot[k] ?? FX_DEFAULTS[kind][k], def: FX_DEFAULTS[kind][k], spec: s, color,
         onGesture: gesture, onChange: (v) => setParam(k, v, "knob") });
       knobs[k] = kn;
       ks.append(autoOnControl(kn, t, `fx:${pos}:${kind}:${k}`));
@@ -318,13 +419,27 @@ function pkPanel(w, slot) {
     g.append(ks);
     row.append(g);
   }
-  root.append(row);
+  }
+  renderKnobs();
   // what only some effects have: the compressor's sidechain, errors
-  if (kind === "comp" && (t[0] === "T" || t === "M")) root.append(keySelect(t, pos, slot));
+  if (PK_KEYED.has(kind) && (t[0] === "T" || t === "M")) root.append(keySelect(t, pos, slot));
   if (slot.error) root.insertAdjacentHTML("afterbegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
   root.classList.toggle("off", !slot.on);
   return root;
 }
+
+// effects that show how much they turn down, and that can listen to another track
+const PK_GR = new Set(["comp", "limiter", "clipper", "multi", "shaper"]);
+const PK_KEYED = new Set(["comp", "shaper"]);
+
+// what the displays draw from the engine (spectra, band levels), 25 times a second
+setInterval(async () => {
+  if (typeof fxw === "undefined" || !fxw.size || !api.rack_scope) return;
+  for (const w of fxw.values()) {
+    if (!w.scope) continue;
+    try { w.scope(await api.rack_scope(w.t, w.pos)); } catch (e) {}
+  }
+}, 40);
 
 // the meters of every open window, a dozen times a second
 setInterval(async () => {
@@ -609,3 +724,447 @@ function pkLfo(slot, color, kind) {
   cv.live = () => cv.redraw();
   return cv;
 }
+
+// ======================================================================================
+// Duet's own plugins (engine: plugins.rs): their entries in the effect list, defaults,
+// presets and displays.
+// ======================================================================================
+
+// the defaults, the same as fx.rs
+const EQP_FREQS = [50, 120, 300, 800, 2000, 5000, 10000, 16000];
+const PK_DEFAULTS = {
+  eqpro: Object.assign({ output: 0.5, auto: 0 }, ...EQP_FREQS.map((f, i) => {
+    const b = i + 1;
+    return { [`b${b}on`]: 0, [`b${b}type`]: (b === 1 ? 3 : b === 8 ? 4 : 0) / 6, [`b${b}freq`]: Math.log(f / 20) / Math.log(1000), [`b${b}gain`]: 0.5,
+      [`b${b}q`]: Math.log(0.7071 / 0.1) / Math.log(180), [`b${b}slope`]: 0.5, [`b${b}ch`]: 0, [`b${b}dyn`]: 0.5, [`b${b}thr`]: 0.6 };
+  })),
+  clipper: { input: 0, ceiling: 1, knee: 0.3, os: 0.667, mix: 1, output: 0.5, delta: 0 },
+  multi: { depth: 0.5, time: 0.5, upward: 1, downward: 1, input: 0.3333, output: 0.5, xlow: 0.2493, xhigh: 0.3697,
+    lowdown: 0.5, lowup: 0.3333, lowgain: 0.5, middown: 0.5, midup: 0.3333, midgain: 0.5, highdown: 0.5, highup: 0.3333, highgain: 0.5 },
+  saturate: { drive: 0.25, mode: 0, bias: 0, tone: 0.5, mix: 1, output: 0.5, os: 0.333, auto: 1 },
+  shaper: { depth: 1, rate: 0.5, shape: 0, curve: 0.5, hold: 0.1, phase: 0, trig: 0, thresh: 0.5, band: 0, xover: 0.3486, mix: 1, smooth: 0 },
+};
+const PK_NEW_DEFAULTS = { comp: { knee: 0, mix: 1, schp: 0, char: 0 }, limiter: { link: 1, tp: 1 } };
+const pkKnobs = (kind) => PK_SPEC[kind].map((s) => [s[0], s[1], (v) => pkFmt(s, v)]);
+const PK_FX = [
+  { id: "eqpro", name: "EQ Pro", sub: "8-band, dynamic, M/S", color: "#4fd1ff", knobs: pkKnobs("eqpro"), group: "EQ" },
+  { id: "multi", name: "Multiband", sub: "up and down, 3 bands", color: "#ff8a3d", knobs: pkKnobs("multi"), group: "Dynamics" },
+  { id: "clipper", name: "Clipper", sub: "loud without overs", color: "#ff4d6d", knobs: pkKnobs("clipper"), group: "Dynamics" },
+  { id: "saturate", name: "Saturator", sub: "tape, tube, fuzz", color: "#ffb347", knobs: pkKnobs("saturate"), group: "Color" },
+  { id: "shaper", name: "Shaper", sub: "pump in time", color: "#7cf29a", knobs: pkKnobs("shaper"), group: "Movement" },
+];
+
+// presets in real units, made into knob values
+function pkPre(kind, real) {
+  const out = {};
+  for (const [k, v] of Object.entries(real)) {
+    const s = pkSpec(kind, k);
+    out[k] = typeof v === "string" ? pkNorm(s, s[3].indexOf(v)) : s[2] === "toggle" || s[2] === "pct" ? (s[2] === "pct" ? v / 100 : v) : pkNorm(s, v);
+  }
+  return out;
+}
+// an EQ Pro setting: [type, Hz, dB, Q, extra] per band, the rest off
+function eqpPre(bands, extra = {}) {
+  const out = {};
+  for (let b = 1; b <= 8; b++) out[`b${b}on`] = 0;
+  bands.forEach(([type, f, g, q, x = {}], i) => {
+    const b = i + 1;
+    Object.assign(out, pkPre("eqpro", { [`b${b}on`]: 1, [`b${b}type`]: type, [`b${b}freq`]: f, [`b${b}gain`]: g, [`b${b}q`]: q,
+      ...Object.fromEntries(Object.entries(x).map(([k, v]) => [`b${b}${k}`, v])) }));
+  });
+  return Object.assign(out, pkPre("eqpro", extra));
+}
+Object.assign(PK_PRESETS, {
+  eqpro: {
+    "Vocal clarity": eqpPre([["Low cut", 90, 0, 0.71], ["Bell", 280, -3, 1.4], ["Bell", 3200, 2.5, 0.9], ["High shelf", 11000, 3, 0.7]]),
+    "De-mud (dynamic)": eqpPre([["Bell", 320, 0, 1.2, { dyn: -6, thr: -30 }]]),
+    "Kick + bass room": eqpPre([["Low cut", 28, 0, 0.71, { slope: "48 dB" }], ["Bell", 60, 2, 1], ["Bell", 400, -4, 1.6], ["Bell", 3500, 2, 1.5]]),
+    "Wide top (side)": eqpPre([["Low cut", 150, 0, 0.71, { ch: "Side" }], ["High shelf", 9000, 3, 0.7, { ch: "Side" }]]),
+    "Master polish": eqpPre([["Low cut", 25, 0, 0.71], ["Low shelf", 90, 1, 0.7], ["Bell", 2500, -1, 0.8], ["High shelf", 14000, 1.5, 0.7]]),
+    "Telephone": eqpPre([["Low cut", 500, 0, 0.71, { slope: "48 dB" }], ["Bell", 1500, 6, 1.5], ["High cut", 3000, 0, 0.71, { slope: "48 dB" }]]),
+    "De-ess (dynamic)": eqpPre([["Bell", 6500, 0, 2.5, { dyn: -9, thr: -32 }]]),
+  },
+  clipper: {
+    "Drum bus smash": pkPre("clipper", { input: 6, ceiling: -1, knee: 20, os: "4x" }),
+    "808 grit": pkPre("clipper", { input: 9, ceiling: -3, knee: 0, os: "2x" }),
+    "Master transparent": pkPre("clipper", { input: 2, ceiling: -0.3, knee: 60, os: "8x" }),
+    "Hard and loud": pkPre("clipper", { input: 12, ceiling: -0.5, knee: 0, os: "4x" }),
+  },
+  saturate: {
+    "Warm tape": pkPre("saturate", { mode: "Tape", drive: 8, tone: -1.5, mix: 100 }),
+    "Tube vocal": pkPre("saturate", { mode: "Tube", drive: 10, bias: 30, tone: 1, mix: 70 }),
+    "Bass growl": pkPre("saturate", { mode: "Transistor", drive: 18, mix: 60 }),
+    "Fuzz lead": pkPre("saturate", { mode: "Fuzz", drive: 26, tone: 2, mix: 100 }),
+    "Octave up": pkPre("saturate", { mode: "Rectify", drive: 6, mix: 50 }),
+  },
+  multi: {
+    "OTT classic": pkPre("multi", { depth: 100 }),
+    "Gentle glue": pkPre("multi", { depth: 30, upward: 40, downward: 70 }),
+    "Vocal air": pkPre("multi", { depth: 45, lowgain: -3, highgain: 3 }),
+    "Squash": pkPre("multi", { depth: 100, time: 0.5, input: 4 }),
+  },
+  shaper: {
+    "Quarter pump": pkPre("shaper", { shape: "Pump", rate: "1/4", depth: 100, curve: 50, hold: 5 }),
+    "Lows only pump": pkPre("shaper", { shape: "Pump", rate: "1/4", depth: 100, band: "Lows", xover: 150 }),
+    "Sidechain duck": pkPre("shaper", { trig: "Sidechain", shape: "Pump", rate: "1/8", depth: 90, thresh: -24 }),
+    "Eighth chop": pkPre("shaper", { shape: "Square", rate: "1/8", depth: 100 }),
+    "Slow swell": pkPre("shaper", { shape: "Saw up", rate: "1 bar", depth: 80 }),
+    "Trance gate": pkPre("shaper", { shape: "Gate", rate: "1/4", depth: 100, smooth: 2 }),
+  },
+});
+
+// --- the EQ Pro's filters, as plugins.rs makes them ---
+function rbjJs(kind, f, q, g, sr) {
+  const w = 2 * Math.PI * Math.max(5, Math.min(f, sr * 0.49)) / sr, c = Math.cos(w), sn = Math.sin(w), al = sn / (2 * q), A = 10 ** (g / 40);
+  const n = (b, a) => [b[0] / a[0], b[1] / a[0], b[2] / a[0], a[1] / a[0], a[2] / a[0]];
+  switch (kind) {
+    case "lp": return n([(1 - c) / 2, 1 - c, (1 - c) / 2], [1 + al, -2 * c, 1 - al]);
+    case "hp": return n([(1 + c) / 2, -(1 + c), (1 + c) / 2], [1 + al, -2 * c, 1 - al]);
+    case "bp": return n([al, 0, -al], [1 + al, -2 * c, 1 - al]);
+    case "notch": return n([1, -2 * c, 1], [1 + al, -2 * c, 1 - al]);
+    case "peak": return n([1 + al * A, -2 * c, 1 - al * A], [1 + al / A, -2 * c, 1 - al / A]);
+    default: {
+      const sq = 2 * Math.sqrt(A) * al;
+      return kind === "hs"
+        ? n([A * ((A + 1) + (A - 1) * c + sq), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - sq)], [(A + 1) - (A - 1) * c + sq, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - sq])
+        : n([A * ((A + 1) - (A - 1) * c + sq), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - sq)], [(A + 1) + (A - 1) * c + sq, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - sq]);
+    }
+  }
+}
+function eqpBand(slot, i) {
+  const b = i + 1, v = (k) => slot[`b${b}${k}`] ?? PK_DEFAULTS.eqpro[`b${b}${k}`], sp = (k) => pkSpec("eqpro", `b${b}${k}`);
+  return { i, on: v("on") >= 0.5, type: pkReal(sp("type"), v("type")), freq: pkReal(sp("freq"), v("freq")), gain: pkReal(sp("gain"), v("gain")),
+    q: pkReal(sp("q"), v("q")), slope: [12, 24, 48][pkReal(sp("slope"), v("slope"))], ch: pkReal(sp("ch"), v("ch")),
+    dyn: pkReal(sp("dyn"), v("dyn")), thr: pkReal(sp("thr"), v("thr")) };
+}
+function eqpStages(b, gain, sr) {
+  const { freq: f, q } = b;
+  if (b.type === 0) return [rbjJs("peak", f, q, gain, sr)];
+  if (b.type === 1) return [rbjJs("ls", f, Math.min(q, 4), gain, sr)];
+  if (b.type === 2) return [rbjJs("hs", f, Math.min(q, 4), gain, sr)];
+  if (b.type === 5) return [rbjJs("notch", f, q, 0, sr)];
+  if (b.type === 6) return [rbjJs("bp", f, q, 0, sr)];
+  const qs = b.slope === 12 ? [0.7071] : b.slope === 24 ? [0.5412, 1.3066] : [0.5098, 0.6013, 0.9, 2.5629];
+  return qs.map((bq, i) => rbjJs(b.type === 3 ? "hp" : "lp", f, i === qs.length - 1 ? bq * q / 0.7071 : bq, 0, sr));
+}
+const EQP_COLORS = ["#ff6b6b", "#ffa94d", "#ffd43b", "#69db7c", "#38d9a9", "#4dabf7", "#9775fa", "#f783ac"];
+
+Object.assign(PK_DISPLAY, {
+  // EQ Pro: the spectrum before (grey) and after (colour), every band's curve and the sum, a handle
+  // per band. Drag a handle (Shift: frequency only), scroll on it for Q, double-click the curve to add
+  // a band, double-click a handle to remove it, right-click it for its type, slope and channel.
+  eqpro(slot, color, setParam, gesture, t, pos, st) {
+    const sr = () => ui.rate || 48000, RANGE = 24;
+    let spec = null, dynNow = null, drag = null, hover = null, sel = st?.band ?? 0;
+    const geo = (w, h) => ({ x: (f) => Math.log(f / 20) / Math.log(1000) * w, fx: (px) => 20 * 1000 ** (px / w),
+      y: (db) => h / 2 - db / RANGE * (h / 2 - 12), dby: (py) => (h / 2 - py) / (h / 2 - 12) * RANGE, sy: (db) => h - (Math.max(-96, Math.min(0, db)) + 96) / 96 * h });
+    const flat = (b) => b.type >= 3; // cuts, notch, band pass sit on the zero line
+    const node = (b, w, h) => { const G = geo(w, h); return [Math.max(9, Math.min(w - 9, G.x(b.freq))), flat(b) ? G.y(0) : G.y(b.gain)]; };
+    const bands = () => Array.from({ length: 8 }, (_, i) => eqpBand(slot, i));
+    const cv = pkCanvas("eqpd", (ctx, w, h) => {
+      const G = geo(w, h), S = sr(), bs = bands();
+      ctx.fillStyle = "rgba(255,255,255,0.045)";
+      for (const f of [30, 50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 10000, 20000]) ctx.fillRect(Math.round(G.x(f)), 0, 1, h);
+      for (const db of [-18, -12, -6, 6, 12, 18]) ctx.fillRect(0, Math.round(G.y(db)), w, 1);
+      ctx.fillStyle = "rgba(255,255,255,0.12)"; ctx.fillRect(0, Math.round(G.y(0)), w, 1);
+      ctx.fillStyle = "rgba(255,255,255,0.32)"; ctx.font = "600 9px system-ui, sans-serif";
+      for (const [f, l] of [[50, "50"], [100, "100"], [200, "200"], [500, "500"], [1000, "1k"], [2000, "2k"], [5000, "5k"], [10000, "10k"]]) ctx.fillText(l, G.x(f) + 3, h - 4);
+      for (const db of [-18, -12, -6, 6, 12, 18]) ctx.fillText((db > 0 ? "+" : "") + db, 3, G.y(db) - 2);
+      // the spectrum: before (filled grey), after (a line in the colour)
+      if (spec) {
+        const path = (off) => { ctx.beginPath(); for (let i = 0; i < 64; i++) { const x = G.x(20 * 1000 ** ((i + 0.5) / 64)), y = G.sy(spec[off + i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } };
+        path(0); ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath(); ctx.fillStyle = "rgba(200,205,230,0.10)"; ctx.fill();
+        path(64); ctx.strokeStyle = color + "66"; ctx.lineWidth = 1.2; ctx.stroke();
+      }
+      // each band's own curve, then the sum
+      const on = bs.filter((b) => b.on);
+      const stagesOf = on.map((b) => [b, eqpStages(b, b.gain, S)]);
+      for (const [b, st] of stagesOf) {
+        ctx.beginPath();
+        for (let px = 0; px <= w; px += 2) { const db = Math.max(-RANGE - 6, Math.min(RANGE + 6, eqDb(st, G.fx(px), S))); px ? ctx.lineTo(px, G.y(db)) : ctx.moveTo(px, G.y(db)); }
+        ctx.lineTo(w, G.y(0)); ctx.lineTo(0, G.y(0)); ctx.closePath();
+        ctx.fillStyle = EQP_COLORS[b.i] + (b.i === sel ? "30" : "16"); ctx.fill();
+      }
+      const sumAt = (f) => stagesOf.reduce((a, [b, st]) => a + (b.ch === 0 || b.ch === 1 ? eqDb(st, f, S) : 0), 0);
+      ctx.beginPath();
+      for (let px = 0; px <= w; px++) { const db = Math.max(-RANGE - 6, Math.min(RANGE + 6, sumAt(G.fx(px)))); px ? ctx.lineTo(px, G.y(db)) : ctx.moveTo(px, G.y(db)); }
+      glow(ctx, color, 12); ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke(); noGlow(ctx);
+      // the dynamic bands where they are now
+      for (const b of on) {
+        if (Math.abs(b.dyn) < 0.05 || flat(b) || !dynNow) continue;
+        const [x, y0] = node(b, w, h), y1 = G.y(dynNow[b.i]);
+        ctx.strokeStyle = EQP_COLORS[b.i]; ctx.lineWidth = 3; ctx.globalAlpha = 0.7;
+        ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); ctx.globalAlpha = 1;
+        ctx.beginPath(); ctx.arc(x, y1, 4, 0, 2 * Math.PI); ctx.fillStyle = EQP_COLORS[b.i]; ctx.fill();
+      }
+      for (const b of on) {
+        const [x, y] = node(b, w, h), hot = hover === b.i || drag?.i === b.i;
+        ctx.beginPath(); ctx.arc(x, y, hot || b.i === sel ? 9 : 7.5, 0, 2 * Math.PI);
+        ctx.fillStyle = EQP_COLORS[b.i]; glow(ctx, EQP_COLORS[b.i], hot ? 16 : 8); ctx.fill(); noGlow(ctx);
+        if (b.i === sel) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke(); }
+        ctx.fillStyle = "#0b0a0f"; ctx.font = "800 9.5px system-ui, sans-serif"; ctx.textAlign = "center";
+        ctx.fillText(b.i + 1, x, y + 3.5); ctx.textAlign = "left";
+        if (b.ch) { ctx.fillStyle = EQP_COLORS[b.i]; ctx.font = "800 8px system-ui"; ctx.fillText(["", "M", "S", "L", "R"][b.ch], x + 9, y - 7); }
+      }
+      const hb = drag ? bs[drag.i] : hover != null ? bs[hover] : null;
+      if (hb) {
+        const [x, y] = node(hb, w, h);
+        const txt = `${EQP_TYPES[hb.type]}  ${pkFmt(pkSpec("eqpro", "b1freq"), pkNorm(pkSpec("eqpro", "b1freq"), hb.freq))}` +
+          (flat(hb) ? (hb.type < 5 ? `  ${hb.slope} dB/oct` : "") : `  ${(hb.gain > 0 ? "+" : "") + hb.gain.toFixed(1)} dB`) + `  Q ${hb.q.toFixed(2)}`;
+        ctx.font = "700 10.5px system-ui, sans-serif";
+        const tw = ctx.measureText(txt).width + 12, tx = Math.min(w - tw - 2, Math.max(2, x - tw / 2)), ty = y < 34 ? y + 16 : y - 30;
+        ctx.fillStyle = "rgba(10,9,14,0.9)"; ctx.fillRect(tx, ty, tw, 18);
+        ctx.fillStyle = "#fff"; ctx.fillText(txt, tx + 6, ty + 13);
+      }
+    }, 240);
+    cv.scope = (sc) => { if (!sc || sc.length < 136) return; spec = sc.slice(0, 128); dynNow = sc.slice(128, 136); cv.redraw(); };
+    const at = (e) => { const r = cv.getBoundingClientRect(); return { px: e.clientX - r.left, py: e.clientY - r.top, w: r.width, h: r.height }; };
+    const hit = (e) => {
+      const q = at(e); let best = null, bd = 13;
+      for (const b of bands()) { if (!b.on) continue; const [x, y] = node(b, q.w, q.h), d = Math.hypot(x - q.px, y - q.py); if (d < bd) { bd = d; best = b.i; } }
+      return best;
+    };
+    const K = (i, k) => `b${i + 1}${k}`;
+    const choose = (i) => { sel = i; cv.select?.(i); };
+    cv.addEventListener("pointermove", (e) => { if (drag) return; const hb = hit(e); if (hb !== hover) { hover = hb; cv.style.cursor = hb != null ? "grab" : "crosshair"; cv.redraw(); } });
+    cv.addEventListener("pointerleave", () => { hover = null; cv.redraw(); });
+    cv.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      const i = hit(e);
+      if (i == null) return;
+      choose(i);
+      cv.setPointerCapture(e.pointerId);
+      gesture();
+      drag = { i };
+      const b0 = eqpBand(slot, i);
+      const move = (ev) => {
+        const q = at(ev), G = geo(q.w, q.h);
+        setParam(K(i, "freq"), pkNorm(pkSpec("eqpro", K(i, "freq")), G.fx(Math.max(0, Math.min(q.w, q.px)))));
+        if (!ev.shiftKey && b0.type < 3) setParam(K(i, "gain"), pkNorm(pkSpec("eqpro", K(i, "gain")), Math.max(-24, Math.min(24, G.dby(q.py)))));
+        cv.redraw();
+      };
+      const up = () => { drag = null; cv.removeEventListener("pointermove", move); cv.removeEventListener("pointerup", up); cv.redraw(); };
+      cv.addEventListener("pointermove", move); cv.addEventListener("pointerup", up);
+    });
+    cv.addEventListener("dblclick", (e) => {
+      const i = hit(e);
+      gesture();
+      if (i != null) { setParam(K(i, "on"), 0); return; }
+      const free = bands().find((b) => !b.on);
+      if (!free) { toast("All 8 bands are in use."); return; }
+      const q = at(e), G = geo(q.w, q.h), f = G.fx(q.px);
+      const type = f < 35 ? 3 : f > 15000 ? 4 : 0;
+      setParam(K(free.i, "type"), type / 6);
+      setParam(K(free.i, "freq"), pkNorm(pkSpec("eqpro", K(free.i, "freq")), f));
+      setParam(K(free.i, "gain"), type ? 0.5 : pkNorm(pkSpec("eqpro", K(free.i, "gain")), Math.max(-24, Math.min(24, G.dby(q.py)))));
+      setParam(K(free.i, "q"), pkNorm(pkSpec("eqpro", K(free.i, "q")), 0.7071));
+      setParam(K(free.i, "on"), 1);
+      choose(free.i);
+    });
+    cv.addEventListener("wheel", (e) => {
+      const i = hit(e);
+      if (i == null) return;
+      e.preventDefault(); gesture();
+      const k = K(i, "q");
+      setParam(k, Math.max(0, Math.min(1, (slot[k] ?? PK_DEFAULTS.eqpro[k]) - Math.sign(e.deltaY) * 0.025)));
+    }, { passive: false });
+    cv.addEventListener("contextmenu", (e) => {
+      const i = hit(e);
+      if (i == null) return;
+      e.preventDefault(); e.stopPropagation(); choose(i);
+      const b = eqpBand(slot, i), set = (k, v) => () => { gesture(); setParam(K(i, k), v); };
+      showCtx([
+        ...EQP_TYPES.map((n, j) => [(b.type === j ? "✓ " : "   ") + n, "", set("type", j / 6)]),
+        ...(b.type === 3 || b.type === 4 ? [12, 24, 48].map((sl, j) => [(b.slope === sl ? "✓ " : "   ") + sl + " dB/octave", "", set("slope", j / 2)]) : []),
+        ...["Stereo", "Mid", "Side", "Left", "Right"].map((n, j) => [(b.ch === j ? "✓ " : "   ") + "Channel: " + n, "", set("ch", j / 4)]),
+        ["Remove band " + (i + 1), "", set("on", 0)],
+      ], e.clientX, e.clientY);
+    });
+    cv.title = "Double-click to add a band. Drag a handle (Shift: frequency only), scroll on it for Q, right-click for type, slope and channel, double-click to remove.";
+    // the bands as buttons, above the knobs: pick one, Shift-click switches it on or off
+    const wrap = document.createElement("div");
+    wrap.className = "eqpwrap";
+    const strip = document.createElement("div");
+    strip.className = "eqpbands";
+    const paint = () => strip.querySelectorAll("button").forEach((x, i) => { x.classList.toggle("on", eqpBand(slot, i).on); x.classList.toggle("sel", i === sel); });
+    for (let i = 0; i < 8; i++) {
+      const x = document.createElement("button");
+      x.textContent = i + 1;
+      x.style.setProperty("--b", EQP_COLORS[i]);
+      x.title = "Band " + (i + 1) + " (Shift-click: on/off)";
+      x.onclick = (e) => { if (e.shiftKey || !eqpBand(slot, i).on) { gesture(); setParam(K(i, "on"), eqpBand(slot, i).on ? 0 : 1); } choose(i); paint(); };
+      strip.append(x);
+    }
+    wrap.append(cv, strip);
+    wrap.redraw = () => { cv.redraw(); paint(); };
+    wrap.scope = cv.scope;
+    Object.defineProperty(cv, "select", { get: () => wrap.select });
+    paint();
+    return wrap;
+  },
+
+  // Clipper: what goes in against what comes out, and how much it cut off over time
+  clipper(slot, color) {
+    const hist = [];
+    const cv = pkCanvas("clipd", (ctx, w, h) => {
+      const g = (k) => pkReal(pkSpec("clipper", k), slot[k] ?? PK_DEFAULTS.clipper[k]);
+      const ceil = 10 ** (g("ceiling") / 20), knee = slot.knee ?? PK_DEFAULTS.clipper.knee, gin = 10 ** (g("input") / 20);
+      const sz = h - 16, ox = 8, oy = 8, X = (v) => ox + v * sz, Y = (v) => oy + sz - v * sz;
+      ctx.fillStyle = "rgba(255,255,255,0.05)";
+      for (let k = 1; k < 4; k++) { ctx.fillRect(X(k / 4), oy, 1, sz); ctx.fillRect(ox, Y(k / 4), sz, 1); }
+      ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.beginPath(); ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(1), Y(1)); ctx.stroke();
+      const t = ceil * (1 - Math.min(0.999, knee));
+      const clipf = (x) => { const a = Math.abs(x); if (a <= t) return x; const y = knee <= 0.001 ? ceil : t + (ceil - t) * Math.tanh((a - t) / (ceil - t)); return Math.min(y, ceil); };
+      ctx.beginPath();
+      for (let i = 0; i <= 100; i++) { const x = i / 100; i ? ctx.lineTo(X(x), Y(clipf(x * gin))) : ctx.moveTo(X(x), Y(clipf(x * gin))); }
+      glow(ctx, color, 10); ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.stroke(); noGlow(ctx);
+      ctx.fillStyle = color + "aa"; ctx.fillRect(ox, Math.round(Y(ceil)), sz, 1);
+      const hx = ox + sz + 14, hw = w - hx - 6;
+      if (hw > 30) {
+        ctx.fillStyle = "rgba(255,255,255,0.04)"; ctx.fillRect(hx, oy, hw, sz);
+        const HX = (k) => hx + hw - (hist.length - 1 - k) / 199 * hw, HY = (db) => oy + Math.min(sz, db / 12 * sz);
+        ctx.beginPath(); ctx.moveTo(HX(0), oy);
+        hist.forEach((v, k) => ctx.lineTo(HX(k), HY(v)));
+        ctx.lineTo(hx + hw, oy); ctx.closePath(); ctx.fillStyle = color + "77"; ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.45)"; ctx.font = "600 9px system-ui, sans-serif";
+        ctx.fillText("Clipped", hx + 4, oy + sz - 4);
+        ctx.fillText(`${(hist[hist.length - 1] || 0).toFixed(1)} dB`, hx + hw - 40, oy + 11);
+      }
+      ctx.fillStyle = "rgba(255,255,255,0.45)"; ctx.font = "600 9px system-ui, sans-serif";
+      ctx.fillText(`Ceiling ${g("ceiling").toFixed(1)} dB`, ox + 4, oy + 11);
+    }, 170);
+    cv.live = (m) => { hist.push(m[2]); if (hist.length > 200) hist.shift(); cv.redraw(); };
+    return cv;
+  },
+
+  // Saturator: the curve the sound is bent along, for the mode, drive and asymmetry
+  saturate(slot, color) {
+    let lvl = 0;
+    const shape = (mode, x) => {
+      if (mode === 0) return (2 / Math.PI) * Math.atan(Math.PI / 2 * x);
+      if (mode === 1) { const t = Math.tanh(x); return t + 0.18 * t * t; }
+      if (mode === 2) return x / Math.pow(1 + x ** 4, 0.25);
+      if (mode === 3) return x > 0 ? Math.tanh(3 * x) : 0.8 * Math.tanh(2.2 * x);
+      const t = Math.tanh(x); return 0.5 * t + 0.5 * Math.abs(t);
+    };
+    const cv = pkCanvas("satd", (ctx, w, h) => {
+      const g = (k) => pkReal(pkSpec("saturate", k), slot[k] ?? PK_DEFAULTS.saturate[k]);
+      const mode = g("mode"), drive = 10 ** (g("drive") / 20), bias = 0.6 * (slot.bias ?? 0), off = shape(mode, bias);
+      const sz = h - 16, ox = 16, oy = 8, X = (v) => ox + (v + 1) / 2 * sz, Y = (v) => oy + (1 - (Math.max(-1.3, Math.min(1.3, v)) + 1) / 2) * sz;
+      ctx.fillStyle = "rgba(255,255,255,0.05)"; ctx.fillRect(X(0), oy, 1, sz); ctx.fillRect(ox, Y(0), sz, 1);
+      ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.beginPath(); ctx.moveTo(X(-1), Y(-1)); ctx.lineTo(X(1), Y(1)); ctx.stroke();
+      ctx.beginPath();
+      for (let i = 0; i <= 200; i++) { const x = i / 100 - 1, y = shape(mode, x * drive + bias) - off; i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y)); }
+      glow(ctx, color, 12); ctx.strokeStyle = color; ctx.lineWidth = 2.4; ctx.stroke(); noGlow(ctx);
+      if (lvl > 1e-4) { const x = Math.min(1, lvl); ctx.beginPath(); ctx.arc(X(x), Y(shape(mode, x * drive + bias) - off), 5, 0, 2 * Math.PI); ctx.fillStyle = "#fff"; glow(ctx, "#fff", 12); ctx.fill(); noGlow(ctx); }
+      // the harmonics it adds: a quick look at a sine through the curve
+      const hx = ox + sz + 24, hw = w - hx - 10;
+      if (hw > 60) {
+        const N = 256, sig = Array.from({ length: N }, (_, n) => shape(mode, 0.7 * Math.sin(2 * Math.PI * n / N) * drive + bias) - off);
+        const harm = Array.from({ length: 10 }, (_, k) => { let re = 0, im = 0; for (let n = 0; n < N; n++) { re += sig[n] * Math.cos(2 * Math.PI * (k + 1) * n / N); im += sig[n] * Math.sin(2 * Math.PI * (k + 1) * n / N); } return Math.hypot(re, im) * 2 / N; });
+        const top = Math.max(...harm, 1e-6), bw = hw / 10;
+        harm.forEach((a, k) => {
+          const db = 20 * Math.log10(a / top + 1e-9), bh = Math.max(0, (db + 60) / 60) * (sz - 14);
+          ctx.fillStyle = k === 0 ? "rgba(255,255,255,0.5)" : color; glow(ctx, color, k ? 6 : 0);
+          ctx.fillRect(hx + k * bw + 2, oy + sz - bh, bw - 4, bh); noGlow(ctx);
+        });
+        ctx.fillStyle = "rgba(255,255,255,0.45)"; ctx.font = "600 9px system-ui, sans-serif";
+        ctx.fillText("Harmonics", hx, oy + 9);
+      }
+    }, 150);
+    cv.live = (m) => { lvl = m[0]; cv.redraw(); };
+    return cv;
+  },
+
+  // Multiband: a column per band with its level, the two thresholds (drag them) and what it does
+  multi(slot, color, setParam, gesture) {
+    let sc = null;
+    const names = ["low", "mid", "high"];
+    const cv = pkCanvas("multd", (ctx, w, h) => {
+      const g = (k) => pkReal(pkSpec("multi", k), slot[k] ?? PK_DEFAULTS.multi[k]);
+      const cw = (w - 16) / 3, top = 18, bot = h - 18, Y = (db) => top + (-Math.max(-72, Math.min(0, db))) / 72 * (bot - top);
+      names.forEach((n, b) => {
+        const x0 = 8 + b * cw + 6, ww = cw - 12;
+        ctx.fillStyle = "rgba(255,255,255,0.035)"; ctx.fillRect(x0, top, ww, bot - top);
+        const td = g(n + "down"), tu = g(n + "up");
+        // the band's zones: pressed down above, lifted below
+        ctx.fillStyle = "rgba(255,110,90,0.10)"; ctx.fillRect(x0, top, ww, Y(td) - top);
+        ctx.fillStyle = "rgba(90,180,255,0.10)"; ctx.fillRect(x0, Y(tu), ww, bot - Y(tu));
+        if (sc) {
+          const lv = sc[2 * b], gn = sc[2 * b + 1];
+          const grad = ctx.createLinearGradient(0, bot, 0, top); grad.addColorStop(0, color + "55"); grad.addColorStop(1, color);
+          ctx.fillStyle = grad; glow(ctx, color, 8);
+          ctx.fillRect(x0 + ww * 0.3, Y(lv), ww * 0.4, bot - Y(lv)); noGlow(ctx);
+          ctx.fillStyle = gn >= 0 ? "#6cc4ff" : "#ff7a6b"; ctx.font = "800 11px system-ui, sans-serif"; ctx.textAlign = "center";
+          ctx.fillText((gn >= 0 ? "+" : "") + gn.toFixed(1) + " dB", x0 + ww / 2, bot + 13);
+          ctx.textAlign = "left";
+        }
+        for (const [t, c] of [[td, "#ff7a6b"], [tu, "#6cc4ff"]]) { ctx.fillStyle = c; ctx.fillRect(x0, Math.round(Y(t)) - 1, ww, 2); }
+        ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.font = "800 9px system-ui, sans-serif"; ctx.textAlign = "center";
+        ctx.fillText(n.toUpperCase(), x0 + ww / 2, top - 6); ctx.textAlign = "left";
+      });
+      ctx.fillStyle = "rgba(255,255,255,0.4)"; ctx.font = "600 9px system-ui, sans-serif"; ctx.textAlign = "center";
+      ctx.fillText(pkFmt(pkSpec("multi", "xlow"), slot.xlow ?? PK_DEFAULTS.multi.xlow), 8 + cw, top - 6);
+      ctx.fillText(pkFmt(pkSpec("multi", "xhigh"), slot.xhigh ?? PK_DEFAULTS.multi.xhigh), 8 + 2 * cw, top - 6);
+      ctx.textAlign = "left";
+    }, 190);
+    cv.scope = (s) => { sc = s; cv.redraw(); };
+    // drag a threshold line up or down
+    cv.addEventListener("pointerdown", (e) => {
+      const r = cv.getBoundingClientRect(), cw = (r.width - 16) / 3, b = Math.max(0, Math.min(2, Math.floor((e.clientX - r.left - 8) / cw)));
+      const top = 18, bot = r.height - 18, dbAt = (py) => -Math.max(0, Math.min(72, (py - top) / (bot - top) * 72));
+      const py = e.clientY - r.top, n = names[b];
+      const td = pkReal(pkSpec("multi", n + "down"), slot[n + "down"] ?? 0.5), tu = pkReal(pkSpec("multi", n + "up"), slot[n + "up"] ?? 0.333);
+      const Y = (db) => top + (-db) / 72 * (bot - top);
+      const key = Math.abs(Y(td) - py) < Math.abs(Y(tu) - py) ? n + "down" : n + "up";
+      if (Math.min(Math.abs(Y(td) - py), Math.abs(Y(tu) - py)) > 12) return;
+      cv.setPointerCapture(e.pointerId); gesture();
+      const move = (ev) => setParam(key, pkNorm(pkSpec("multi", key), Math.max(-60, dbAt(ev.clientY - r.top))));
+      const up = () => { cv.removeEventListener("pointermove", move); cv.removeEventListener("pointerup", up); };
+      cv.addEventListener("pointermove", move); cv.addEventListener("pointerup", up);
+    });
+    cv.title = "Red line: above it the band is pressed down. Blue line: below it the band is lifted up. Drag them.";
+    return cv;
+  },
+
+  // Shaper: the shape over one period, with where it is now
+  shaper(slot, color) {
+    let sc = null;
+    const curveAt = (shape, ph, depth, curve, hold) => {
+      ph = ((ph % 1) + 1) % 1;
+      let down;
+      if (shape === 0) { if (ph < hold) down = 1; else { const u = Math.min(1, (ph - hold) / Math.max(1e-3, 1 - hold)); down = 1 - u ** (0.25 * 16 ** curve); } }
+      else if (shape === 1) down = 0.5 + 0.5 * Math.cos(2 * Math.PI * ph);
+      else if (shape === 2) down = ph < 0.5 ? 1 : 0;
+      else if (shape === 3) down = 1 - ph;
+      else if (shape === 4) down = ph;
+      else down = Math.floor(ph * 4) % 2 === 1 ? 1 : 0;
+      return 1 - depth * down;
+    };
+    const cv = pkCanvas("shpd", (ctx, w, h) => {
+      const v = (k) => slot[k] ?? PK_DEFAULTS.shaper[k];
+      const shape = pkReal(pkSpec("shaper", "shape"), v("shape")), depth = v("depth"), curve = v("curve"), hold = 0.5 * v("hold");
+      const top = 12, bot = h - 14, Y = (g) => bot - g * (bot - top), X = (ph) => 8 + ph * (w - 16) / 2;
+      ctx.fillStyle = "rgba(255,255,255,0.05)";
+      for (let k = 0; k <= 8; k++) ctx.fillRect(Math.round(X(k / 4)), top, 1, bot - top);
+      ctx.beginPath(); ctx.moveTo(X(0), bot);
+      for (let i = 0; i <= 400; i++) { const ph = i / 200; ctx.lineTo(X(ph), Y(curveAt(shape, ph, depth, curve, hold))); }
+      ctx.lineTo(X(2), bot); ctx.closePath();
+      const grad = ctx.createLinearGradient(0, top, 0, bot); grad.addColorStop(0, color + "66"); grad.addColorStop(1, color + "08");
+      ctx.fillStyle = grad; ctx.fill();
+      ctx.beginPath();
+      for (let i = 0; i <= 400; i++) { const ph = i / 200; i ? ctx.lineTo(X(ph), Y(curveAt(shape, ph, depth, curve, hold))) : ctx.moveTo(X(ph), Y(curveAt(shape, ph, depth, curve, hold))); }
+      glow(ctx, color, 10); ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.stroke(); noGlow(ctx);
+      if (sc) {
+        const x = X(sc[0]);
+        ctx.fillStyle = "rgba(255,255,255,0.6)"; ctx.fillRect(x, top, 1.5, bot - top);
+        ctx.beginPath(); ctx.arc(x, Y(sc[1]), 5, 0, 2 * Math.PI); ctx.fillStyle = "#fff"; glow(ctx, "#fff", 12); ctx.fill(); noGlow(ctx);
+      }
+      ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.font = "600 9px system-ui, sans-serif";
+      const rate = pkFmt(pkSpec("shaper", "rate"), v("rate")), trig = pkReal(pkSpec("shaper", "trig"), v("trig"));
+      ctx.fillText(`${rate}${trig ? " · on each hit" : " · in time"}`, 10, top + 9);
+    }, 150);
+    cv.scope = (s) => { sc = s; cv.redraw(); };
+    return cv;
+  },
+});

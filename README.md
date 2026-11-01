@@ -106,6 +106,25 @@ has two tabs:
    and VST3 plugins. Everything is stereo inside Duet; what goes to your partner
    live is mono, to keep the line light.
 
+   **Duet's own pro plugins** (in *+ Add effect*, grouped by kind):
+   - **EQ Pro:** 8 bands (bell, shelves, cuts at 12/24/48 dB per octave, notch,
+     band pass), each on stereo, mid, side, left or right, and each can be
+     **dynamic** (it moves only when that part of the sound gets loud: a de-esser,
+     a de-mudder). A live spectrum before and after; double-click to add a band,
+     drag it, scroll for Q, right-click for its type and channel. Auto gain.
+   - **Multiband:** three bands pressed down above one threshold and lifted up
+     below another (the "OTT" sound); drag the lines in the display.
+   - **Clipper:** cuts the peaks off for loudness, hard or soft, with up to 8x
+     oversampling and *Delta* to hear only what it cuts.
+   - **Saturator:** tape, tube, transistor, fuzz and rectify, with asymmetry, a
+     tilt, oversampling, auto gain, and the harmonics it adds drawn live.
+   - **Shaper:** volume shaping in time with the song (pump, sine, square, saws,
+     gate; 1/32 to 2 bars), or started by each hit on a sidechain; on everything,
+     only the lows, or only the highs.
+   - The **Compressor** got a knee, parallel mix, a low cut on what it listens to,
+     and four characters (clean, glue, punch, smooth); the **Limiter** got true
+     peak and stereo link.
+
    Every built-in effect's window is a full plugin:
    - **A live display:** the EQ's curve with handles you drag (frequency and gain;
      Shift = frequency only; scroll on *M* for its width; double-click = flat), the

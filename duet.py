@@ -156,6 +156,13 @@ class Api:
     def rack_set(self, target, pos, key, value):
         self._engine.rack_set(target, int(pos), key, float(value))
 
+    def rack_scope(self, target, pos):
+        # what an effect's window draws besides its meters (spectra, band levels)
+        try:
+            return list(self._engine.rack_scope(target, int(pos)))
+        except Exception:
+            return []
+
     def rack_meters(self, target):
         # each effect's input, output (peak, 0..1) and gain reduction (dB), for its window
         try:

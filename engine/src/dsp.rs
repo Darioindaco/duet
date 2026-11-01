@@ -206,6 +206,8 @@ pub struct Shared {
     /// every rack slot's meters for the plugin windows: [strip][slot][in, out, gr], strips in the
     /// order local, remote, tracks, master (see rack_meter_index)
     pub rack_meters: Vec<AtomicF32>,
+    /// what each slot's window draws besides the meters ([strip][slot][SCOPE_N], same order)
+    pub rack_scope: Vec<AtomicF32>,
     /// notes sent to instruments so far (the UI's MIDI activity light)
     pub midi_events: AtomicU64,
 }
@@ -284,7 +286,7 @@ pub struct ClickSeg {
 
 impl ClickMap {
     /// (song beat, the segment) at `sec` seconds (before the first: the first, extended backwards)
-    fn at(&self, sec: f64) -> Option<(f64, &ClickSeg)> {
+    pub fn at(&self, sec: f64) -> Option<(f64, &ClickSeg)> {
         let seg = self.segs.iter().rev().find(|s| s.start <= sec).or(self.segs.first())?;
         Some((seg.beat0 + (sec - seg.start) * seg.bpm / 60.0, seg))
     }
@@ -417,6 +419,8 @@ pub struct Dsp {
     analyzer: crate::analyzer::Analyzer,
     /// every so many blocks: the loudness range (it reads a histogram)
     range_tick: u32,
+    /// where tempo-synced effects are while the song is stopped: running on with the click's tempo
+    free_beat: f64,
     metro: Metro,
     /// partner's block number minus ours, learned from what the jitter buffer plays
     remote_offset: Option<i64>,
@@ -485,6 +489,7 @@ impl Dsp {
             loud: crate::loudness::Loudness::new(samplerate as f32),
             analyzer: crate::analyzer::Analyzer::new(samplerate as f32),
             range_tick: 0,
+            free_beat: 0.0,
             metro: Metro::new(),
             remote_offset: None,
             live_sends: [[None; crate::mix::MAX_SENDS]; MAX_LOCAL + MAX_REMOTE],
@@ -854,12 +859,29 @@ impl Dsp {
 
     /// One block. `input` is interleaved, `in_ch` channels; `out` is
     /// interleaved stereo (2 * frame). Both are exactly `self.frame` frames.
+    /// Tell tempo-synced effects where the song is for this block (kit::song_time).
+    fn song_time(&mut self, n: usize) {
+        let sr = self.samplerate as f64;
+        let (beat, bpm) = if self.tp.playing {
+            let sec = self.tp.pos as f64 / sr;
+            match self.click.map.as_deref().and_then(|m| m.at(sec)) {
+                Some((b, seg)) => (b, seg.bpm),
+                None => (sec * self.click.bpm as f64 / 60.0, self.click.bpm as f64),
+            }
+        } else {
+            (self.free_beat, self.metro.bpm as f64)
+        };
+        crate::kit::set_song_time(crate::kit::SongTime { beat, bpm, playing: self.tp.playing });
+        self.free_beat = beat + n as f64 / sr * bpm / 60.0;
+    }
+
     pub fn process(&mut self, input: &[f32], in_ch: usize, out: &mut [f32]) {
         let t0 = std::time::Instant::now();
         let n = self.frame;
         self.apply_commands();
         self.take_notes();
         self.take_packets();
+        self.song_time(n);
 
         let any_solo = self.local.iter().chain(self.remote.iter()).any(|s| s.s.active && s.s.solo);
         let audible = |s: &StripSettings| !s.mute && (!any_solo || s.solo);
@@ -1105,6 +1127,13 @@ impl Dsp {
                         sh.rack_meters[base].set(slot.meter.input);
                         sh.rack_meters[base + 1].set(slot.meter.output);
                         sh.rack_meters[base + 2].set(slot.meter.gr);
+                    }
+                    let sc = slot.fx.scope();
+                    let sb = (si * crate::fx::MAX_SLOTS + j) * crate::fx::SCOPE_N;
+                    if !sc.is_empty() && self.range_tick % 2 == 0 && sb + crate::fx::SCOPE_N <= sh.rack_scope.len() {
+                        for (i, v) in sc.iter().take(crate::fx::SCOPE_N).enumerate() {
+                            sh.rack_scope[sb + i].set(*v);
+                        }
                     }
                 }
             }
