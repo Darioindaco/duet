@@ -176,12 +176,15 @@ pub struct Synth {
     stack: [u8; 16],
     n_stack: usize,
     mono: bool,
-    pending: Option<(u8, u8)>,
+    /// notes on since the last block, started in process (which knows the glide): a chord is
+    /// several at once
+    pending: [(u8, u8); VOICES],
+    n_pending: usize,
 }
 
 impl Synth {
     pub fn new(sr: f32) -> Self {
-        Synth { voices: [None; VOICES], sr, sustain: false, clock: 0, lfo: 0.0, last_key: -1.0, stack: [0; 16], n_stack: 0, mono: false, pending: None }
+        Synth { voices: [None; VOICES], sr, sustain: false, clock: 0, lfo: 0.0, last_key: -1.0, stack: [0; 16], n_stack: 0, mono: false, pending: [(0, 0); VOICES], n_pending: 0 }
     }
 
     fn start(&mut self, key: u8, vel: u8, glide: bool) {
@@ -230,9 +233,24 @@ impl Instrument for Synth {
                         return;
                     }
                 }
-                self.pending = Some((key, vel)); // started in process, which knows the glide
+                if self.n_pending == VOICES {
+                    self.pending.copy_within(1.., 0); // more at once than voices: the newest
+                    self.n_pending -= 1;
+                }
+                self.pending[self.n_pending] = (key, vel);
+                self.n_pending += 1;
             }
             NoteEv::Off(key) => {
+                // on and off before the next block: there was nothing to hear
+                let n = self.n_pending;
+                let mut j = 0;
+                for i in 0..n {
+                    if self.pending[i].0 != key {
+                        self.pending[j] = self.pending[i];
+                        j += 1;
+                    }
+                }
+                self.n_pending = j;
                 if self.mono {
                     let n = self.n_stack;
                     if let Some(i) = self.stack[..n].iter().rposition(|k| *k == key) {
@@ -306,7 +324,9 @@ impl Instrument for Synth {
                 }
             }
         }
-        if let Some((key, vel)) = self.pending.take() {
+        let n_pending = std::mem::take(&mut self.n_pending);
+        for i in 0..n_pending {
+            let (key, vel) = self.pending[i];
             let glide = p[GLIDE] > 0.001;
             if self.mono {
                 for v in self.voices.iter_mut().flatten() {
@@ -502,6 +522,34 @@ mod tests {
                 assert!(s.voices.iter().all(|v| v.is_none()), "{} = {x}: the note ends", NAMES[k]);
             }
         }
+    }
+
+    #[test]
+    fn a_chord_in_one_block_plays_every_note() {
+        // three notes on before the next block (a chord in the piano roll): three voices, not the last one
+        let p = defaults();
+        let mut s = Synth::new(48000.0);
+        for k in [60, 64, 67] {
+            s.note(NoteEv::On(k, 100));
+        }
+        run(&mut s, &p, 10);
+        let on: Vec<u8> = s.voices.iter().flatten().filter(|v| v.on).map(|v| v.key).collect();
+        assert_eq!(on.len(), 3, "{on:?}");
+        // on and off before a block: nothing left hanging
+        s.note(NoteEv::On(72, 100));
+        s.note(NoteEv::Off(72));
+        run(&mut s, &p, 10);
+        assert!(!s.voices.iter().flatten().any(|v| v.on && v.key == 72));
+        // mono: still one voice, the newest
+        let mut p = defaults();
+        p[MONO] = 1.0;
+        let mut s = Synth::new(48000.0);
+        for k in [60, 64, 67] {
+            s.note(NoteEv::On(k, 100));
+        }
+        run(&mut s, &p, 10);
+        let on: Vec<u8> = s.voices.iter().flatten().filter(|v| v.on).map(|v| v.key).collect();
+        assert_eq!(on, vec![67]);
     }
 
     #[test]
