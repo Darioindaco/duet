@@ -46,7 +46,8 @@ function seqSetup() {
     const v = $("patSel").value;
     if (v === "+new") newPattern(); else { seq.pat = v; seqRender(); }
   };
-  $("patLen").onchange = () => seq.pat && songEdit([["pattern", seq.pat, { len: +$("patLen").value * bpb() }]]);
+  // a length chosen here is also one round of it again
+  $("patLen").onchange = () => seq.pat && songEdit([["pattern", seq.pat, { len: +$("patLen").value * bpb(), base: null }]]);
   $("patPlay").onclick = async () => {
     const st = song.st;
     if (st && st.playing) { await api.daw_stop(); return; }

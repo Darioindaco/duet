@@ -1752,7 +1752,14 @@ def test_channel_blocks():
         d.p.stamps["clip"].pop(mirror["id"], None)
         d._upgrade_blocks()
         assert {c["track"] for c in d.view()["clips"]} == {"syn", "drm"}
-        print("channel blocks: each channel plays its own notes from its own row; a new channel's notes get a block there")
+        # looping: a block repeats one round (the base length), a "once" block plays the pattern through once
+        d.edit([["pattern", "p1", {"len": 16.0, "base": 4.0}], ["clip", "c1", {"blen": 16.0}]])
+        starts = sorted(round(n[0], 3) for n in d._notes(d._tm().b2s)[d.slots["syn"]])
+        assert starts == [4.0, 6.0, 8.0, 10.0], starts  # (beat 8, 12, 16, 20 at 120 bpm)
+        d.edit([["clip", "c1", {"once": True}]])
+        starts = sorted(round(n[0], 3) for n in d._notes(d._tm().b2s)[d.slots["syn"]])
+        assert starts == [4.0], starts
+        print("channel blocks: each channel plays its own notes from its own row; a new channel's notes get a block there; loop / once")
     finally:
         d.close()
         e.close()

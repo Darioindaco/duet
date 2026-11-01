@@ -66,9 +66,13 @@ FIELDS = {
     # Takes: the clips of a take folder share a group; take is which take a clip comes from. A take's
     # whole recording is kept as a silent clip (tsrc: not in the playlist), the comp is ordinary clips.
     "clip": {"track", "file", "pattern", "start", "offset", "len", "blen", "boff", "gain", "fade_in", "fade_out",
-             "speed", "pitch", "stretch", "reverse", "mute", "tune", "group", "take", "tsrc", "del"},
+             "speed", "pitch", "stretch", "reverse", "mute", "tune", "group", "take", "tsrc",
+             # once: a pattern block that plays its pattern once instead of round and round;
+             # loop: an audio clip that repeats every `loop` seconds of the timeline (unset: no)
+             "once", "loop", "del"},
     "file": {"frames", "sr", "owner", "name", "del"},
-    "pattern": {"name", "len", "color", "del"},
+    # len: how long it is to write in; base: how long one round is when a block loops (unset: len)
+    "pattern": {"name", "len", "base", "color", "del"},
     "note": {"pattern", "track", "start", "len", "key", "vel", "del"},
     # a marker on the timeline (beat, name, color); a section marker starts a part that lasts until the next one
     "marker": {"beat", "name", "color", "section", "del"},
@@ -82,7 +86,7 @@ FIELD_DEFAULTS = {
               "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "del": False},
     "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "speed": 1.0, "pitch": 0.0,
              "stretch": False, "reverse": False, "mute": False, "tune": None, "group": None, "take": None,
-             "tsrc": False, "del": False},
+             "tsrc": False, "once": False, "loop": None, "del": False},
     "file": {"del": False},
     "pattern": {"del": False},
     "note": {"vel": 100, "del": False},
@@ -1572,6 +1576,19 @@ class Daw:
     def _pattern_len(self, pid: str) -> float:
         return max(0.25, float(self.p.live("pattern").get(pid, {}).get("len") or 4 * int(self.p.meta()["beats"])))
 
+    def _round(self, pid: str, notes: list | None = None) -> float:
+        """How long one round of a pattern is when its block loops: its base length (or its length),
+        or longer if its notes go on past that (to the bar)."""
+        pat = self.p.live("pattern").get(pid, {})
+        r = float(pat.get("base") or 0) or self._pattern_len(pid)
+        if notes is None:
+            notes = [n for n in self.p.live("note").values() if n.get("pattern") == pid]
+        end = max((float(n.get("start", 0)) + float(n.get("len", 0)) for n in notes), default=0.0)
+        bar = int(self.p.meta()["beats"])
+        if end > r + 1e-6:
+            r = math.ceil(end / bar - 1e-9) * bar
+        return max(0.25, r)
+
     def _notes(self, b2s) -> list:
         """Every channel's notes in seconds: patterns unrolled where their clips
         are (repeating to fill a clip), or the open pattern alone in pattern mode."""
@@ -1602,9 +1619,11 @@ class Daw:
             pid = c.get("pattern")
             if pid not in pats or not by_pat.get(pid) or c.get("mute"):
                 continue
-            plen = self._pattern_len(pid)
+            plen = self._round(pid, by_pat[pid])
             start, boff = float(c.get("start", 0)), float(c.get("boff", 0))
             end = start + float(c.get("blen") or plen)
+            if c.get("once"):
+                plen = max(plen, end - start + boff) + 1.0  # one round, as long as the block
             origin = start - boff  # where beat 0 of the pattern's first round falls
             k = math.floor(boff / plen)
             while origin + k * plen < end:

@@ -913,7 +913,8 @@ function drawPatternClip(ctx, c, x, y, w, h) {
   if (p) {
     const notes = (song.view.notes || []).filter((n) => n.pattern === p.id && n.track === c.track); // its own channel's
     if (notes.length) {
-      const plen = p.len || 4 * bpb(), boff = c.boff || 0;
+      // a looping block repeats one round of the pattern; a "once" block plays it through once
+      const plen = c.once ? 1e9 : patRound(p), boff = c.boff || 0;
       let lo = 127, hi = 0;
       for (const n of notes) { lo = Math.min(lo, n.key); hi = Math.max(hi, n.key); }
       const span = Math.max(6, hi - lo + 1), top = y + 18, hh = h - 21;
@@ -1192,7 +1193,9 @@ function lanesHover(e) {
   if (isAuto(at) || song.autoHover) { autoHoverAt(isAuto(at) ? at : null, p); if (isAuto(at)) return; }
   const h = p.inside && p.lane < 0 ? hitZone(p) : null;
   const tool = song.tool && song.tool !== "pointer" && !(song.tool === "pencil" && h);
-  $("lanes").style.cursor = tool ? toolCursor() : h ? CURSORS[h.zone] : p.inside && p.lane >= 0 && takeLaneAt(p) ? "crosshair" : "";
+  // Loop on: a clip's end drags out more rounds of it (the cursor says so)
+  const loopEnd = h && h.zone === "right" && song.patLoop && (h.c.pattern || canLoopAudio(h.c));
+  $("lanes").style.cursor = tool ? toolCursor() : loopEnd ? LOOP_CURSOR : h ? CURSORS[h.zone] : p.inside && p.lane >= 0 && takeLaneAt(p) ? "crosshair" : "";
   const key = h ? h.c.id + h.zone : "";
   if (key !== song.hoverKey) { song.hoverKey = key; song.hover = h ? h.c.id : null; songDraw(); }
 }
@@ -1254,7 +1257,8 @@ function dragResult(d, q, snap) {
     out[c.id] = { start, boff: Math.max(0, (c.boff || 0) + start - c.start), blen: c.blen - (start - c.start) };
   } else if (c.pattern && d.zone === "right") {
     const end = Math.max(c.start + STEP, snapBeat(q.beat, snap));
-    out[c.id] = { blen: end - c.start };
+    // Loop on: more rounds of it; off: the pattern once, as long as the block
+    out[c.id] = { blen: end - c.start, once: !song.patLoop };
   } else if (d.zone === "left") {
     // how much file there is before the clip's start (backwards: after its end)
     const r = clipRatio(c), o = c.offset || 0;
@@ -1292,10 +1296,17 @@ function commitDrag(d) {
     const moved = new Set();
     // looping off: a pattern block dragged longer makes the pattern longer (not another round of it)
     const pc = d.anchor;
+    // (and shorter again, but never shorter than one round of it): the block plays the pattern once,
+    // as long as it is; one round (what loops) stays what it was
     if (!song.patLoop && d.zone === "right" && pc.pattern && d.result[pc.id]) {
       const p = (v.patterns || []).find((q) => q.id === pc.pattern);
-      const need = (pc.boff || 0) + d.result[pc.id].blen;
-      if (p && need > patLen(p) + 1e-6) ch.push(["pattern", p.id, { len: need }]);
+      if (p) {
+        const round = patRound(p), len = Math.max(round, (pc.boff || 0) + d.result[pc.id].blen);
+        const f = {};
+        if (p.base == null) f.base = round;
+        if (Math.abs(len - patLen(p)) > 1e-6) f.len = len;
+        if (Object.keys(f).length) ch.push(["pattern", p.id, f]);
+      }
     }
     for (const [id, r] of Object.entries(d.result)) {
       const { row, ...f } = r;
@@ -2168,4 +2179,14 @@ function lockBanner() {
   el.hidden = false;
   el.querySelector("span").textContent = "🔒 Making stems" + (j.stage === "splitting" ? ` · ${Math.round((j.progress || 0) * 100)}%` : j.stage === "writing" ? " · writing" : "…")
     + " — the playlist is locked until it's done; the rest of Duet works as usual.";
+}
+
+// one round of a pattern when its block loops (as daw.py's _round): its base length (or its length),
+// longer if its notes go on past that (to the bar)
+function patRound(p) {
+  if (!p) return 4 * bpb();
+  let r = p.base || patLen(p), end = 0;
+  for (const n of song.view.notes || []) if (n.pattern === p.id) end = Math.max(end, n.start + n.len);
+  if (end > r + 1e-6) r = Math.ceil(end / bpb() - 1e-9) * bpb();
+  return Math.max(0.25, r);
 }

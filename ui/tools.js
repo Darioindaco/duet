@@ -22,6 +22,8 @@ const TOOLS = [
   ["mute", "Mute: click a clip to mute or unmute it", "6", 12, 12, "pointer"],
   ["fade", "Fade: drag from a clip's start (fade in) or its end (fade out)", "7", 3, 20, "col-resize"],
 ];
+// the cursor on a clip's end with Loop on: drag out more rounds
+const LOOP_CURSOR = cur("<path d='M17 2l3 3-3 3'/><path d='M3 11V9a4 4 0 0 1 4-4h13'/><path d='M7 22l-3-3 3-3'/><path d='M21 13v2a4 4 0 0 1-4 4H4'/>", 12, 12, "e-resize");
 const toolCursor = (t = song.tool) => { const d = TOOLS.find((x) => x[0] === t); return cur(ICON[t], d[3], d[4], d[5]); };
 
 function setTool(t) {
@@ -165,3 +167,6 @@ function growPattern(p, end) {
   }
   return ch;
 }
+
+// audio clips loop too (Loop on): not reversed ones (for now)
+const canLoopAudio = (c) => c && !c.pattern && !c.reverse;
