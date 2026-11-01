@@ -1491,6 +1491,7 @@ class Daw:
         # automation, looked up in the racks as they are now (so again when a rack changes)
         self._auto_missing: set[str] = set()
         lanes = [lane for tid, t in autos if (lane := self._auto_lane(tid, t, byid, mrack, b2s))]
+        lanes += self._clip_gain_lanes(b2s)
         racks = (tuple(json.dumps(self.sent_rack.get(s), sort_keys=True) for s in range(MAX_TRACKS)),
                  json.dumps(mrack, sort_keys=True), json.dumps(self.sent_inst, sort_keys=True))
         if (lanes, racks) != self.sent_autos:
@@ -1575,6 +1576,62 @@ class Daw:
             if math.isfinite(beat) and math.isfinite(v):
                 pts.append((b2s(max(0.0, beat)), min(1.0, max(0.0, v))))
         return (tid, strip, what, sorted(pts)) if pts else None
+
+    def _clip_gain_lanes(self, b2s) -> list:
+        """Pattern blocks' gain lines and fades, as a gain curve on their channel ("cgain": 0.5 is
+        unity). Only for channels with a block that isn't plain."""
+        by_track: dict[str, list] = {}
+        for c in self.p.live("clip").values():
+            if c.get("pattern") and not c.get("mute") and c.get("track") in self.slots:
+                by_track.setdefault(c["track"], []).append(c)
+        out = []
+        for tid, clips in by_track.items():
+            spans = []
+            for c in clips:
+                g = num(c.get("gain"), 1.0, 0.0, 2.0)
+                fi, fo = num(c.get("fade_in"), 0.0, 0.0, 1e5), num(c.get("fade_out"), 0.0, 0.0, 1e5)
+                if abs(g - 1.0) < 1e-4 and fi <= 0 and fo <= 0:
+                    continue
+                s0 = b2s(float(c.get("start", 0)))
+                s1 = b2s(float(c.get("start", 0)) + float(c.get("blen") or self._pattern_len(c["pattern"])))
+                spans.append((s0, s1, g, min(fi, s1 - s0), min(fo, s1 - s0),
+                              num(c.get("fade_in_curve"), 0.0, -1.0, 1.0), num(c.get("fade_out_curve"), 0.0, -1.0, 1.0)))
+            if not spans:
+                continue
+
+            def shape(x, curve):
+                x = min(1.0, max(0.0, x))
+                if abs(curve) < 1e-3:
+                    return x
+                return x ** (1.0 / (1.0 + 3.0 * curve) if curve > 0 else 1.0 - 3.0 * curve)
+
+            def env(t):
+                """The gain at t: a block's own where one is (the louder where two meet), else unity."""
+                best = None
+                for s0, s1, g, fi, fo, ci, co in spans:
+                    if s0 - 1e-9 <= t <= s1 + 1e-9:
+                        v = g
+                        if fi > 0 and t < s0 + fi:
+                            v *= shape((t - s0) / fi, ci)
+                        if fo > 0 and t > s1 - fo:
+                            v *= shape((s1 - t) / fo, co)
+                        best = v if best is None else max(best, v)
+                return 1.0 if best is None else best
+            ts = set()
+            for s0, s1, g, fi, fo, ci, co in spans:
+                ts.update((max(0.0, s0 - 0.002), s0, s1, s1 + 0.002))
+                for k in range(1, 12):  # the fades' curves, in steps
+                    if fi > 0:
+                        ts.add(s0 + fi * k / 12)
+                    if fo > 0:
+                        ts.add(s1 - fo * k / 12)
+                if fi > 0:
+                    ts.add(s0 + fi)
+                if fo > 0:
+                    ts.add(s1 - fo)
+            pts = [(t, min(1.0, env(t) / 2.0)) for t in sorted(ts)]
+            out.append((f"cg:{tid}", f"T{self.slots[tid]}", "cgain", pts))
+        return out
 
     def _pattern_len(self, pid: str) -> float:
         return max(0.25, float(self.p.live("pattern").get(pid, {}).get("len") or 4 * int(self.p.meta()["beats"])))

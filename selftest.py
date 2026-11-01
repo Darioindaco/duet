@@ -1766,6 +1766,50 @@ def test_channel_blocks():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_clip_gain():
+    """A pattern block's gain line and fades act on what its channel plays (the "cgain" curve)."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-cgain-"))
+    d = Daw(e, root / "songs", "me")
+    x = [0.0] * N
+    try:
+        d.set_local("click", False)
+        d.edit([["meta", "meta", {"bpm": 120.0}],
+                ["track", "syn", {"name": "Synth", "order": 5.0, "owner": "me", "vol": 1.0, "inst": {"kind": "synth"}}],
+                ["pattern", "p1", {"name": "Pad", "len": 8.0}],
+                ["note", "n1", {"pattern": "p1", "track": "syn", "start": 0.0, "len": 8.0, "key": 57, "vel": 100}],
+                ["clip", "c1", {"track": "syn", "pattern": "p1", "start": 0.0, "blen": 8.0, "boff": 0.0}]])
+
+        def level(t0, t1):
+            d.play(0.0)
+            out = []
+            for _ in range(int(t1 * SR / N)):
+                out += e.process(x)
+            d.stop()
+            y = np.array(out[int(t0 * SR):])
+            return float(np.sqrt(np.mean(y * y)))
+        full = level(1.0, 2.0)
+        d.edit([["clip", "c1", {"gain": 0.5}]])
+        half = level(1.0, 2.0)
+        assert 0.4 < half / full < 0.6, (full, half)
+        # a 2 s fade in: quieter at 0.5 s than at 1.5 s (full gain again)
+        d.edit([["clip", "c1", {"gain": 1.0, "fade_in": 2.0}]])
+        early, late = level(0.3, 0.7), level(1.4, 1.8)
+        assert early < 0.5 * late, (early, late)
+        print(f"clip gain: ok  (a pattern block at half gain: {half / full:.2f} of the level; a fade in rises)")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_takes():
     """Loop recording makes a take each time round (the last whole one plays); comping picks a take
     for a stretch; punch keeps only what's between the in and out points, stops by itself after the
@@ -2041,6 +2085,7 @@ if __name__ == "__main__":
     test_tempo_map()
     test_takes()
     test_channel_blocks()
+    test_clip_gain()
     test_instruments()
     test_patterns()
     test_live()

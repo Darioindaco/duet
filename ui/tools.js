@@ -33,6 +33,13 @@ function setTool(t) {
   $("lanes").style.cursor = song.tool === "pointer" ? "" : toolCursor();
 }
 
+function setShowGain(on) {
+  song.showGain = !!on;
+  store.set("showGain", song.showGain);
+  $("gainLineBtn")?.classList.toggle("on", song.showGain);
+  songDraw();
+}
+
 function setPatLoop(on) {
   song.patLoop = !!on;
   store.set("patLoop", song.patLoop);
@@ -51,6 +58,13 @@ function toolsSetup() {
     b.onclick = () => setTool(t);
     box.append(b);
   }
+  const gn = document.createElement("button");
+  gn.className = "tool gaint";
+  gn.id = "gainLineBtn";
+  gn.title = "Gain lines: a line on every clip (patterns too) to drag its level up or down";
+  gn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M3 12h18"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/><path d="M12 4v3M12 17v3"/></svg>`;
+  gn.onclick = () => setShowGain(!song.showGain);
+  box.append(gn);
   const lp = document.createElement("button");
   lp.className = "tool loopt";
   lp.id = "patLoopBtn";
@@ -60,6 +74,7 @@ function toolsSetup() {
   box.append(lp);
   setTool(store.get("plTool", "pointer"));
   setPatLoop(store.get("patLoop", true));
+  setShowGain(store.get("showGain", false));
   addEventListener("keydown", (e) => {
     if (ui.view !== "song" || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, select, textarea")) return;
     if (!$("clipEd").hidden || !$("keysM").hidden || !$("newTrackM").hidden) return;
@@ -109,14 +124,15 @@ function toolDown(e, p) {
     return true;
   }
   if (t === "fade") {
-    if (!h || h.c.pattern) return true;
-    const c = h.c, lanes = $("lanes"), s0 = b2s(c.start), s1 = s0 + c.len;
-    const which = b2s(p.beat) - s0 < c.len / 2 ? "fade_in" : "fade_out";
+    if (!h) return true;
+    // (pattern blocks fade too: their channel's gain curve)
+    const c = h.c, lanes = $("lanes"), s0 = b2s(c.start), s1 = b2s(c.start + clipBeats(c)), clen = s1 - s0;
+    const which = b2s(p.beat) - s0 < clen / 2 ? "fade_in" : "fade_out";
     const before = { fade_in: c.fade_in || 0, fade_out: c.fade_out || 0 };
     const move = (ev) => {
       const s = b2s(lanePoint(ev).beat);
-      if (which === "fade_in") c.fade_in = Math.max(0, Math.min(c.len - (c.fade_out || 0), s - s0));
-      else c.fade_out = Math.max(0, Math.min(c.len - (c.fade_in || 0), s1 - s));
+      if (which === "fade_in") c.fade_in = Math.max(0, Math.min(clen - (c.fade_out || 0), s - s0));
+      else c.fade_out = Math.max(0, Math.min(clen - (c.fade_in || 0), s1 - s));
       songDraw();
     };
     const up = () => {

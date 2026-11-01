@@ -1475,6 +1475,7 @@ impl Engine {
                 let target = match (what.as_str(), slot) {
                     ("vol", Some(i)) => Some(AutoTarget::Fader(i)),
                     ("pan", Some(i)) => Some(AutoTarget::Pan(i)),
+                    ("cgain", Some(i)) => Some(AutoTarget::ClipGain(i)),
                     (w, _) if w.starts_with("fx:") => {
                         let mut it = w[3..].splitn(2, ':');
                         let pos = it.next().and_then(|x| x.parse::<usize>().ok());
@@ -1518,6 +1519,7 @@ impl Engine {
                         self.cmd(Cmd::InstParam(Target::Track(i), k, inst.p[k]));
                     }
                 }
+                AutoTarget::ClipGain(_) => {} // (set again every block: back to 1 by itself)
             }
         }
         Ok(bad)

@@ -108,6 +108,8 @@ pub enum AutoTarget {
     Fx(Option<usize>, usize, usize),
     /// a knob on a track's instrument
     Inst(usize, usize),
+    /// the gain of a track's pattern blocks (their gain line and fades), on its instrument
+    ClipGain(usize),
 }
 
 /// One automation lane: points (timeline position, value 0..1) sorted by

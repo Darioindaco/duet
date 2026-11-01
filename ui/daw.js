@@ -857,19 +857,7 @@ function drawClip(ctx, c, x, y, w, h, track) {
       ctx.beginPath(); ctx.moveTo(lx - 4, y + 15); ctx.lineTo(lx + 4, y + 15); ctx.lineTo(lx, y + 21); ctx.fill();
     }
   }
-  // fades: shade what's faded out, a line where the level goes
-  const fin = fadePx(c, "in", song.ppb), fout = fadePx(c, "out", song.ppb);
-  ctx.fillStyle = "rgba(8,7,11,0.55)";
-  ctx.strokeStyle = "#ffffffb0";
-  ctx.lineWidth = 1;
-  if (fin > 0.5) {
-    ctx.beginPath(); ctx.moveTo(x, y + 15); ctx.lineTo(x + fin, y + 15); ctx.lineTo(x, y + h); ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(x, y + h); ctx.lineTo(x + fin, y + 15); ctx.stroke();
-  }
-  if (fout > 0.5) {
-    ctx.beginPath(); ctx.moveTo(x + w, y + 15); ctx.lineTo(x + w - fout, y + 15); ctx.lineTo(x + w, y + h); ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(x + w, y + h); ctx.lineTo(x + w - fout, y + 15); ctx.stroke();
-  }
+  drawFadesAndGain(ctx, c, x, y, w, h);
   ctx.fillStyle = "#121016";
   ctx.font = "700 10.5px system-ui, sans-serif";
   const g = c.gain ?? 1;
@@ -891,12 +879,6 @@ function drawClip(ctx, c, x, y, w, h, track) {
     ctx.fillStyle = "#ffe2a3";
     ctx.font = "600 11px system-ui, sans-serif";
     ctx.fillText(c.tune && (c.tune.notes || []).length && !c.stretch ? "Tuning…" : "Stretching…", Math.max(x, 0) + 12, mid + 4);
-  }
-  // fade handles on the clip you're pointing at (or that's selected)
-  if ((song.hover === c.id || sel) && w > 30) {
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(x + Math.max(fin, 5) - 3.5, y + 1, 7, 7);
-    ctx.fillRect(x + Math.min(w - fout, w - 5) - 3.5, y + 1, 7, 7);
   }
   ctx.restore();
   ctx.beginPath();
@@ -944,7 +926,8 @@ function drawPatternClip(ctx, c, x, y, w, h) {
   }
   ctx.fillStyle = "#121016";
   ctx.font = "700 10.5px system-ui, sans-serif";
-  ctx.fillText(p ? p.name || "Pattern" : "(pattern gone)", Math.max(x, 0) + 6, y + 11);
+  ctx.fillText((p ? p.name || "Pattern" : "(pattern gone)") + (Math.abs((c.gain ?? 1) - 1) > 0.001 ? `  ${fmtDb(c.gain ?? 1)}` : ""), Math.max(x, 0) + 6, y + 11);
+  drawFadesAndGain(ctx, c, x, y, w, h);
   ctx.restore();
   ctx.beginPath();
   ctx.roundRect(x + 0.5, y + 0.5, Math.max(2, w - 1), h - 1, 6);
@@ -1139,13 +1122,13 @@ function songFrame() {
 // it, the small handles in its top corners set the fades. Alt: no snapping.
 // On empty space: click moves the playhead, drag selects a box of clips.
 const EDGE = 6;
-const CURSORS = { body: "grab", left: "w-resize", right: "e-resize", fin: "col-resize", fout: "col-resize" };
+const CURSORS = { body: "grab", left: "w-resize", right: "e-resize", fin: "col-resize", fout: "col-resize", cin: "ns-resize", cout: "ns-resize", gain: "ns-resize" };
 
 function lanePoint(e) {
   const lanes = $("lanes"), r = lanes.getBoundingClientRect();
   const x = e.clientX - r.left, y = e.clientY - r.top;
   const px = x + lanes.scrollLeft, py = y + lanes.scrollTop;
-  return { inside: x >= 0 && y >= 0 && x <= lanes.clientWidth && y <= lanes.clientHeight, px, py, beat: px / song.ppb, ...rowAt(py) };
+  return { inside: x >= 0 && y >= 0 && x <= lanes.clientWidth && y <= lanes.clientHeight, px, py, beat: px / song.ppb, shift: e.shiftKey, ...rowAt(py) };
 }
 
 function hitClip(beat, row) {
@@ -1169,20 +1152,30 @@ function hitZone(p) {
   const c = hitClip(p.beat, p.row);
   if (!c) return null;
   const ppb = song.ppb, w = clipBeats(c) * ppb, lx = p.px - c.start * ppb, ly = p.py - (rowY(p.row) + 2);
-  const fin = fadePx(c, "in", ppb), fout = fadePx(c, "out", ppb);
-  if (ly < 14 && w > 30 && !c.pattern) {
+  const fin = fadePx(c, "in", ppb), fout = fadePx(c, "out", ppb), hh = ROW - 5;
+  if (ly < 14 && w > 30) {
     if (Math.abs(lx - Math.max(fin, 5)) <= 6 && lx < w / 2) return { c, zone: "fin" };
     if (Math.abs(lx - Math.min(w - fout, w - 5)) <= 6 && lx >= w / 2) return { c, zone: "fout" };
   }
+  // the round handles halfway along a fade: drag up or down to bend it
+  for (const [which, fw] of [["in", fin], ["out", fout]]) {
+    if (fw < 14) continue;
+    const hx = which === "in" ? fw / 2 : w - fw / 2, hy = 15 + (hh - 15) * (1 - fadeShape(0.5, c[`fade_${which}_curve`] || 0));
+    if (Math.hypot(lx - hx, ly - hy) <= 7) return { c, zone: which === "in" ? "cin" : "cout" };
+  }
+  // the gain line (when shown)
+  if (song.showGain && Math.abs(ly - gainY(c.gain ?? 1, hh)) <= 4 && lx > 6 && lx < w - 6) return { c, zone: "gain" };
   if (w > 3 * EDGE && lx <= EDGE) return { c, zone: "left" };
   if (w > 3 * EDGE && lx >= w - EDGE) return { c, zone: "right" };
   return { c, zone: "body" };
 }
 
-const clipFields = (c) => (c.pattern ? { track: c.track, pattern: c.pattern, start: c.start, blen: c.blen, boff: c.boff || 0 }
+const clipFields = (c) => (c.pattern ? { track: c.track, pattern: c.pattern, start: c.start, blen: c.blen, boff: c.boff || 0, once: !!c.once,
+    gain: c.gain ?? 1, fade_in: c.fade_in || 0, fade_out: c.fade_out || 0, fade_in_curve: c.fade_in_curve || 0, fade_out_curve: c.fade_out_curve || 0 }
   : { track: c.track, file: c.file, start: c.start, offset: c.offset || 0, len: c.len,
       gain: c.gain ?? 1, fade_in: c.fade_in || 0, fade_out: c.fade_out || 0,
-      speed: c.speed ?? 1, pitch: c.pitch || 0, stretch: !!c.stretch, reverse: !!c.reverse });
+      speed: c.speed ?? 1, pitch: c.pitch || 0, stretch: !!c.stretch, reverse: !!c.reverse,
+      fade_in_curve: c.fade_in_curve || 0, fade_out_curve: c.fade_out_curve || 0, ...(c.loop ? { loop: c.loop } : {}) });
 // file seconds per timeline second (in tape mode the pitch speeds it up too)
 const clipRatio = (c) => (c.speed ?? 1) * (c.stretch ? 1 : 2 ** ((c.pitch || 0) / 12));
 // where in the file the clip is at timeline second t (from its start)
@@ -1227,8 +1220,8 @@ function lanesDown(e) {
   const c = h.c;
   if (e.shiftKey && h.zone === "body") { song.sel.has(c.id) ? song.sel.delete(c.id) : song.sel.add(c.id); songDraw(); return; }
   if (!song.sel.has(c.id)) { song.sel.clear(); song.sel.add(c.id); }
-  const d = { zone: h.zone, x0: e.clientX, y0: e.clientY, moved: false, anchor: c, row0: p.row, grab: p.beat - c.start,
-    copy: (e.ctrlKey || e.metaKey) && h.zone === "body", sel: h.zone === "body" ? selClips() : [c], result: null };
+  const d = { zone: h.zone, x0: e.clientX, y0: e.clientY, py0: p.py, moved: false, anchor: c, row0: p.row, grab: p.beat - c.start,
+    copy: (e.ctrlKey || e.metaKey) && h.zone === "body", sel: h.zone === "body" || h.zone === "gain" ? selClips() : [c], result: null };
   song.drag = d;
   if (h.zone === "body") lanes.style.cursor = "grabbing";
   const move = (ev) => {
@@ -1292,9 +1285,26 @@ function dragResult(d, q, snap) {
     out[c.id] = { len, fade_out: Math.min(c.fade_out || 0, len - (c.fade_in || 0)) };
     if (c.reverse) out[c.id].offset = Math.max(0, o - (len - c.len) * r);
   } else if (d.zone === "fin") {
-    out[c.id] = { fade_in: Math.max(0, Math.min(c.len - (c.fade_out || 0), b2s(q.beat) - cs)) };
+    out[c.id] = { fade_in: Math.max(0, Math.min(ce - cs - (c.fade_out || 0), b2s(q.beat) - cs)) };
   } else if (d.zone === "fout") {
-    out[c.id] = { fade_out: Math.max(0, Math.min(c.len - (c.fade_in || 0), ce - b2s(q.beat))) };
+    out[c.id] = { fade_out: Math.max(0, Math.min(ce - cs - (c.fade_in || 0), ce - b2s(q.beat))) };
+  } else if (d.zone === "cin" || d.zone === "cout") {
+    // up: bowed up (fast), down: bowed down (slow); back to straight in the middle
+    const f = d.zone === "cin" ? "fade_in_curve" : "fade_out_curve";
+    let v = Math.max(-1, Math.min(1, (c[f] || 0) + (d.py0 - q.py) / 40));
+    if (Math.abs(v) < 0.06) v = 0;
+    out[c.id] = { [f]: v };
+  } else if (d.zone === "gain") {
+    // the gain line: the selected clips move by as many dB as this one
+    // half a dB a pixel (a tenth with Shift), so it's easy to set exactly
+    const g0 = c.gain ?? 1, db0 = g0 > 0 ? 20 * Math.log10(g0) : -60;
+    const dbNew = Math.min(GAIN_TOP, db0 + (d.py0 - q.py) * (q.shift ? 0.1 : 0.5));
+    const g1 = dbNew <= -60 ? 0 : 10 ** (dbNew / 20);
+    const db = dbNew - db0;
+    for (const k of d.sel.length > 1 && d.sel.includes(c) ? d.sel : [c]) {
+      const g = g1 <= 0.0011 ? 0 : Math.min(2, (k.gain ?? 1) * 10 ** (db / 20));
+      out[k.id] = { gain: k === c ? g1 : g };
+    }
   }
   return out;
 }
@@ -2205,4 +2215,64 @@ function patRound(p) {
   for (const n of song.view.notes || []) if (n.pattern === p.id) end = Math.max(end, n.start + n.len);
   if (end > r + 1e-6) r = Math.ceil(end / bpb() - 1e-9) * bpb();
   return Math.max(0.25, r);
+}
+
+// ---------- clip fades (bendable) and the gain line ----------
+// a fade's level at x (0..1 through it), bowed by curve (-1..1) — as the engine's fade_shape
+function fadeShape(x, curve) {
+  x = Math.max(0, Math.min(1, x));
+  if (Math.abs(curve) < 1e-3) return x;
+  return x ** (curve > 0 ? 1 / (1 + 3 * curve) : 1 - 3 * curve);
+}
+// the gain line's height in a clip h high: +6 dB at the top, -48 dB (and silence) at the bottom
+const GAIN_TOP = 6, GAIN_BOTTOM = -48;
+function gainY(g, h) {
+  const db = g > 0 ? 20 * Math.log10(g) : GAIN_BOTTOM;
+  const pos = (Math.max(GAIN_BOTTOM, Math.min(GAIN_TOP, db)) - GAIN_BOTTOM) / (GAIN_TOP - GAIN_BOTTOM);
+  return 17 + (h - 19) * (1 - pos);
+}
+function gainFromY(yy, h) {
+  const pos = 1 - (yy - 17) / (h - 19);
+  if (pos <= 0.001) return 0;
+  return Math.min(2, 10 ** ((GAIN_BOTTOM + Math.min(1, pos) * (GAIN_TOP - GAIN_BOTTOM)) / 20));
+}
+function drawFadesAndGain(ctx, c, x, y, w, h) {
+  const fin = fadePx(c, "in", song.ppb), fout = fadePx(c, "out", song.ppb);
+  const top = y + 15, span = h - 15, hot = song.hover === c.id || song.sel.has(c.id);
+  ctx.lineWidth = 1;
+  for (const [which, fw] of [["in", fin], ["out", fout]]) {
+    if (fw <= 0.5) continue;
+    const curve = c[`fade_${which}_curve`] || 0, n = Math.max(4, Math.min(40, Math.round(fw / 3)));
+    const px = (k) => (which === "in" ? x + fw * k / n : x + w - fw * k / n);
+    const py = (k) => top + span * (1 - fadeShape(k / n, curve));
+    // shade what's faded out, a line where the level goes
+    ctx.fillStyle = "rgba(8,7,11,0.55)";
+    ctx.beginPath(); ctx.moveTo(px(0), top);
+    for (let k = 0; k <= n; k++) ctx.lineTo(px(k), py(k));
+    ctx.lineTo(px(n), top); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "#ffffffb0";
+    ctx.beginPath(); ctx.moveTo(px(0), py(0));
+    for (let k = 1; k <= n; k++) ctx.lineTo(px(k), py(k));
+    ctx.stroke();
+    if (hot && fw >= 14) { // the handle to bend it
+      const hx = which === "in" ? x + fw / 2 : x + w - fw / 2, hy = top + span * (1 - fadeShape(0.5, curve));
+      ctx.fillStyle = "#fff";
+      ctx.beginPath(); ctx.arc(hx, hy, 3.5, 0, 2 * Math.PI); ctx.fill();
+    }
+  }
+  // fade handles on the clip you're pointing at (or that's selected)
+  if (hot && w > 30) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(x + Math.max(fin, 5) - 3.5, y + 1, 7, 7);
+    ctx.fillRect(x + Math.min(w - fout, w - 5) - 3.5, y + 1, 7, 7);
+  }
+  if (song.showGain) {
+    const gy = y + gainY(c.gain ?? 1, h);
+    ctx.fillStyle = "#ffd166";
+    ctx.fillRect(x + 2, Math.round(gy) - 0.5, Math.max(0, w - 4), 1.5);
+    if (hot) {
+      ctx.font = "600 10px system-ui, sans-serif";
+      ctx.fillText(fmtDb(c.gain ?? 1), Math.max(x, 0) + 6, gy - 3 < y + 24 ? gy + 11 : gy - 3);
+    }
+  }
 }

@@ -43,6 +43,9 @@ pub struct Strip {
     /// tracks: where the instrument's notes are read next (a jump means the
     /// loop went round: notes still sounding are let go)
     pub next_read: i64,
+    /// the pattern blocks' gain and fades where the song is (automation lane "cgain"): on what the
+    /// instrument plays, before the rack
+    pub clip_gain: f32,
 }
 
 impl Strip {
@@ -50,7 +53,7 @@ impl Strip {
         Strip {
             s, rack: Rack::new(), inst: None,
             l: vec![0.0; MAX_FRAME], r: vec![0.0; MAX_FRAME], last: vec![0.0; MAX_FRAME],
-            level: 0.0, next_read: i64::MIN,
+            level: 0.0, next_read: i64::MIN, clip_gain: 1.0,
         }
     }
 
@@ -351,6 +354,9 @@ fn read_segs(play: &Play, ahead: i64, out: &mut [(usize, i64, usize); 6]) -> usi
 /// (once per block: before the tracks are rendered). Playing or not, so a
 /// stopped song sounds the way it would at the playhead.
 pub fn apply_automation(tl: &Timeline, pos: i64, tracks: &mut [Strip], master_rack: &mut Rack) {
+    for s in tracks.iter_mut() {
+        s.clip_gain = 1.0; // (a lane sets it again below)
+    }
     for lane in &tl.autos {
         let Some(v) = lane.value_at(pos) else { continue };
         match lane.target {
@@ -376,6 +382,11 @@ pub fn apply_automation(tl: &Timeline, pos: i64, tracks: &mut [Strip], master_ra
                     if k < slot.cfg.p.len() {
                         slot.cfg.p[k] = v;
                     }
+                }
+            }
+            AutoTarget::ClipGain(t) => {
+                if let Some(s) = tracks.get_mut(t) {
+                    s.clip_gain = 2.0 * v; // 0.5 is unity: up to +6 dB
                 }
             }
             AutoTarget::Inst(t, k) => {
@@ -428,6 +439,13 @@ pub fn render_tracks(tracks: &mut [Strip], w: &mut Wiring, b: &mut TrackBufs, tl
                         }
                         render_inst(tl, i, inst, p, &mut l[off..off + len], &mut r[off..off + len]);
                         strip.next_read = p + len as i64;
+                        let cg = strip.clip_gain;
+                        if cg != 1.0 {
+                            for k in off..off + len {
+                                l[k] *= cg;
+                                r[k] *= cg;
+                            }
+                        }
                     }
                 }
                 let m = read_segs(pl, w.ahead_audio[i], &mut segs);
