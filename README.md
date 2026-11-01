@@ -121,6 +121,13 @@ has two tabs:
    - **Shaper:** volume shaping in time with the song (pump, sine, square, saws,
      gate; 1/32 to 2 bars), or started by each hit on a sidechain; on everything,
      only the lows, or only the highs.
+   - **Tune live:** pitch correction while it plays (or while you sing through
+     it): key and scale (or *Use it* for the song's key), retune speed from
+     instant (the hard, robotic sound) to slow and natural, humanize (lets
+     vibrato and slides through), amount, transpose. The display draws the pitch
+     it hears and what comes out on the notes of the scale. It is 32 ms late at
+     48 kHz; the rest of the mix waits for it, but for singing through it live
+     the offline Tune in the clip editor is the better choice.
    - **De-esser** (split or wide, *Listen* to hear what it catches), **Transient**
      (more or less attack and sustain), **Gate** (hold, hysteresis, a filtered or
      sidechain detector), **Imager** (width for lows and highs, mono bass,

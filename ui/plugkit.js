@@ -67,6 +67,9 @@ const PK_SPEC = {
     ["noise", "Noise", "pct"], ["tone", "Tone", "log", 1000, 20000, "Hz"], ["mix", "Mix", "pct"], ["output", "Output", "lin", -12, 12, "dB"]],
   utility: [["gain", "Gain", "lin", -24, 24, "dB"], ["pan", "Pan", "lin", -100, 100, "%"], ["width", "Width", "lin", 0, 200, "%"], ["phasel", "Flip L", "toggle"],
     ["phaser", "Flip R", "toggle"], ["mono", "Mono", "toggle"], ["swap", "Swap L/R", "toggle"], ["dc", "DC cut", "toggle"]],
+  autotune: [["key", "Key", "choice", ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]],
+    ["scale", "Scale", "choice", ["Chromatic", "Major", "Minor", "Harmonic minor", "Pentatonic major", "Pentatonic minor", "Blues"]],
+    ["speed", "Retune speed", "sq", 0, 400, "ms"], ["humanize", "Humanize", "pct"], ["amount", "Amount", "pct"], ["transpose", "Transpose", "lin", -12, 12, "st"], ["mix", "Mix", "pct"]],
   doubler: [["detune", "Detune", "lin", 0, 50, "ct"], ["delay", "Delay", "lin", 0, 40, "ms"], ["width", "Width", "pct"], ["voices", "Voices", "choice", ["2", "4", "6", "8"]],
     ["mix", "Mix", "pct"], ["lowcut", "Low cut", "log", 20, 1000, "Hz", { offBelow: 0.005 }]],
   nam: [["input", "Input", "lin", -12, 12, "dB"], ["output", "Output", "lin", -12, 12, "dB"]],
@@ -100,6 +103,7 @@ const PK_GROUPS = {
   lofi: [["Digital", ["bits", "rate"]], ["Tape", ["wow", "flutter", "noise", "tone"]], ["Output", ["mix", "output"]]],
   utility: [["Level", ["gain", "pan", "width"]], ["Switches", ["phasel", "phaser", "mono", "swap", "dc"]]],
   doubler: [["Voices", ["voices", "detune", "delay", "width"]], ["Mix", ["mix", "lowcut"]]],
+  autotune: [["Notes", ["key", "scale"]], ["Correction", ["speed", "humanize", "amount"]], ["Output", ["transpose", "mix"]]],
 };
 
 function pkSpec(kind, key) { return (PK_SPEC[kind] || []).find((s) => s[0] === key); }
@@ -107,12 +111,14 @@ function pkReal(spec, v) {
   const [, , k, a, b] = spec;
   if (k === "choice") return Math.round(v * (a.length - 1));
   if (k === "toggle") return v >= 0.5 ? 1 : 0;
+  if (k === "sq") return a + (b - a) * v * v;
   return k === "log" ? a * (b / a) ** v : k === "lin" ? a + (b - a) * v : v * 100;
 }
 function pkNorm(spec, real) {
   const [, , k, a, b] = spec;
   if (k === "choice") return Math.max(0, Math.min(1, real / Math.max(1, a.length - 1)));
   if (k === "toggle") return real ? 1 : 0;
+  if (k === "sq") return Math.max(0, Math.min(1, Math.sqrt(Math.max(0, (real - a) / (b - a)))));
   const v = k === "log" ? Math.log(Math.max(1e-9, real) / a) / Math.log(b / a) : k === "lin" ? (real - a) / (b - a) : real / 100;
   return Math.max(0, Math.min(1, v));
 }
@@ -126,6 +132,8 @@ function pkFmt(spec, v) {
   if (u === "oct") return (r > 0.05 ? "+" : "") + r.toFixed(1) + " oct";
   if (u === "bit") return r.toFixed(1) + " bit";
   if (u === "ct") return r.toFixed(1) + " ct";
+  if (u === "st") return (Math.round(r) > 0 ? "+" : "") + Math.round(r) + " st";
+  if (u === "ms" && spec[2] === "sq" && r < 0.5) return "instant";
   if (u === "°") return Math.round(r) + "°";
   if (u === "Hz" && r < 10) return r.toFixed(2) + " Hz";
   if (u === "Hz") return r >= 1000 ? (r / 1000).toFixed(r >= 10000 ? 1 : 2) + " kHz" : Math.round(r) + " Hz";
@@ -798,6 +806,7 @@ Object.assign(PK_DEFAULTS, {
   lofi: { bits: 0.5, rate: 0.6, wow: 0.2, flutter: 0.1, noise: 0.15, tone: 0.7, mix: 1, output: 0.5 },
   utility: { gain: 0.5, pan: 0.5, width: 0.5, phasel: 0, phaser: 0, mono: 0, swap: 0, dc: 0 },
   doubler: { detune: 0.24, delay: 0.4, width: 0.8, voices: 0, mix: 0.5, lowcut: 0 },
+  autotune: { key: 0, scale: 1 / 6, speed: 0.25, humanize: 0.3, amount: 1, transpose: 0.5, mix: 1 },
 });
 const PK_NEW_DEFAULTS = { comp: { knee: 0, mix: 1, schp: 0, char: 0 }, limiter: { link: 1, tp: 1 },
   delay: { sync: 0, lowcut: 0, highcut: 1, drive: 0, wow: 0, duck: 0 }, reverb: { type: 0, predelay: 0, lowcut: 0, highcut: 1, mod: 0.3 } };
@@ -815,6 +824,7 @@ const PK_FX = [
   { id: "filter", name: "Filter", sub: "sweeps and wobbles", color: "#ff6bd6", knobs: pkKnobs("filter") },
   { id: "lofi", name: "Lo-fi", sub: "bits, tape, vinyl", color: "#d6b07a", knobs: pkKnobs("lofi") },
   { id: "doubler", name: "Doubler", sub: "wide copies", color: "#7fb2ff", knobs: pkKnobs("doubler") },
+  { id: "autotune", name: "Tune live", sub: "pitch correction", color: "#ff5fa2", knobs: pkKnobs("autotune") },
   { id: "utility", name: "Utility", sub: "gain, pan, phase, mono", color: "#b8b8c8", knobs: pkKnobs("utility") },
 ];
 
@@ -882,6 +892,9 @@ Object.assign(PK_PRESETS, {
     "Crushed": pkPre("lofi", { bits: 5, rate: 6000, wow: 0, flutter: 0, noise: 0, tone: 20000 }), "Old vinyl": pkPre("lofi", { bits: 16, rate: 48000, wow: 15, flutter: 5, noise: 60, tone: 7000 }) },
   doubler: { "Vocal double": pkPre("doubler", { detune: 10, delay: 18, width: 80, voices: "2", mix: 45 }), "Huge chorus": pkPre("doubler", { detune: 22, delay: 25, width: 100, voices: "6", mix: 60 }),
     "Subtle width": pkPre("doubler", { detune: 6, delay: 10, width: 60, voices: "2", mix: 30, lowcut: 200 }) },
+  autotune: { "Natural": pkPre("autotune", { speed: 60, humanize: 50, amount: 85 }), "Pop": pkPre("autotune", { speed: 20, humanize: 30, amount: 100 }),
+    "Hard (robot)": pkPre("autotune", { speed: 0, humanize: 0, amount: 100 }), "Subtle": pkPre("autotune", { speed: 140, humanize: 65, amount: 60 }),
+    "Octave down": pkPre("autotune", { scale: "Chromatic", amount: 0, transpose: -12 }) },
   utility: { "Mono": pkPre("utility", { mono: 1 }), "-6 dB": pkPre("utility", { gain: -6 }), "Flip phase": pkPre("utility", { phasel: 1, phaser: 1 }) },
   shaper: {
     "Quarter pump": pkPre("shaper", { shape: "Pump", rate: "1/4", depth: 100, curve: 50, hold: 5 }),
@@ -1440,5 +1453,62 @@ Object.assign(PK_DISPLAY, {
         ctx.fillStyle = color; glow(ctx, color, 10); ctx.globalAlpha = 0.5 + 0.5 * mix; ctx.fill(); noGlow(ctx); ctx.globalAlpha = 1;
       }
     }, 130);
+  },
+});
+
+Object.assign(PK_DISPLAY, {
+  // Tune live: the pitch it hears (thin) and what comes out (bright), on the notes of the scale,
+  // and the song's key one click away
+  autotune(slot, color, setParam, gesture) {
+    const heard = [], out = [];
+    let target = -1, centre = 60;
+    const NAMES = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
+    const SC = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], [0, 2, 4, 5, 7, 9, 11], [0, 2, 3, 5, 7, 8, 10], [0, 2, 3, 5, 7, 8, 11], [0, 2, 4, 7, 9], [0, 3, 5, 7, 10], [0, 3, 5, 6, 7, 10]];
+    const cv = pkCanvas("atd", (ctx, w, h) => {
+      const key = pkReal(pkSpec("autotune", "key"), slot.key ?? 0), scale = pkReal(pkSpec("autotune", "scale"), slot.scale ?? 1 / 6);
+      const span = 14, lo = centre - span / 2, Y = (m) => h - 8 - (m - lo) / span * (h - 16), gx = 34;
+      for (let n = Math.floor(lo); n <= Math.ceil(lo + span); n++) {
+        const inScale = SC[scale].includes(((n - key) % 12 + 12) % 12), y = Y(n);
+        ctx.fillStyle = n === target ? color + "40" : inScale ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.02)";
+        ctx.fillRect(gx, Math.round(y) - (n === target ? 1 : 0), w - gx, n === target ? 3 : 1);
+        if (inScale) { ctx.fillStyle = n === target ? color : "rgba(255,255,255,0.45)"; ctx.font = "700 9px system-ui, sans-serif"; ctx.fillText(NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1), 4, y + 3); }
+      }
+      const X = (k) => gx + (w - gx - 4) - (heard.length - 1 - k) / 239 * (w - gx - 4);
+      for (const [arr, col, lw] of [[heard, "rgba(255,255,255,0.45)", 1.2], [out, color, 2.4]]) {
+        ctx.beginPath(); let pen = false;
+        arr.forEach((m, k) => { if (m < 0) { pen = false; return; } const y = Y(m); pen ? ctx.lineTo(X(k), y) : ctx.moveTo(X(k), y); pen = true; });
+        ctx.strokeStyle = col; ctx.lineWidth = lw; if (lw > 2) glow(ctx, color, 10); ctx.stroke(); noGlow(ctx);
+      }
+    }, 190);
+    cv.scope = (sc) => {
+      if (!sc || sc.length < 4) return;
+      heard.push(sc[0]); out.push(sc[1]); target = sc[2];
+      if (heard.length > 240) { heard.shift(); out.shift(); }
+      if (sc[0] > 0) centre += (sc[0] - centre) * 0.05;
+      cv.redraw();
+    };
+    // the song's key
+    const wrap = document.createElement("div");
+    wrap.className = "eqpwrap";
+    const bar = document.createElement("div");
+    bar.className = "atbar";
+    const paint = () => {
+      const k = typeof songKey === "function" ? songKey() : null;
+      bar.innerHTML = k ? `<span>Song key: <b>${esc(k)}</b></span><button class="pkb">Use it</button>` : `<span class="fine">Set the song's key in the chord tool to follow it here.</span>`;
+      const b = bar.querySelector("button");
+      if (b) b.onclick = () => {
+        const [root, mode] = k.split(" "), i = NAMES.indexOf(root);
+        if (i < 0) return;
+        gesture();
+        setParam("key", i / 11);
+        setParam("scale", (mode === "minor" ? 2 : 1) / 6);
+        cv.redraw();
+      };
+    };
+    paint();
+    wrap.append(cv, bar);
+    wrap.redraw = () => cv.redraw();
+    wrap.scope = cv.scope;
+    return wrap;
   },
 });

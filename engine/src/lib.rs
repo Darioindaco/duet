@@ -16,6 +16,7 @@ mod jitter;
 mod kit;
 mod plugins;
 mod plugins2;
+mod plugins3;
 mod livenotes;
 mod analyzer;
 #[cfg(target_os = "macos")]

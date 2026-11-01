@@ -1220,7 +1220,7 @@ def test_effects_cpu():
     rack: an empty NAM slot does nothing anyway), monitored, all in stereo."""
     e = Engine()
     every = [fx["name"] for fx in Engine.effects() if fx["name"] not in ("vst", "nam")]  # a VST slot needs a plugin
-    assert len(every) == 21, every
+    assert len(every) == 22, every
     kinds = ["comp", "drive", "chorus", "tremolo", "delay", "reverb", "eq", "limiter"]
     try:
         e.rack_add("L0", "vst")
@@ -1270,6 +1270,15 @@ def test_effects_cpu():
     us3 = e.state()["cpu_us"]
     print(f"effects: ok  (4 strips x 8 more plugins incl. a hall: {us3:.1f} us per block of {N / SR * 1e6:.0f} us)")
     assert us3 < 3000, us3
+    # live pitch correction on every input (it delays them by its stretcher; that's reported)
+    for i in range(4):
+        e.rack_load(f"L{i}", [{"kind": "autotune", "on": True}, {"kind": "deess", "on": True}])
+    for _ in range(600):
+        out = e.process(x, 4)
+    assert np.all(np.isfinite(out))
+    us4 = e.state()["cpu_us"]
+    print(f"effects: ok  (4 strips with live pitch correction: {us4:.1f} us per block of {N / SR * 1e6:.0f} us)")
+    assert us4 < 2500, us4
     for i in range(4):
         e.rack_load(f"L{i}", [{"kind": k, "on": True} for k in pro])
         for b in range(1, 9):

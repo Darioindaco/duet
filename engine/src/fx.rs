@@ -10,7 +10,7 @@
 
 use std::f32::consts::PI;
 
-pub const N_KINDS: usize = 23;
+pub const N_KINDS: usize = 24;
 pub const NAM: usize = 6;
 pub const VST: usize = 7;
 pub const EQ: usize = 8;
@@ -29,6 +29,7 @@ pub const FILTER: usize = 19;
 pub const LOFI: usize = 20;
 pub const UTILITY: usize = 21;
 pub const DOUBLER: usize = 22;
+pub const AUTOTUNE: usize = 23;
 pub const MAX_PARAMS: usize = 80;
 /// what an effect can show in its window besides the meters (spectra, band levels), per slot
 pub const SCOPE_N: usize = 136;
@@ -116,6 +117,10 @@ pub const FX: [FxInfo; N_KINDS] = [
              defaults: d([0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0]), stepped: &["phasel", "phaser", "mono", "swap", "dc"] },
     FxInfo { name: "doubler", params: &["detune", "delay", "width", "voices", "mix", "lowcut"],
              defaults: d([0.24, 0.4, 0.8, 0.0, 0.5, 0.0]), stepped: &["voices"] },
+    // key C..B, scale (chromatic, major, minor, harmonic minor, pentatonics, blues), speed 0..400 ms,
+    // humanize, amount, transpose -12..+12, mix
+    FxInfo { name: "autotune", params: &["key", "scale", "speed", "humanize", "amount", "transpose", "mix"],
+             defaults: d([0.0, 1.0 / 6.0, 0.25, 0.3, 1.0, 0.5, 1.0]), stepped: &["key", "scale", "transpose"] },
 ];
 
 /// Tempo for tempo-synced plugins: the metronome's, written by the audio thread.
@@ -207,6 +212,7 @@ impl SlotCfg {
             LIMITER => Limiter::lookahead(sr) as u32,
             CLIPPER => crate::kit::Oversampler::latency(crate::kit::choice(self.p[crate::plugins::CLIP_OS], 4)),
             SATURATE => crate::kit::Oversampler::latency(crate::kit::choice(self.p[crate::plugins::SAT_OS], 4)),
+            AUTOTUNE => crate::plugins3::latency(sr),
             _ => 0,
         }
     }
@@ -303,6 +309,7 @@ pub fn make(cfg: &SlotCfg, sr: f32) -> Result<Box<dyn Effect>, String> {
         LOFI => Box::new(crate::plugins2::LoFi::new(sr)),
         UTILITY => Box::new(crate::plugins2::Utility::new(sr)),
         DOUBLER => Box::new(crate::plugins2::Doubler::new(sr)),
+        AUTOTUNE => Box::new(crate::plugins3::AutoTune::new(sr)),
         _ => {
             let v = cfg.vst.as_ref().ok_or("no plugin chosen")?;
             Box::new(VstEffect { proc: crate::vst::VstProc::create(&v.path, &v.cid, v.state.as_deref(), sr as f64)? })
@@ -1255,7 +1262,7 @@ mod tests {
     fn kinds_are_where_their_constants_say() {
         for (k, name) in [(COMP, "comp"), (NAM, "nam"), (VST, "vst"), (EQ, "eq"), (LIMITER, "limiter"), (EQPRO, "eqpro"), (CLIPPER, "clipper"),
             (MULTI, "multi"), (SATURATE, "saturate"), (SHAPER, "shaper"), (DEESS, "deess"), (TRANSIENT, "transient"), (WIDTH, "width"),
-            (GATE, "gate"), (FILTER, "filter"), (LOFI, "lofi"), (UTILITY, "utility"), (DOUBLER, "doubler")] {
+            (GATE, "gate"), (FILTER, "filter"), (LOFI, "lofi"), (UTILITY, "utility"), (DOUBLER, "doubler"), (AUTOTUNE, "autotune")] {
             assert_eq!(FX[k].name, name);
         }
         for f in FX.iter() {
