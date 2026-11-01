@@ -727,7 +727,7 @@ fn registry() -> &'static Mutex<HashMap<u64, Weak<Instance>>> {
     static R: OnceLock<Mutex<HashMap<u64, Weak<Instance>>>> = OnceLock::new();
     R.get_or_init(Default::default)
 }
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn instance(id: u64) -> Option<Arc<Instance>> {
     registry().lock().unwrap().get(&id).and_then(|w| w.upgrade())
@@ -737,8 +737,8 @@ unsafe fn speaker_channels(arr: SpeakerArrangement) -> usize {
     (arr as u64).count_ones() as usize
 }
 
-/// Audio side of a plugin: what process() needs, all preallocated.
-pub struct VstProc {
+/// Audio side of a VST3 plugin: what process() needs, all preallocated.
+pub struct Vst3Proc {
     inst: Arc<Instance>,
     processor: Shared<ComPtr<IAudioProcessor>>,
     edits: rtrb::Consumer<(ParamID, f64)>,
@@ -757,7 +757,7 @@ pub struct VstProc {
     sr: f64,
 }
 
-unsafe impl Send for VstProc {}
+unsafe impl Send for Vst3Proc {}
 
 #[derive(Clone, Debug, Default)]
 pub struct State {
@@ -782,14 +782,116 @@ impl State {
     }
 }
 
+/// A plugin's audio side: VST3 everywhere, Audio Units on the Mac ("au:..." paths). The racks
+/// and instrument slots hold this and don't care which.
+pub enum VstProc {
+    Vst3(Vst3Proc),
+    #[cfg(target_os = "macos")]
+    Au(crate::au::AuProc),
+}
+
+/// What the mixer shows about a running plugin.
+pub struct PluginInfo {
+    pub name: String,
+    pub latency: u32,
+    pub has_editor: bool,
+}
+
 impl VstProc {
+    /// Create and start a plugin; `state` as saved (encoded).
+    pub fn create(path: &str, cid: &str, state: Option<&str>, sr: f64) -> Result<VstProc, String> {
+        Self::create_as(path, cid, state, sr, false)
+    }
+
+    pub fn create_as(path: &str, cid: &str, state: Option<&str>, sr: f64, instrument: bool) -> Result<VstProc, String> {
+        if path.starts_with("au:") {
+            #[cfg(target_os = "macos")]
+            return crate::au::AuProc::create(path, state, sr, instrument).map(VstProc::Au);
+            #[cfg(not(target_os = "macos"))]
+            return Err("Audio Units only run on a Mac".into());
+        }
+        Vst3Proc::create_as(path, cid, state.and_then(State::decode), sr, instrument).map(VstProc::Vst3)
+    }
+
+    pub fn id(&self) -> u64 {
+        match self {
+            VstProc::Vst3(p) => p.id,
+            #[cfg(target_os = "macos")]
+            VstProc::Au(p) => p.id,
+        }
+    }
+
+    pub fn info(&self) -> PluginInfo {
+        match self {
+            VstProc::Vst3(p) => {
+                let i = p.instance();
+                PluginInfo { name: i.name.clone(), latency: i.latency, has_editor: i.has_editor }
+            }
+            #[cfg(target_os = "macos")]
+            VstProc::Au(p) => {
+                let i = p.instance();
+                PluginInfo { name: i.name.clone(), latency: i.latency, has_editor: i.has_editor }
+            }
+        }
+    }
+
+    pub fn set_sample_rate(&mut self, sr: f64) {
+        match self {
+            VstProc::Vst3(p) => p.set_sample_rate(sr),
+            #[cfg(target_os = "macos")]
+            VstProc::Au(p) => p.set_sample_rate(sr),
+        }
+    }
+
+    pub fn note(&mut self, on: bool, key: u8, vel: u8, offset: usize) {
+        match self {
+            VstProc::Vst3(p) => p.note(on, key, vel, offset),
+            #[cfg(target_os = "macos")]
+            VstProc::Au(p) => p.note(on, key, vel, offset),
+        }
+    }
+
+    pub fn process(&mut self, l: &mut [f32], r: &mut [f32], mix: f32, tempo: f64) {
+        match self {
+            VstProc::Vst3(p) => p.process(l, r, mix, tempo),
+            #[cfg(target_os = "macos")]
+            VstProc::Au(p) => p.process(l, r, mix, tempo),
+        }
+    }
+}
+
+/// A running plugin's state, encoded for saving (VST3 or AU), by its id.
+pub fn plugin_state(id: u64) -> Option<String> {
+    if let Some(i) = instance(id) {
+        return i.state().map(|s| s.encode());
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(i) = crate::au::instance(id) {
+        return i.state();
+    }
+    None
+}
+
+/// Show a running plugin's own window, by its id.
+pub fn plugin_editor(id: u64, title: String) -> Result<(), String> {
+    if let Some(i) = instance(id) {
+        return i.show_editor(title);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(i) = crate::au::instance(id) {
+        return i.show_editor(title);
+    }
+    Err("that plugin isn't running".into())
+}
+
+impl Vst3Proc {
     /// Create and start an instance. Blocks while the plugin thread builds it.
-    pub fn create(path: &str, cid: &str, state: Option<State>, sr: f64) -> Result<VstProc, String> {
+    pub fn create(path: &str, cid: &str, state: Option<State>, sr: f64) -> Result<Vst3Proc, String> {
         Self::create_as(path, cid, state, sr, false)
     }
 
     /// The same for an instrument: its note input is switched on.
-    pub fn create_as(path: &str, cid: &str, state: Option<State>, sr: f64, instrument: bool) -> Result<VstProc, String> {
+    pub fn create_as(path: &str, cid: &str, state: Option<State>, sr: f64, instrument: bool) -> Result<Vst3Proc, String> {
         let (edit_tx, edit_rx) = rtrb::RingBuffer::new(1024);
         let path = PathBuf::from(path);
         let cid = hex_tuid(cid)?;
@@ -799,7 +901,7 @@ impl VstProc {
         registry().lock().unwrap().insert(id, Arc::downgrade(&inst));
         let processor = Shared(inst.processor.clone());
         let mk = |chs: &Vec<usize>| -> Vec<Vec<Vec<f32>>> { chs.iter().map(|&c| (0..c).map(|_| vec![0.0; MAX_BLOCK]).collect()).collect() };
-        let mut p = VstProc {
+        let mut p = Vst3Proc {
             inst,
             processor,
             edits: edit_rx,

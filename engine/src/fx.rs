@@ -223,8 +223,7 @@ pub fn make(cfg: &SlotCfg, sr: f32) -> Result<Box<dyn Effect>, String> {
         LIMITER => Box::new(Limiter::new(sr)),
         _ => {
             let v = cfg.vst.as_ref().ok_or("no plugin chosen")?;
-            let state = v.state.as_deref().and_then(crate::vst::State::decode);
-            Box::new(VstEffect { proc: crate::vst::VstProc::create(&v.path, &v.cid, state, sr as f64)? })
+            Box::new(VstEffect { proc: crate::vst::VstProc::create(&v.path, &v.cid, v.state.as_deref(), sr as f64)? })
         }
     })
 }
@@ -247,12 +246,11 @@ impl Slot {
         }
         if cfg.kind == VST {
             let v = cfg.vst.clone().ok_or("no plugin chosen")?;
-            let state = v.state.as_deref().and_then(crate::vst::State::decode);
-            let proc = crate::vst::VstProc::create(&v.path, &v.cid, state, sr as f64)?;
-            let inst = proc.instance();
+            let proc = crate::vst::VstProc::create(&v.path, &v.cid, v.state.as_deref(), sr as f64)?;
+            let inst = proc.info();
             cfg.vst = Some(VstRef {
                 name: if inst.name.is_empty() { v.name } else { inst.name.clone() },
-                id: proc.id,
+                id: proc.id(),
                 latency: inst.latency,
                 has_editor: inst.has_editor,
                 ..v

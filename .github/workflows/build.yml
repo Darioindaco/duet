@@ -4,7 +4,8 @@ name: build
 # minutes once. So every push gets a quick test on Linux (the engine's unit
 # tests and the whole self-test, no sound card needed), and the Mac apps are
 # only built for main, or when you ask: Actions → build → Run workflow.
-# Windows likewise ([release]), or on its own with [windows] in the commit message.
+# Windows likewise ([release]), or on its own with [windows] in the commit message;
+# the Mac apps on their own (no release) with [mac].
 on:
   push:
   workflow_dispatch:
@@ -40,7 +41,7 @@ jobs:
         run: python selftest.py
 
   mac:
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[release]')
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[release]') || contains(github.event.head_commit.message, '[mac]')
     strategy:
       fail-fast: false
       matrix:

@@ -130,12 +130,11 @@ impl InstSlot {
             SYNTH => Box::new(crate::synth::Synth::new(sr)),
             VSTI => {
                 let v = cfg.vst.clone().ok_or("no plugin chosen")?;
-                let state = v.state.as_deref().and_then(crate::vst::State::decode);
-                let proc = crate::vst::VstProc::create_as(&v.path, &v.cid, state, sr as f64, true)?;
-                let inst = proc.instance();
+                let proc = crate::vst::VstProc::create_as(&v.path, &v.cid, v.state.as_deref(), sr as f64, true)?;
+                let inst = proc.info();
                 cfg.vst = Some(VstRef {
                     name: if inst.name.is_empty() { v.name } else { inst.name.clone() },
-                    id: proc.id,
+                    id: proc.id(),
                     latency: inst.latency,
                     has_editor: inst.has_editor,
                     ..v

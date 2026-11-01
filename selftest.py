@@ -1619,6 +1619,51 @@ def test_plugin_path(name="test_gain"):
     return str(out)
 
 
+def test_au():
+    """Audio Units (Mac only): Apple's own AUDelay and DLS synth are on every Mac. Listed, loaded
+    into a rack (an echo comes out), played as an instrument, saved and restored."""
+    if sys.platform != "darwin":
+        print("au: skipped (Audio Units are a Mac thing)")
+        return
+    aus = Engine.au_list()
+    paths = {a["path"]: a for a in aus}
+    delay = "au:61756678:64656c79:6170706c"   # aufx dely appl
+    dls = "au:61756d75:646c7320:6170706c"     # aumu 'dls ' appl
+    assert delay in paths and dls in paths and paths[dls]["instrument"], [a["name"] for a in aus][:20]
+    x = [0.0] * N
+    e = Engine()
+    e.strip_set("L0", "mon", 1)
+    e.rack_add_vst("L0", delay, "au", paths[delay]["name"])
+    slot = e.mixer()["local"][0]["rack"][0]
+    assert slot["kind"] == "vst" and slot["vst"]["name"], slot
+    imp = [0.0] * N
+    imp[0] = 0.9
+    out = list(e.process(imp))
+    for _ in range(400):  # AUDelay: 1 s by default
+        out += e.process(x)
+    out = np.abs(np.array(out))
+    late = np.nonzero(out[2000:] > 0.01)[0]
+    assert len(late), "an echo comes out after the dry click"
+    snap = e.mixer(True)["local"][0]["rack"]
+    assert str(snap[0]["vst"].get("state") or "").startswith("au:"), snap
+    e2 = Engine()
+    e2.strip_set("L0", "mon", 1)
+    e2.rack_load("L0", snap)
+    assert e2.mixer()["local"][0]["rack"][0]["vst"]["path"] == delay
+    # the DLS synth as an instrument
+    v = Engine()
+    v.strip_set("L0", "mon", 1)
+    v.inst_set("L0", "vst", (dls, "au", paths[dls]["name"]))
+    v.note("L0", True, 69, 110)
+    played = []
+    for _ in range(80):
+        played += v.process(x)
+    assert max(abs(s) for s in played) > 0.01, "the AU synth plays a note"
+    for z in (e, e2, v):
+        z.close()
+    print(f"au: ok  ({len(aus)} Audio Units listed; AUDelay echoes, its settings save and restore; the DLS synth plays)")
+
+
 def test_vst():
     path = test_plugin_path()
     if not path:
@@ -2006,6 +2051,7 @@ if __name__ == "__main__":
     test_nam()
     test_tone3000()
     test_vst()
+    test_au()
     if "--compat" in sys.argv:   # needs git history
         test_old_build_compat()
     if "--stun" in sys.argv:

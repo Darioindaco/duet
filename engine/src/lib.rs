@@ -14,6 +14,8 @@ mod fx;
 mod instr;
 mod jitter;
 mod livenotes;
+#[cfg(target_os = "macos")]
+mod au;
 mod loudness;
 mod midi;
 mod mix;
@@ -1025,6 +1027,26 @@ impl Engine {
         vst::default_dirs().into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
     }
 
+    /// The Audio Units on this Mac: [{"path", "cid", "name", "vendor", "instrument"}] (none elsewhere).
+    #[staticmethod]
+    fn au_list<'py>(py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        #[cfg(target_os = "macos")]
+        let list = py.allow_threads(au::list);
+        #[cfg(not(target_os = "macos"))]
+        let list: Vec<(String, String, String, bool)> = { let _ = &py; Vec::new() };
+        #[cfg(target_os = "macos")]
+        let list: Vec<(String, String, String, bool)> = list.into_iter().map(|a| (a.path, a.name, a.vendor, a.instrument)).collect();
+        list.into_iter().map(|(path, name, vendor, instrument)| {
+            let d = PyDict::new(py);
+            d.set_item("path", path)?;
+            d.set_item("cid", "au")?;
+            d.set_item("name", name)?;
+            d.set_item("vendor", vendor)?;
+            d.set_item("instrument", instrument)?;
+            Ok(d)
+        }).collect()
+    }
+
     /// Every .vst3 under these folders.
     #[staticmethod]
     fn vst_find(dirs: Vec<String>) -> Vec<String> {
@@ -1082,8 +1104,7 @@ impl Engine {
             let s = s.ok_or_else(|| PyValueError::new_err("not a VST slot"))?;
             (s.id, format!("{} · Duet", s.name))
         };
-        let inst = vst::instance(id).ok_or_else(|| PyRuntimeError::new_err("that plugin isn't running"))?;
-        py.allow_threads(|| inst.show_editor(title)).map_err(PyRuntimeError::new_err)
+        py.allow_threads(|| vst::plugin_editor(id, title)).map_err(PyRuntimeError::new_err)
     }
 
     /// Start/stop/change the metronome as the leader. Returns the epoch (our block
@@ -1146,7 +1167,7 @@ impl Engine {
             };
             let fresh: Vec<(Target, usize, Option<String>)> = py.allow_threads(|| {
                 ids.into_iter()
-                    .map(|(t, pos, id)| (t, pos, vst::instance(id).and_then(|i| i.state()).map(|s| s.encode())))
+                    .map(|(t, pos, id)| (t, pos, vst::plugin_state(id)))
                     .collect()
             });
             let mut c = self.inner.ctl.lock().unwrap();

@@ -119,6 +119,7 @@ class VstLibrary:
         return self.status
 
     def _scan(self, force):
+        self._au = None  # list the Audio Units again too
         try:
             paths = Engine.vst_find(Engine.vst_dirs())
             todo = []
@@ -154,9 +155,19 @@ class VstLibrary:
         finally:
             self.status = {**self.status, "scanning": False}
 
+    def audio_units(self) -> list:
+        """The Mac's Audio Units (listing them loads nothing, so it's quick); none elsewhere."""
+        if getattr(self, "_au", None) is None:
+            try:
+                self._au = Engine.au_list()
+            except Exception:  # (an engine without AU support)
+                self._au = []
+        return self._au
+
     def plugins(self, instruments: bool = False) -> list:
-        """Effects (for racks), or instruments (for a strip to play)."""
-        out = []
+        """Effects (for racks), or instruments (for a strip to play): VST3, and Audio Units on a Mac."""
+        out = [{"path": a["path"], "cid": "au", "name": a["name"], "vendor": a.get("vendor") or "", "sub": "Audio Unit",
+                "file": "Audio Unit"} for a in self.audio_units() if bool(a.get("instrument")) == instruments]
         for path, entry in self._cache.items():
             for c in entry.get("classes", []):
                 if bool(c.get("instrument")) != instruments:
