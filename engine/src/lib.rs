@@ -428,7 +428,10 @@ impl Engine {
         disable_udp_connreset(&socket);
         let local_addr = SocketAddrV4::new(net::local_ip(), socket.local_addr().unwrap().port());
         let socket = Arc::new(socket);
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared {
+            rack_meters: (0..(MAX_LOCAL + MAX_REMOTE + MAX_TRACKS + 1) * fx::MAX_SLOTS * 3).map(|_| Default::default()).collect(),
+            ..Default::default()
+        });
         let (cmd_tx, cmd_rx) = rtrb::RingBuffer::new(1024);
         let (pkt_tx, pkt_rx) = rtrb::RingBuffer::new(512);
         let (ret_tx, ret_rx) = rtrb::RingBuffer::<Garbage>::new(256);
@@ -1068,6 +1071,23 @@ impl Engine {
             d.set_item("instrument", c.is_instrument())?;
             Ok(d)
         }).collect()
+    }
+
+    /// A strip's rack meters for its plugin windows: [(peak in, peak out, gain reduction dB)] per slot.
+    fn rack_meters(&self, target: &str) -> PyResult<Vec<(f32, f32, f32)>> {
+        let t = parse_target(target)?;
+        let si = match t {
+            Target::Local(i) => i,
+            Target::Remote(i) => MAX_LOCAL + i,
+            Target::Track(i) => MAX_LOCAL + MAX_REMOTE + i,
+            Target::Master => MAX_LOCAL + MAX_REMOTE + MAX_TRACKS,
+        };
+        let n = mirror(&mut self.inner.ctl.lock().unwrap(), t).rack.len();
+        let m = &self.inner.shared.rack_meters;
+        Ok((0..n).map(|j| {
+            let b = (si * fx::MAX_SLOTS + j) * 3;
+            (m[b].get(), m[b + 1].get(), m[b + 2].get())
+        }).collect())
     }
 
     /// Put a VST3 plugin into a rack. Loads and starts it (this can take a moment).

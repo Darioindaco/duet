@@ -155,6 +155,13 @@ class Api:
 
     def rack_set(self, target, pos, key, value):
         self._engine.rack_set(target, int(pos), key, float(value))
+
+    def rack_meters(self, target):
+        # each effect's input, output (peak, 0..1) and gain reduction (dB), for its window
+        try:
+            return [list(m) for m in self._engine.rack_meters(target)]
+        except Exception:
+            return []
         self._rack_changed(target)
 
     def rack_preset(self, target, name):

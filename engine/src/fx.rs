@@ -16,7 +16,7 @@ pub const VST: usize = 7;
 pub const EQ: usize = 8;
 pub const LIMITER: usize = 9;
 pub const COMP: usize = 0;
-pub const MAX_PARAMS: usize = 10;
+pub const MAX_PARAMS: usize = 32;
 pub const MAX_SLOTS: usize = 8;
 
 pub type Params = [f32; MAX_PARAMS];
@@ -182,6 +182,10 @@ pub trait Effect: Send {
         self.process(p, l, r)
     }
     fn reset(&mut self) {}
+    /// How much it turned the sound down in the last block, in dB (compressors, limiters).
+    fn gain_reduction(&self) -> f32 {
+        0.0
+    }
     /// Effects that can follow a sample-rate change in place (keeping their
     /// state) say so; the rest are rebuilt.
     fn set_sample_rate(&mut self, _sr: f32) -> bool {
@@ -232,7 +236,24 @@ pub fn make(cfg: &SlotCfg, sr: f32) -> Result<Box<dyn Effect>, String> {
 pub struct Slot {
     pub cfg: SlotCfg,
     pub fx: Box<dyn Effect>,
+    /// the knobs as the effect hears them: following cfg.p over ~15 ms, so a turn (or automation)
+    /// doesn't zipper
+    sm: Params,
+    fresh: bool,
+    sr: f32,
+    /// for the plugin's window: peaks in and out, and how much it turns down (dB)
+    pub meter: SlotMeter,
 }
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SlotMeter {
+    pub input: f32,
+    pub output: f32,
+    pub gr: f32,
+}
+
+/// Knobs that jump instead of glide (switches, choices), per effect kind: a bit per parameter.
+pub const STEPPED: [u32; N_KINDS] = [0; N_KINDS];
 
 impl Slot {
     /// For a NAM slot with a model this also fills in `cfg.info`.
@@ -241,7 +262,7 @@ impl Slot {
             if let Some(path) = cfg.model.clone() {
                 let (amp, info) = NamAmp::load(&path, sr)?;
                 cfg.info = Some(info);
-                return Ok(Box::new(Slot { cfg, fx: Box::new(amp) }));
+                return Ok(Slot::wrap(cfg, Box::new(amp), sr));
             }
         }
         if cfg.kind == VST {
@@ -255,10 +276,10 @@ impl Slot {
                 has_editor: inst.has_editor,
                 ..v
             });
-            return Ok(Box::new(Slot { cfg, fx: Box::new(VstEffect { proc }) }));
+            return Ok(Slot::wrap(cfg, Box::new(VstEffect { proc }), sr));
         }
         let fx = make(&cfg, sr)?;
-        Ok(Box::new(Slot { cfg, fx }))
+        Ok(Slot::wrap(cfg, fx, sr))
     }
 
     /// A slot whose effect couldn't be built (a plugin that isn't installed
@@ -266,7 +287,50 @@ impl Slot {
     /// keeps its settings so it can be retried, and says what went wrong.
     pub fn placeholder(mut cfg: SlotCfg, error: String) -> Box<Slot> {
         cfg.error = Some(error);
-        Box::new(Slot { cfg, fx: Box::new(Bypass) })
+        Slot::wrap(cfg, Box::new(Bypass), 48000.0)
+    }
+
+    pub fn wrap(cfg: SlotCfg, fx: Box<dyn Effect>, sr: f32) -> Box<Slot> {
+        Box::new(Slot { sm: cfg.p, cfg, fx, fresh: true, sr, meter: SlotMeter::default() })
+    }
+
+    /// One block through the effect (on or off), with the knobs smoothed and the meters kept.
+    fn run<'k>(&mut self, l: &mut [f32], r: &mut [f32], keys: &dyn Fn(usize) -> Key<'k>) {
+        let n = l.len();
+        let pk = |l: &[f32], r: &[f32]| l.iter().chain(r.iter()).fold(0f32, |a, v| a.max(v.abs()));
+        let decay = (-(n as f32) / (0.3 * self.sr)).exp(); // meters fall over ~0.3 s
+        let inp = pk(l, r);
+        if !self.cfg.on {
+            self.meter = SlotMeter { input: inp.max(self.meter.input * decay), output: inp.max(self.meter.output * decay), gr: 0.0 };
+            return;
+        }
+        if self.fresh {
+            self.sm = self.cfg.p;
+            self.fresh = false;
+        } else {
+            let a = 1.0 - (-(n as f32) / (0.015 * self.sr)).exp();
+            let stepped = STEPPED[self.cfg.kind.min(N_KINDS - 1)];
+            for i in 0..MAX_PARAMS {
+                if stepped & (1 << i) != 0 {
+                    self.sm[i] = self.cfg.p[i];
+                } else {
+                    self.sm[i] += (self.cfg.p[i] - self.sm[i]) * a;
+                    if (self.sm[i] - self.cfg.p[i]).abs() < 1e-5 {
+                        self.sm[i] = self.cfg.p[i];
+                    }
+                }
+            }
+        }
+        match self.cfg.key {
+            Some(k) => self.fx.process_keyed(&self.sm, l, r, keys(k)),
+            None => self.fx.process(&self.sm, l, r),
+        }
+        let out = pk(l, r);
+        self.meter = SlotMeter {
+            input: inp.max(self.meter.input * decay),
+            output: out.max(self.meter.output * decay),
+            gr: self.fx.gain_reduction().max(self.meter.gr * decay),
+        };
     }
 }
 
@@ -289,12 +353,7 @@ impl Rack {
     /// track's sound for a compressor that listens to one (sidechain).
     pub fn process<'k>(&mut self, l: &mut [f32], r: &mut [f32], keys: &dyn Fn(usize) -> Key<'k>) {
         for s in self.slots.iter_mut() {
-            if s.cfg.on {
-                match s.cfg.key {
-                    Some(k) => s.fx.process_keyed(&s.cfg.p, l, r, keys(k)),
-                    None => s.fx.process(&s.cfg.p, l, r),
-                }
-            }
+            s.run(l, r, keys);
         }
     }
 
@@ -451,11 +510,12 @@ fn db_to_lin(db: f32) -> f32 {
 struct Compressor {
     env: f32,
     sr: f32,
+    gr: f32,
 }
 
 impl Compressor {
     fn new(sr: f32) -> Self {
-        Compressor { env: 0.0, sr }
+        Compressor { env: 0.0, sr, gr: 0.0 }
     }
 }
 
@@ -473,6 +533,7 @@ impl Effect for Compressor {
         let rel_s = 0.01 * 100f32.powf(p[4]); // 10 ms .. 1 s
         let att = 1.0 - (-1.0 / (att_s * self.sr)).exp();
         let rel = 1.0 - (-1.0 / (rel_s * self.sr)).exp();
+        let mut most = 0f32;
         for k in 0..l.len() {
             let a = match key {
                 Some((kl, kr)) if k < kl.len() => kl[k].abs().max(kr[k].abs()),
@@ -483,10 +544,16 @@ impl Effect for Compressor {
             self.env += (a - self.env) * c;
             let env_db = 20.0 * (self.env + 1e-9).log10();
             let over = (env_db - thr_db).max(0.0);
-            let g = db_to_lin(-(over - over / ratio) + makeup);
+            let red = over - over / ratio;
+            most = most.max(red);
+            let g = db_to_lin(-red + makeup);
             l[k] *= g;
             r[k] *= g;
         }
+        self.gr = most;
+    }
+    fn gain_reduction(&self) -> f32 {
+        self.gr
     }
 }
 
@@ -909,6 +976,9 @@ impl Effect for Limiter {
         }
         self.q_len = 0;
         self.env = 1.0;
+    }
+    fn gain_reduction(&self) -> f32 {
+        -20.0 * self.env.max(1e-6).log10()
     }
 }
 

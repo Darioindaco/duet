@@ -106,6 +106,23 @@ has two tabs:
    and VST3 plugins. Everything is stereo inside Duet; what goes to your partner
    live is mono, to keep the line light.
 
+   Every built-in effect's window is a full plugin:
+   - **A live display:** the EQ's curve with handles you drag (frequency and gain;
+     Shift = frequency only; scroll on *M* for its width; double-click = flat), the
+     compressor's transfer curve with your signal moving on it and its gain
+     reduction over time, the limiter's gain reduction under its ceiling, the
+     delay's echoes left and right, the reverb's tail, the drive curve, the
+     chorus/tremolo LFO.
+   - **Meters:** in, out and (compressor, limiter) gain reduction, with peak hold.
+   - **Presets:** factory presets per effect, ◀ ▶ to step through them, *Save* for
+     your own (kept on this computer).
+   - **A/B:** two settings to compare; click the lit one again to copy it over.
+   - **Undo/redo** inside the effect, and *Reset*.
+   - **Knobs:** drag (Shift = fine), scroll, arrow keys, double-click = default;
+     click the value (or Alt-click the knob) to type one (`2.5k` works for Hz);
+     right-click to automate. Knob moves are smoothed in the engine, so turning
+     or automating them doesn't click.
+
 5. **NAM amps:** *+ Add effect → NAM Amp* adds a Neural Amp Modeler slot. Load a
    capture with **TONE3000** (pick a tone on tone3000.com in your browser; Duet
    downloads it), **Open…** (any `.nam` file) or the **Library** (everything you

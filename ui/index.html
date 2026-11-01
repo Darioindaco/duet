@@ -729,6 +729,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="chords.js"></script>
 <script src="presence.js"></script>
 <script src="mixer.js"></script>
+<script src="plugkit.js"></script>
 <script src="browser.js"></script>
 <script>
 "use strict";
@@ -2116,6 +2117,12 @@ function demoApi() {
     rack_set: async (tg, pos, k, v) => { const s = target(tg).rack[pos]; s[k] = k === "on" ? !!v : v; },
     rack_preset: async (tg, name) => { target(tg).rack = PRESET_RACKS[name].map((k) => slot(k)); return copy(); },
     rack_load: async (tg, slots) => { target(tg).rack = slots; },
+    // made-up levels that move like music: a beat at 96, a little lower after a compressor
+    rack_meters: async (tg) => target(tg).rack.map((sl) => {
+      const t = performance.now() / 1000, beat = Math.exp(-((t * 1.6) % 1) * 5), lvl = 0.25 + 0.55 * beat + 0.05 * Math.random();
+      const gr = sl.on && (sl.kind === "comp" || sl.kind === "limiter") ? Math.max(0, 20 * Math.log10(lvl / 0.3)) * (sl.kind === "comp" ? 0.6 : 1) : 0;
+      return [lvl, sl.on ? lvl * 10 ** (-gr / 20) * 1.1 : lvl, gr];
+    }),
     send_signal: async () => {},
     inst_set: async (tg, kind, vst) => {
       target(tg).inst = kind ? { kind, ...(INST_DEFAULTS[kind] || {}), ...(kind === "vst" ? { vst: { ...vst, has_editor: true } } : {}),

@@ -203,6 +203,9 @@ pub struct Shared {
     /// samples the take writer couldn't keep up with
     pub rec_dropped: AtomicU64,
     pub track_levels: [AtomicF32; MAX_TRACKS],
+    /// every rack slot's meters for the plugin windows: [strip][slot][in, out, gr], strips in the
+    /// order local, remote, tracks, master (see rack_meter_index)
+    pub rack_meters: Vec<AtomicF32>,
     /// notes sent to instruments so far (the UI's MIDI activity light)
     pub midi_events: AtomicU64,
 }
@@ -1092,6 +1095,19 @@ impl Dsp {
         }
         for (i, s) in self.tracks.iter().enumerate() {
             sh.track_levels[i].set(s.level);
+        }
+        if !sh.rack_meters.is_empty() {
+            let strips = self.local.iter().chain(self.remote.iter()).chain(self.tracks.iter()).chain(std::iter::once(&self.master_strip));
+            for (si, s) in strips.enumerate() {
+                for (j, slot) in s.rack.slots.iter().enumerate() {
+                    let base = (si * crate::fx::MAX_SLOTS + j) * 3;
+                    if base + 2 < sh.rack_meters.len() {
+                        sh.rack_meters[base].set(slot.meter.input);
+                        sh.rack_meters[base + 1].set(slot.meter.output);
+                        sh.rack_meters[base + 2].set(slot.meter.gr);
+                    }
+                }
+            }
         }
         sh.daw_pos.store(self.tp.pos, Relaxed);
         sh.daw_playing.store(self.tp.playing, Relaxed);

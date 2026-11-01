@@ -326,7 +326,11 @@ function fxFill(w) {
   }
   const slot = cfg?.rack[w.pos];
   if (!slot) { fxClose(w); return; }
-  body.replaceChildren(pedalEl(w.t, w.pos, slot));
+  // the built-in effects get the full plugin kit (plugkit.js); plugins keep their own window
+  const kit = slot.kind !== "vst" && PK_SPEC[slot.kind];
+  w.meter = null;
+  body.replaceChildren(kit ? pkPanel(w, slot) : pedalEl(w.t, w.pos, slot));
+  body.classList.toggle("pkbody", !!kit);
   const meta = FXMETA[slot.kind];
   const name = slot.kind === "vst" ? slot.vst?.name || "Plugin" : slot.kind === "nam" && slot.model_name ? `${meta.name}: ${slot.model_name}` : meta.name;
   w.el.querySelector(".fxt").textContent = `${name} · ${stripName(w.t)}`;
