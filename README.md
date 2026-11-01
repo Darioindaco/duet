@@ -408,7 +408,10 @@ the shared song (your partner sees every note you place, and you theirs).
   and effects there).
 - **Patterns** hold notes for any number of channels. Pick one at the top (or
   *+ New pattern*), set its length (1–8 bars); *⋯* renames, copies, clears or
-  deletes it.
+  deletes it. In the playlist each channel plays its part of a pattern from a
+  block on its **own row**: give a second channel notes in a pattern that's
+  already in the song and it gets a block of its own in the same place(s).
+  Deleting a channel takes its notes with it.
 - **Steps:** every channel has a row of 16th-note steps per bar; a drum kit has a
   row per pad (*All pads* shows all 16). Click a step to switch it on or off.
 - **Piano roll** (below; drag the bar above it for more or less room) for the

@@ -1664,6 +1664,56 @@ def test_stun():
     e.close()
 
 
+def test_channel_blocks():
+    """A pattern block on a channel's row plays that channel's notes. Writing a second channel into a
+    pattern that's already in the song gives that channel its own block in the same place (one undo
+    with the notes; a block you deleted stays deleted); old songs get those blocks when opened."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-blocks-"))
+    d = Daw(e, root / "songs", "me")
+    try:
+        d.edit([["track", "syn", {"name": "Synth", "order": 5.0, "owner": "me", "inst": {"kind": "synth"}}],
+                ["track", "drm", {"name": "Drums", "order": 6.0, "owner": "me", "inst": {"kind": "drums"}}],
+                ["pattern", "p1", {"name": "Verse", "len": 4.0}],
+                ["note", "s1", {"pattern": "p1", "track": "syn", "start": 0.0, "len": 1.0, "key": 60, "vel": 100}],
+                ["clip", "c1", {"track": "syn", "pattern": "p1", "start": 8.0, "blen": 4.0, "boff": 0.0}]])
+        assert [c["track"] for c in d.view()["clips"]] == ["syn"]
+        # the drum kit gets notes in the same pattern: its own block, in the same place
+        d.edit([["note", "d1", {"pattern": "p1", "track": "drm", "start": 0.5, "len": 0.25, "key": 36, "vel": 100}]])
+        blocks = {c["track"]: c for c in d.view()["clips"]}
+        assert set(blocks) == {"syn", "drm"} and blocks["drm"]["start"] == 8.0 and blocks["drm"]["blen"] == 4.0, blocks
+        # each block plays its own channel: one note per channel, not two on each
+        notes = d._notes(d._tm().b2s)
+        assert len(notes[d.slots["syn"]]) == 1 and len(notes[d.slots["drm"]]) == 1, notes
+        assert notes[d.slots["drm"]][0][2] == 36 and notes[d.slots["syn"]][0][2] == 60
+        # one undo takes the note and its block back
+        d.undo()
+        assert [c["track"] for c in d.view()["clips"]] == ["syn"] and len(d.view()["notes"]) == 1
+        d.redo()
+        mirror = next(c for c in d.view()["clips"] if c["track"] == "drm")
+        # deleted on purpose: it stays deleted when more drum notes come
+        d.edit([["clip", mirror["id"], {"del": True}]])
+        d.edit([["note", "d2", {"pattern": "p1", "track": "drm", "start": 1.5, "len": 0.25, "key": 38, "vel": 100}]])
+        assert [c["track"] for c in d.view()["clips"]] == ["syn"]
+        # an old song (one block playing both channels): opened, the drums get their block
+        del d.p.objs["clip"][mirror["id"]]  # (as if it had never been made)
+        d.p.stamps["clip"].pop(mirror["id"], None)
+        d._upgrade_blocks()
+        assert {c["track"] for c in d.view()["clips"]} == {"syn", "drm"}
+        print("channel blocks: each channel plays its own notes from its own row; a new channel's notes get a block there")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_takes():
     """Loop recording makes a take each time round (the last whole one plays); comping picks a take
     for a stretch; punch keeps only what's between the in and out points, stops by itself after the
@@ -1938,6 +1988,7 @@ if __name__ == "__main__":
     test_versions()
     test_tempo_map()
     test_takes()
+    test_channel_blocks()
     test_instruments()
     test_patterns()
     test_live()

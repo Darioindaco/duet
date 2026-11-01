@@ -635,7 +635,11 @@ function ntCreate() {
 function deleteTrack(t) {
   const clips = song.view.clips.filter((c) => c.track === t.id);
   if (clips.length && !confirm(`Delete "${t.name}" and its ${clips.length} clip${clips.length === 1 ? "" : "s"}? This deletes it for your partner too.`)) return;
-  songEdit([["track", t.id, { del: true }], ...clips.map((c) => ["clip", c.id, { del: true }])]);
+  // a channel's notes go with it (in every pattern), and so do its takes
+  const notes = (song.view.notes || []).filter((n) => n.track === t.id);
+  const takes = (song.view.takes || []).filter((c) => c.track === t.id);
+  songEdit([["track", t.id, { del: true }], ...[...clips, ...takes].map((c) => ["clip", c.id, { del: true }]),
+    ...notes.map((n) => ["note", n.id, { del: true }])]);
 }
 
 function trackBySlot(slot) {
@@ -903,7 +907,7 @@ function drawPatternClip(ctx, c, x, y, w, h) {
   ctx.fillRect(x, y, w, 15);
   ctx.globalAlpha = 1;
   if (p) {
-    const notes = (song.view.notes || []).filter((n) => n.pattern === p.id);
+    const notes = (song.view.notes || []).filter((n) => n.pattern === p.id && n.track === c.track); // its own channel's
     if (notes.length) {
       const plen = p.len || 4 * bpb(), boff = c.boff || 0;
       let lo = 127, hi = 0;

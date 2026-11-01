@@ -619,6 +619,7 @@ class Daw:
         self.partner_here: dict | None = None  # where the partner is (presence)
         self.partner_here_n = 0.0
         self._running = True
+        self._upgrade_blocks()
         self._push()
         self.thread = threading.Thread(target=self._loop, name="duet-daw", daemon=True)
         self.thread.start()
@@ -691,7 +692,15 @@ class Daw:
         self.partner_here = None
         self.p = p
         self._remember(p.pid)
+        self._upgrade_blocks()
         self._changed()
+
+    def _upgrade_blocks(self):
+        """Songs from before each channel had its own blocks: give every channel the blocks of the
+        patterns it has notes in (a block used to play every channel's notes)."""
+        more = self._mirror_changes()
+        if more:
+            self._do(more, undoable=False)
 
     def new_project(self, name: str = "New song"):
         with self.lock:
@@ -813,7 +822,43 @@ class Daw:
         """Changes from the UI: [[kind, id, {field: value}]]. A new id makes a new object."""
         with self.lock:
             self._do(changes)
+            more = self._mirror_changes()
+            if more:  # in the same undo step
+                self._do(more)
+                if len(self.undos) >= 2:
+                    b, a = self.undos.pop(), self.undos.pop()
+                    self.undos.append({"forward": a["forward"] + b["forward"], "inverse": b["inverse"] + a["inverse"],
+                                       "keys": sorted(set(a["keys"]) | set(b["keys"])), "t": b["t"]})
             return self.view()
+
+    def _mirror_changes(self) -> list:
+        """Each channel plays its notes from blocks on its own row. A channel with notes in a pattern
+        that's in the song on another channel's row gets a block of its own in the same place. The
+        id is made from the block and the channel, so both sides make the same one, and one you
+        deleted stays deleted."""
+        p = self.p
+        tracks = p.live("track")
+        clips = p.live("clip")
+        chans: dict[str, set] = {}
+        for n in p.live("note").values():
+            if n.get("track") in tracks:
+                chans.setdefault(n.get("pattern"), set()).add(n.get("track"))
+        have = {(c.get("pattern"), c.get("track"), round(float(c.get("start", 0)), 6)) for c in clips.values() if c.get("pattern")}
+        out = []
+        for cid, c in clips.items():
+            pid = c.get("pattern")
+            if not pid or "~" in cid:
+                continue
+            for tid in sorted(chans.get(pid, ())):
+                if tid == c.get("track") or (pid, tid, round(float(c.get("start", 0)), 6)) in have:
+                    continue
+                mid = f"{cid}~{tid}"
+                if mid in p.objs["clip"]:
+                    continue  # made before (and maybe deleted on purpose)
+                out.append(["clip", mid, {"track": tid, "pattern": pid, "start": float(c.get("start", 0)),
+                                          "blen": float(c.get("blen") or self._pattern_len(pid)), "boff": float(c.get("boff", 0))}])
+                have.add((pid, tid, round(float(c.get("start", 0)), 6)))
+        return out
 
     def time_op(self, op: str, a: float, b: float) -> dict:
         """Delete the time from beat a to b (closing the gap), or duplicate it (right after itself,
@@ -1565,6 +1610,8 @@ class Daw:
             while origin + k * plen < end:
                 base = origin + k * plen
                 for n in by_pat[pid]:
+                    if n.get("track") != c.get("track"):
+                        continue  # a block plays its own channel's notes (each channel has its own row)
                     t = base + float(n.get("start", 0))
                     if start - 1e-9 <= t < end and float(n.get("start", 0)) < plen:
                         put(n, t, end)
