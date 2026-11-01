@@ -808,7 +808,8 @@ function drawClip(ctx, c, x, y, w, h, track) {
     const levels = song.peaks[c.file];
     if (levels) {
       const sr = file.sr || 48000, secPerPx = 60 / bpmAt(c.start) / song.ppb, s0 = b2s(c.start);
-      const tAt = (px) => b2s(c.start + px / song.ppb) - s0; // seconds into the clip at this pixel
+      // seconds into the clip at this pixel (a looped clip: into its round)
+      const tAt = (px) => { const t = b2s(c.start + px / song.ppb) - s0; return c.loop ? t % c.loop : t; };
       let k = 0;
       while (k + 1 < levels.length && (512 << (k + 1)) <= secPerPx * sr * clipRatio(c)) k++;
       const pk = levels[k], per = 512 << k;
@@ -819,9 +820,9 @@ function drawClip(ctx, c, x, y, w, h, track) {
       const r = clipRatio(c);
       for (let px = px0; px < px1; px++) {
         // the stretch of the file this pixel plays (backwards: read from the end)
-        const ta = tAt(px), tb = tAt(px + 1);
-        const a = clipSrcAt(c, ta), b = clipSrcAt(c, tb);
-        const t0 = Math.min(a, b), w = (tb - ta) * r;
+        const ta = tAt(px), dt = b2s(c.start + (px + 1) / song.ppb) - b2s(c.start + px / song.ppb);
+        const a = clipSrcAt(c, ta), b = clipSrcAt(c, ta + dt);
+        const t0 = Math.min(a, b), w = dt * r;
         let i0 = Math.floor(t0 * sr / per), i1 = Math.max(i0 + 1, Math.floor((t0 + w) * sr / per));
         let lo = 0, hi = 0;
         for (let i = i0; i < i1 && 2 * i + 1 < pk.length; i++) {
@@ -846,6 +847,15 @@ function drawClip(ctx, c, x, y, w, h, track) {
     ctx.fillStyle = "#cfc8da";
     ctx.font = "600 11px system-ui, sans-serif";
     ctx.fillText(label, Math.max(x, 0) + 8, mid + 4);
+  }
+  // a looped clip: a notch where each round starts again
+  if (c.loop && !c.pattern) {
+    ctx.fillStyle = "#ffffff70";
+    for (let t = c.loop; t < c.len - 1e-3; t += c.loop) {
+      const lx = Math.round(x + beatsAfter(c.start, t) * song.ppb) + 0.5;
+      ctx.fillRect(lx, y + 15, 1, h - 15);
+      ctx.beginPath(); ctx.moveTo(lx - 4, y + 15); ctx.lineTo(lx + 4, y + 15); ctx.lineTo(lx, y + 21); ctx.fill();
+    }
   }
   // fades: shade what's faded out, a line where the level goes
   const fin = fadePx(c, "in", song.ppb), fout = fadePx(c, "out", song.ppb);
@@ -1267,10 +1277,16 @@ function dragResult(d, q, snap) {
     const start = Math.min(hi, Math.max(lo, snapBeat(q.beat, snap)));
     const dt = b2s(start) - cs, len = c.len - dt;
     out[c.id] = { start, offset: c.reverse ? o : o + dt * r, len, fade_in: Math.min(c.fade_in || 0, len - (c.fade_out || 0)) };
+  } else if (d.zone === "right" && song.patLoop && canLoopAudio(c)) {
+    // Loop on: the clip goes on past its end, round and round (one round: what it was)
+    const round = c.loop || c.len;
+    const end = Math.max(s2b(cs + MIN_LEN), snapBeat(q.beat, snap));
+    const len = b2s(end) - cs;
+    out[c.id] = { len, loop: len > round + 1e-4 || c.loop ? round : null, fade_out: Math.min(c.fade_out || 0, len - (c.fade_in || 0)) };
   } else if (d.zone === "right") {
     const r = clipRatio(c), o = c.offset || 0;
     const room = c.reverse ? o + c.len * r : fileDur(c) - o; // file seconds the clip can reach
-    const lo = s2b(cs + MIN_LEN), hi = s2b(cs + room / r);
+    const lo = s2b(cs + MIN_LEN), hi = s2b(cs + Math.min(room / r, c.loop || Infinity));
     const end = Math.min(hi, Math.max(lo, snapBeat(q.beat, snap)));
     const len = b2s(end) - cs;
     out[c.id] = { len, fade_out: Math.min(c.fade_out || 0, len - (c.fade_in || 0)) };

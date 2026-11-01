@@ -69,7 +69,7 @@ FIELDS = {
              "speed", "pitch", "stretch", "reverse", "mute", "tune", "group", "take", "tsrc",
              # once: a pattern block that plays its pattern once instead of round and round;
              # loop: an audio clip that repeats every `loop` seconds of the timeline (unset: no)
-             "once", "loop", "del"},
+             "once", "loop", "fade_in_curve", "fade_out_curve", "del"},
     "file": {"frames", "sr", "owner", "name", "del"},
     # len: how long it is to write in; base: how long one round is when a block loops (unset: len)
     "pattern": {"name", "len", "base", "color", "del"},
@@ -1509,9 +1509,12 @@ class Daw:
             if slot is None or key not in self.loaded:
                 continue
             desc[slot].append((key, b2s(float(c.get("start", 0))), float(c.get("offset", 0)), float(c.get("len", 0)),
-                               0.0 if c.get("mute") else float(c.get("gain", 1.0)), float(c.get("fade_in", 0)), float(c.get("fade_out", 0)),
+                               0.0 if c.get("mute") else float(c.get("gain", 1.0)),
+                               (float(c.get("fade_in", 0)), float(c.get("fade_out", 0)),
+                                num(c.get("fade_in_curve"), 0.0, -1.0, 1.0), num(c.get("fade_out_curve"), 0.0, -1.0, 1.0)),
                                num(c.get("speed"), 1.0, 0.05, 20.0), num(c.get("pitch"), 0.0, -48.0, 48.0),
-                               bool(c.get("stretch")), bool(c.get("reverse")), tune_moves(c.get("tune"))))
+                               bool(c.get("stretch")), bool(c.get("reverse")), tune_moves(c.get("tune")),
+                               0.0 if c.get("reverse") else num(c.get("loop"), 0.0, 0.0, 1e6)))
         notes = self._notes(b2s)
         if desc != self.sent_desc or notes != self.sent_notes:
             e.daw_timeline(desc, notes)

@@ -61,7 +61,23 @@ pub struct ClipRt {
     pub gain: f32,
     pub fade_in: i64,
     pub fade_out: i64,
+    /// the fades' shapes: 0 straight, up to 1 fast (bowed up), down to -1 slow (bowed down)
+    pub fade_in_curve: f32,
+    pub fade_out_curve: f32,
+    /// > 0: the clip's audio repeats every this many timeline samples (a looped clip)
+    pub loop_len: i64,
     pub data: Arc<AudioData>,
+}
+
+/// A fade's gain at x (0..1 through it), bowed by `curve` (-1..1; 0 is a straight line).
+#[inline]
+pub fn fade_shape(x: f32, curve: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if curve.abs() < 1e-3 {
+        return x;
+    }
+    let e = if curve > 0.0 { 1.0 / (1.0 + 3.0 * curve) } else { 1.0 - 3.0 * curve };
+    x.powf(e)
 }
 
 /// A note event for a track's instrument, at a timeline position.
@@ -175,15 +191,17 @@ impl Timeline {
             let last = src.len() as i64 - 1;
             for x in a..b {
                 let rel = x - c.start;
+                // a looped clip reads its stretch of audio again and again
+                let rs = if c.loop_len > 0 { rel % c.loop_len } else { rel };
                 let (sl, sr) = if c.step == 1.0 && c.pos0.fract() == 0.0 {
-                    let si = c.pos0 as i64 + rel;
+                    let si = c.pos0 as i64 + rs;
                     if si < 0 || si > last {
                         continue;
                     }
                     (src[si as usize], src_r[si as usize])
                 } else {
                     // Catmull-Rom between the audio's own samples
-                    let p = c.pos0 + rel as f64 * c.step;
+                    let p = c.pos0 + rs as f64 * c.step;
                     let i = p.floor() as i64;
                     if i < 0 || i > last {
                         continue;
@@ -196,10 +214,22 @@ impl Timeline {
                 let mut g = c.gain;
                 let left = (c.len - rel) as f32;
                 if (rel as f32) < fi {
-                    g *= (rel as f32 + 0.5) / fi;
+                    g *= fade_shape((rel as f32 + 0.5) / fi, c.fade_in_curve);
                 }
                 if left <= fo {
-                    g *= (left - 0.5) / fo;
+                    g *= fade_shape((left - 0.5) / fo, c.fade_out_curve);
+                }
+                if c.loop_len > 0 {
+                    // where it starts over: a short dip instead of a click (not at the clip's own ends,
+                    // which have their fades)
+                    let d = (DECLICK as i64).min(c.loop_len / 4).max(1) as f32;
+                    if rel >= c.loop_len && (rs as f32) < d {
+                        g *= (rs as f32 + 0.5) / d;
+                    }
+                    let to_end = (c.loop_len - rs) as f32;
+                    if c.len - rel > c.loop_len - rs && to_end <= d {
+                        g *= (to_end - 0.5) / d;
+                    }
                 }
                 let k = (x - pos) as usize;
                 l[k] += sl * g;
@@ -229,6 +259,10 @@ pub struct ClipDesc {
     pub gain: f32,
     pub fade_in: f64,
     pub fade_out: f64,
+    pub fade_in_curve: f32,
+    pub fade_out_curve: f32,
+    /// > 0: the clip repeats its audio every this many seconds of the timeline
+    pub loop_len: f64,
     /// 2 = twice as fast
     pub speed: f64,
     /// semitones
@@ -247,7 +281,7 @@ pub struct ClipDesc {
 impl ClipDesc {
     /// A plain clip: as the file is.
     pub fn plain(key: &str, start: f64, offset: f64, len: f64) -> Self {
-        ClipDesc { key: key.into(), start, offset, len, gain: 1.0, fade_in: 0.0, fade_out: 0.0, speed: 1.0, pitch: 0.0, stretch: false, reverse: false,
+        ClipDesc { key: key.into(), start, offset, len, gain: 1.0, fade_in: 0.0, fade_out: 0.0, fade_in_curve: 0.0, fade_out_curve: 0.0, loop_len: 0.0, speed: 1.0, pitch: 0.0, stretch: false, reverse: false,
                    tune: Default::default(), tune_hash: 0 }
     }
 
@@ -464,6 +498,9 @@ impl AudioCache {
                     gain: c.gain,
                     fade_in: s(c.fade_in),
                     fade_out: s(c.fade_out),
+                    fade_in_curve: c.fade_in_curve,
+                    fade_out_curve: c.fade_out_curve,
+                    loop_len: if c.loop_len > 0.0 { s(c.loop_len).max(1) } else { 0 },
                     data,
                 });
             }
@@ -1045,7 +1082,7 @@ mod tests {
     }
 
     fn clip(start: i64, offset: i64, len: i64, data: &Arc<AudioData>) -> ClipRt {
-        ClipRt { start, pos0: offset as f64, len, step: 1.0, gain: 1.0, fade_in: 0, fade_out: 0, data: data.clone() }
+        ClipRt { start, pos0: offset as f64, len, step: 1.0, gain: 1.0, fade_in: 0, fade_out: 0, fade_in_curve: 0.0, fade_out_curve: 0.0, loop_len: 0, data: data.clone() }
     }
 
     #[test]
@@ -1124,6 +1161,26 @@ mod tests {
         // not used any more: let go
         cache.build(&[vec![ClipDesc::plain("r", 0.0, 0.0, 0.4)]], &[], 48000);
         assert!(cache.stretched.is_empty());
+    }
+
+    #[test]
+    fn a_looped_clip_repeats_its_audio_and_fades_bend() {
+        // a ramp 0..99, looped every 100 samples, 350 long: the ramp three and a half times
+        let data = Arc::new(AudioData::mono(48000, (0..100).map(|i| i as f32 / 100.0).collect()));
+        let mut tl = Timeline::empty();
+        let mut c = clip(0, 0, 350, &data);
+        c.loop_len = 100;
+        tl.tracks[0].push(c);
+        let (mut l, mut r) = (vec![0f32; 400], vec![0f32; 400]);
+        tl.render(0, 0, &mut l, &mut r);
+        for k in [50usize, 150, 250, 260] { // (away from the short dips where it starts over)
+            assert!((l[k] - (k % 100) as f32 / 100.0).abs() < 0.02, "{k}: {}", l[k]);
+        }
+        assert_eq!(l[360], 0.0, "and stops at the clip's end");
+        // fades: straight, bowed up (fast) and down (slow)
+        assert!((fade_shape(0.5, 0.0) - 0.5).abs() < 1e-6);
+        assert!(fade_shape(0.5, 0.8) > 0.75 && fade_shape(0.5, -0.8) < 0.25);
+        assert_eq!(fade_shape(1.0, 0.5), 1.0);
     }
 
     #[test]

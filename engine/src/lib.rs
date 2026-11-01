@@ -1408,7 +1408,10 @@ impl Engine {
     /// pitch in semitones, keep pitch, reverse).
     #[pyo3(signature = (tracks, notes=None))]
     #[allow(clippy::type_complexity)]
-    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, f64, f64, f64, f32, bool, bool, Vec<(f64, f64, f32, f32, f32)>)>>,
+    /// A clip: (file, start s, offset s, len s, gain, (fade in s, fade out s, in curve, out curve),
+    /// speed, pitch, stretch, reverse, tune, loop s (0: none)).
+    #[allow(clippy::type_complexity)]
+    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, (f64, f64, f32, f32), f64, f32, bool, bool, Vec<(f64, f64, f32, f32, f32)>, f64)>>,
                     notes: Option<Vec<Vec<(f64, f64, u8, u8)>>>) {
         let notes: Vec<Vec<NoteDesc>> = notes
             .unwrap_or_default()
@@ -1423,7 +1426,7 @@ impl Engine {
             .map(|clips| {
                 clips
                     .into_iter()
-                    .map(|(key, start, offset, len, gain, fade_in, fade_out, speed, pitch, stretch, reverse, tune)| {
+                    .map(|(key, start, offset, len, gain, (fade_in, fade_out, fic, foc), speed, pitch, stretch, reverse, tune, loop_len)| {
                         let moves: Vec<tune::TuneNote> = tune
                             .into_iter()
                             .filter(|m| m.0.is_finite() && m.1.is_finite() && m.2.is_finite() && m.3.is_finite() && m.4.is_finite() && m.1 > m.0)
@@ -1433,6 +1436,9 @@ impl Engine {
                         let tune_hash = if moves.is_empty() { 0 } else { tune::tune_hash(&moves) };
                         ClipDesc {
                             key, start, offset, len, gain, fade_in, fade_out,
+                            fade_in_curve: if fic.is_finite() { fic.clamp(-1.0, 1.0) } else { 0.0 },
+                            fade_out_curve: if foc.is_finite() { foc.clamp(-1.0, 1.0) } else { 0.0 },
+                            loop_len: if loop_len.is_finite() && loop_len > 0.001 { loop_len } else { 0.0 },
                             speed: if speed.is_finite() { speed.clamp(0.05, 20.0) } else { 1.0 },
                             pitch: if pitch.is_finite() { pitch.clamp(-48.0, 48.0) } else { 0.0 },
                             stretch, reverse,
