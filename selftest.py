@@ -848,7 +848,7 @@ def test_clip_edit():
         rkey = da.p.live("clip")[rid]["file"]
         da.edit([["clip", rid, {"reverse": True}]])
         wait_for(lambda: rkey in db.loaded and db.p.live("clip").get(rid, {}).get("reverse"), timeout=20, what="the backwards clip")
-        wait_for(lambda: db.sent_desc and any(len(t) > 0 and any(c[0] == rkey and c[10] for c in t) for t in db.sent_desc), what="backwards on bob's timeline")
+        wait_for(lambda: db.sent_desc and any(len(t) > 0 and any(c[0] == rkey and c[9] for c in t) for t in db.sent_desc), what="backwards on bob's timeline")
         rev = listen(b, 8.0 + 0.05, blocks=48000 * 2 // N + 20)
         first, last = np.abs(rev[:4800]).max(), np.abs(rev[int(48000 * 1.75):int(48000 * 1.85)]).max()
         assert first > 4 * last, (first, last)
@@ -1053,7 +1053,7 @@ def test_tune():
         da.edit([["clip", vid, {"tune": {"key": "A minor", "notes": moves}}]])
         vkey = da.p.live("clip")[vid]["file"]
         wait_for(lambda: vkey in db.loaded and db.p.live("clip").get(vid, {}).get("tune"), timeout=30, what="the tune on bob's side")
-        wait_for(lambda: vkey not in b.daw_processing() and any(len(c) > 11 and c[11] for t in (db.sent_desc or []) for c in t),
+        wait_for(lambda: vkey not in b.daw_processing() and any(len(c) > 10 and c[10] for t in (db.sent_desc or []) for c in t),
                  timeout=30, what="bob's tuned voice made")
         time.sleep(0.3)
         # bob plays the song: just the voice (backing muted), measured again

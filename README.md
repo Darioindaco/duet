@@ -37,8 +37,11 @@ Silicon and Intel) and Windows.
 - Mixer: strips with effect racks, buses, sends, sidechain, EQ curve, master
   rack and limiter, delay compensation; **automation** lanes for any knob.
 - Browser: built-in sounds, your folders and bins, drag into the song.
-- **Loudness**: live LUFS (short-term, integrated) and true peak; export to WAV
-  (mix and stems), normalized to −14/−16/−9/−23 LUFS if you like.
+- **Master** window: live LUFS (momentary, short-term, integrated, range), true
+  peak, loudness history against a target, spectrum and stereo correlation;
+  export to WAV (mix and stems), normalized to −14/−16/−9/−23 LUFS if you like.
+- Playlist tools (pointer, pencil, scissors, glue, eraser, mute, fade), loop
+  for patterns and audio, gain lines on every clip, bendable fades.
 - Safety: autosave, **versions** to go back to, crash recovery, and `.duet`
   song files with all their audio.
 - Presence: see where your partner is and what they select, follow their view.
@@ -220,6 +223,15 @@ to the one right after it, when they're one recording or one pattern carrying on
 clip's start or end). **Loop** next to them: on, a pattern block dragged longer
 plays the pattern again; off, it makes the pattern itself longer, to write more
 bars in the piano roll. Notes drawn past a pattern's end make it longer too.
+With Loop on, a clip's end shows a loop cursor; audio clips loop as well (a notch
+marks each round).
+
+**Gain lines and fades.** The *Gain* button next to the tools shows a line on
+every clip — audio and pattern blocks — to drag its level up or down (half a dB
+a pixel, *Shift* for finer; selected clips move together). Fades and crossfades
+bend: drag the round handle halfway along a fade up (fast) or down (slow).
+Pattern blocks fade too (the fade handles or the *Fade* tool), so two patterns
+on different channels can crossfade.
 
 **Editing clips** (right-click a clip for the same things in a menu):
 
@@ -321,6 +333,14 @@ mix, or the mix plus every track on its own (stems, e.g. to mix it further in
 another program), the whole song or just the loop. It renders faster than real
 time and the sound keeps running meanwhile. What you hear is what you get: the
 faders, pans, effects, mute and solo as you have them.
+
+**Master** (the *Master* button at the top, or *F10*): the master's loudness the
+way streaming services measure it — short-term, integrated, momentary, loudness
+range, true peak and the loudest 3 s — a minute of history against your target
+(−14 streaming, −16 Apple, −9 loud, −23 broadcast) with a verdict, a spectrum and
+a stereo meter (it warns when the sides cancel out). *Master effects…* opens the
+master strip's rack (EQ, compressor, limiter, plugins); *Export at this
+loudness…* exports normalized to your target.
 
 **Loudness.** The status bar at the bottom shows the master's loudness while you
 play: short-term LUFS (3 s), integrated LUFS since you pressed play (*I*) and the

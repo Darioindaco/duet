@@ -14,6 +14,7 @@ mod fx;
 mod instr;
 mod jitter;
 mod livenotes;
+mod analyzer;
 #[cfg(target_os = "macos")]
 mod au;
 mod loudness;
@@ -2002,6 +2003,10 @@ impl Engine {
         d.set_item("lufs_s", v(s.lufs_s.get()))?;
         d.set_item("lufs_i", v(s.lufs_i.get()))?;
         d.set_item("true_peak", v(s.true_peak.get()))?;
+        d.set_item("lufs_range", v(s.lufs_range.get()))?;
+        d.set_item("lufs_max_s", v(s.lufs_max_s.get()))?;
+        d.set_item("spectrum", s.spectrum.iter().map(|x| ((x.get() * 10.0).round() / 10.0) as f64).collect::<Vec<f64>>())?;
+        d.set_item("correlation", ((s.correlation.get() * 100.0).round() / 100.0) as f64)?;
         d.set_item("remote_channels", s.remote_channels.load(Relaxed))?;
         d.set_item("sent_channels", s.sent_channels.load(Relaxed))?;
         d.set_item("in_channels", s.in_channels.load(Relaxed))?;

@@ -150,6 +150,11 @@ pub struct Shared {
     pub lufs_s: AtomicF32,
     pub lufs_i: AtomicF32,
     pub true_peak: AtomicF32,
+    pub lufs_range: AtomicF32,
+    pub lufs_max_s: AtomicF32,
+    /// the master's spectrum (dB, 31 bands from 20 Hz) and stereo correlation (-1..1)
+    pub spectrum: [AtomicF32; crate::analyzer::BANDS],
+    pub correlation: AtomicF32,
     pub remote_channels: AtomicU64,
     pub sent_channels: AtomicU64,
     pub underruns: AtomicU64,
@@ -406,6 +411,9 @@ pub struct Dsp {
     master_level: f32,
     /// (not real-time-free to make: made with the Dsp and when the rate changes, outside the callback)
     loud: crate::loudness::Loudness,
+    analyzer: crate::analyzer::Analyzer,
+    /// every so many blocks: the loudness range (it reads a histogram)
+    range_tick: u32,
     metro: Metro,
     /// partner's block number minus ours, learned from what the jitter buffer plays
     remote_offset: Option<i64>,
@@ -472,6 +480,8 @@ impl Dsp {
             mix_r: vec![0.0; MAX_FRAME],
             master_level: 0.0,
             loud: crate::loudness::Loudness::new(samplerate as f32),
+            analyzer: crate::analyzer::Analyzer::new(samplerate as f32),
+            range_tick: 0,
             metro: Metro::new(),
             remote_offset: None,
             live_sends: [[None; crate::mix::MAX_SENDS]; MAX_LOCAL + MAX_REMOTE],
@@ -518,6 +528,7 @@ impl Dsp {
         }
         if samplerate != self.samplerate {
             self.loud = crate::loudness::Loudness::new(samplerate as f32);
+            self.analyzer = crate::analyzer::Analyzer::new(samplerate as f32);
         }
         self.samplerate = samplerate;
         self.frame = frame;
@@ -1008,6 +1019,7 @@ impl Dsp {
         }
         self.master_level = pk.max(self.master_level * 0.9);
         self.loud.process(&self.mix_l[..n], &self.mix_r[..n]);
+        self.analyzer.process(&self.mix_l[..n], &self.mix_r[..n]);
 
         // tempo-synced plugins follow the song while it plays, the metronome otherwise
         let tempo = if self.tp.playing {
@@ -1089,6 +1101,15 @@ impl Dsp {
         sh.lufs_s.set(db(self.loud.short));
         sh.lufs_i.set(db(self.loud.integrated()));
         sh.true_peak.set(if self.loud.true_peak > 0.0 { 20.0 * self.loud.true_peak.log10() } else { -200.0 });
+        self.range_tick = self.range_tick.wrapping_add(1);
+        if self.range_tick % 32 == 0 {
+            sh.lufs_range.set(self.loud.range() as f32);
+            sh.lufs_max_s.set(db(self.loud.max_short));
+        }
+        for (b, v) in self.analyzer.bands.iter().enumerate() {
+            sh.spectrum[b].set(*v);
+        }
+        sh.correlation.set(self.analyzer.correlation);
         sh.remote_channels.store(self.remote_count as u64, Relaxed);
         let st = self.jitter.stats;
         sh.underruns.store(st.underruns, Relaxed);

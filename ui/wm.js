@@ -8,7 +8,7 @@
 //
 // Loaded before the main script; boot() calls wmSetup() before anything draws.
 
-const WINS = ["song", "rack", "roll", "mixer"];
+const WINS = ["song", "rack", "roll", "mixer", "master"];
 const WM_MIN = { w: 260, h: 130 };
 const WM_STICK = 10;  // px: edges closer than this stick together
 const WM_EDGE = 8;    // px from the desk's edge: let go to fill a half or a quarter
@@ -22,7 +22,8 @@ const LAYOUTS = {
   "Piano roll big": { song: [0, 0, 1, 0.3], roll: [0, 0.3, 1, 0.7] },
 };
 // where a window opens when the layout doesn't place it
-const WM_HOME = { song: [0, 0, 1, 0.56], rack: [0.04, 0.3, 0.5, 0.42], roll: [0.3, 0.32, 0.66, 0.6], mixer: [0.1, 0.3, 0.85, 0.66] };
+const WM_HOME = { song: [0, 0, 1, 0.56], rack: [0.04, 0.3, 0.5, 0.42], roll: [0.3, 0.32, 0.66, 0.6], mixer: [0.1, 0.3, 0.85, 0.66],
+  master: [0.6, 0.02, 0.38, 0.86] };
 
 const wm = { st: {}, z: 10, focus: null };
 
@@ -59,7 +60,7 @@ function wmSetup() {
   new ResizeObserver(() => WINS.forEach(wmPlace)).observe($("desk"));
   // FL's keys for the windows
   document.addEventListener("keydown", (e) => {
-    const k = { F5: "song", F6: "rack", F7: "roll", F9: "mixer" }[e.key];
+    const k = { F5: "song", F6: "rack", F7: "roll", F9: "mixer", F10: "master" }[e.key];
     if (k && !e.ctrlKey && !e.altKey) { e.preventDefault(); wmToggle(k); }
   });
 }
