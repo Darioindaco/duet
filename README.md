@@ -15,7 +15,7 @@ Silicon and Intel) and Windows.
 - Peer-to-peer, low-latency audio for two (paste each other's code), with a
   jitter buffer that sets itself, a shared metronome and a video call.
 - A pedalboard per input: effects, NAM amp models (and TONE3000 downloads),
-  VST3 plugins; ASIO on Windows.
+  VST3 plugins and, on a Mac, Audio Units (AU); ASIO on Windows.
 
 **A shared song (a DAW for two)**
 - Playlist with audio and pattern clips, free placement or snapping (Smart,
@@ -33,7 +33,7 @@ Silicon and Intel) and Windows.
   brush** like FL's, **chord browsing** (Shift + arrows on a note) and chord
   progressions per key; MIDI keyboards; record notes live.
 - Instruments: synthesized drum kits (808/909…), a 2-osc synth with presets, a
-  sampler, VST3 instruments.
+  sampler, VST3 instruments and AU instruments (Mac).
 - Mixer: strips with effect racks, buses, sends, sidechain, EQ curve, master
   rack and limiter, delay compensation; **automation** lanes for any knob.
 - Browser: built-in sounds, your folders and bins, drag into the song.
@@ -115,7 +115,11 @@ has two tabs:
      fifth of each audio block on a recent PC. Watch **DSP** in the bottom bar; if
      it gets near 70%, use the *lite* / *feather* version of a capture.
 
-6. **VST3 plugins:** *+ Add effect → VST3 plugin…* lists the effects in your
+6. **Audio Units (Mac):** the AU effects and instruments on your Mac (Logic's
+   and Apple's own included) show up in the same plugin lists as VST3s, marked
+   *Audio Unit*; they save their settings with the song and *Open window* shows
+   their own window (AUs made only as AUv3 have no window here yet).
+7. **VST3 plugins:** *+ Add effect → VST3 plugin…* lists the effects in your
    VST3 folder (search by name, maker or type). *Open window* shows the plugin's
    own controls; *Mix* blends dry/wet. Plugins run inside Duet with no extra
    delay. (Instruments are under *Instruments*, below.) The first scan takes
