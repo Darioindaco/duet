@@ -42,8 +42,33 @@ const PK_SPEC = {
   drive: [["drive", "Drive", "pct"], ["tone", "Tone", "pct"], ["level", "Level", "pct"]],
   chorus: [["rate", "Rate", "lin", 0.1, 3.1, "Hz"], ["depth", "Depth", "pct"], ["mix", "Mix", "pct"]],
   tremolo: [["rate", "Rate", "lin", 0.5, 12, "Hz"], ["depth", "Depth", "pct"], ["stereo", "Stereo", "pct"]],
-  delay: [["time", "Time", "lin", 60, 1160, "ms"], ["feedback", "Feedback", "pct"], ["mix", "Mix", "pct"], ["pingpong", "Ping-pong", "pct"], ["dry", "Dry", "pct"]],
-  reverb: [["size", "Size", "pct"], ["damp", "Damping", "pct"], ["width", "Width", "pct"], ["mix", "Mix", "pct"], ["dry", "Dry", "pct"]],
+  delay: [["time", "Time", "lin", 60, 1160, "ms"], ["feedback", "Feedback", "pct"], ["mix", "Mix", "pct"], ["pingpong", "Ping-pong", "pct"], ["dry", "Dry", "pct"],
+    ["sync", "Sync", "choice", ["Free", "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1 bar"]],
+    ["lowcut", "Low cut", "log", 20, 2000, "Hz", { offBelow: 0.005 }], ["highcut", "High cut", "log", 1000, 20000, "Hz", { offAbove: 0.995 }],
+    ["drive", "Drive", "pct"], ["wow", "Wow", "pct"], ["duck", "Duck", "pct"]],
+  reverb: [["size", "Size", "pct"], ["damp", "Damping", "pct"], ["width", "Width", "pct"], ["mix", "Mix", "pct"], ["dry", "Dry", "pct"],
+    ["type", "Type", "choice", ["Classic", "Room", "Hall", "Plate"]], ["predelay", "Pre-delay", "lin", 0, 200, "ms"],
+    ["lowcut", "Low cut", "log", 20, 1000, "Hz", { offBelow: 0.005 }], ["highcut", "High cut", "log", 1000, 20000, "Hz", { offAbove: 0.995 }], ["mod", "Movement", "pct"]],
+  deess: [["freq", "Frequency", "log", 2000, 12000, "Hz"], ["thresh", "Threshold", "lin", -60, 0, "dB"], ["range", "Range", "lin", 0, 24, "dB"],
+    ["mode", "Mode", "choice", ["Split", "Wide"]], ["listen", "Listen", "toggle"]],
+  transient: [["attack", "Attack", "lin", -100, 100, "%"], ["sustain", "Sustain", "lin", -100, 100, "%"], ["speed", "Length", "lin", 0.5, 2, "x"],
+    ["output", "Output", "lin", -12, 12, "dB"], ["mix", "Mix", "pct"]],
+  width: [["width", "Width", "lin", 0, 200, "%"], ["lowwidth", "Low width", "lin", 0, 200, "%"], ["highwidth", "High width", "lin", 0, 200, "%"],
+    ["xover", "Split", "log", 100, 5000, "Hz"], ["monobass", "Mono below", "log", 20, 500, "Hz", { offBelow: 0.005 }], ["balance", "Balance", "lin", -100, 100, "%"],
+    ["output", "Output", "lin", -12, 12, "dB"]],
+  gate: [["thresh", "Threshold", "lin", -80, 0, "dB"], ["range", "Range", "lin", 0, 80, "dB"], ["attack", "Attack", "log", 0.05, 50, "ms"], ["hold", "Hold", "lin", 0, 500, "ms"],
+    ["release", "Release", "log", 5, 2000, "ms"], ["hyst", "Hysteresis", "lin", 0, 12, "dB"], ["schp", "SC low cut", "log", 20, 2000, "Hz", { offBelow: 0.005 }],
+    ["sclp", "SC high cut", "log", 500, 20000, "Hz", { offAbove: 0.995 }], ["listen", "Listen", "toggle"]],
+  filter: [["type", "Type", "choice", ["Low pass", "High pass", "Band pass", "Notch"]], ["slope", "Slope", "choice", ["12 dB", "24 dB"]],
+    ["cutoff", "Cutoff", "log", 20, 20000, "Hz"], ["reso", "Resonance", "pct"], ["drive", "Drive", "lin", 0, 24, "dB"],
+    ["rate", "LFO rate", "choice", ["1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars", "4 bars"]], ["shape", "LFO shape", "choice", ["Sine", "Triangle", "Saw", "Square", "Random"]],
+    ["lfo", "LFO depth", "lin", -4, 4, "oct"], ["env", "Envelope", "lin", -4, 4, "oct"], ["mix", "Mix", "pct"]],
+  lofi: [["bits", "Bits", "lin", 2, 16, "bit"], ["rate", "Rate", "log", 500, 48000, "Hz"], ["wow", "Wow", "pct"], ["flutter", "Flutter", "pct"],
+    ["noise", "Noise", "pct"], ["tone", "Tone", "log", 1000, 20000, "Hz"], ["mix", "Mix", "pct"], ["output", "Output", "lin", -12, 12, "dB"]],
+  utility: [["gain", "Gain", "lin", -24, 24, "dB"], ["pan", "Pan", "lin", -100, 100, "%"], ["width", "Width", "lin", 0, 200, "%"], ["phasel", "Flip L", "toggle"],
+    ["phaser", "Flip R", "toggle"], ["mono", "Mono", "toggle"], ["swap", "Swap L/R", "toggle"], ["dc", "DC cut", "toggle"]],
+  doubler: [["detune", "Detune", "lin", 0, 50, "ct"], ["delay", "Delay", "lin", 0, 40, "ms"], ["width", "Width", "pct"], ["voices", "Voices", "choice", ["2", "4", "6", "8"]],
+    ["mix", "Mix", "pct"], ["lowcut", "Low cut", "log", 20, 1000, "Hz", { offBelow: 0.005 }]],
   nam: [["input", "Input", "lin", -12, 12, "dB"], ["output", "Output", "lin", -12, 12, "dB"]],
   vst: [["mix", "Mix", "pct"]],
 };
@@ -65,8 +90,16 @@ const PK_GROUPS = {
     return [[`Band ${b}`, [`b${b}on`, `b${b}type`, `b${b}freq`, ...(flat ? [] : [`b${b}gain`]), `b${b}q`, ...(cut ? [`b${b}slope`] : []), `b${b}ch`]],
       ...(flat ? [] : [["Dynamic", [`b${b}dyn`, `b${b}thr`]]]), ["Output", ["output", "auto"]]];
   },
-  delay: [["Echo", ["time", "feedback", "pingpong"]], ["Mix", ["mix", "dry"]]],
-  reverb: [["Room", ["size", "damp", "width"]], ["Mix", ["mix", "dry"]]],
+  delay: [["Echo", ["sync", "time", "feedback", "pingpong"]], ["Color", ["lowcut", "highcut", "drive", "wow"]], ["Mix", ["mix", "dry", "duck"]]],
+  reverb: [["Room", ["type", "size", "damp", "width"]], ["Tone", ["predelay", "lowcut", "highcut", "mod"]], ["Mix", ["mix", "dry"]]],
+  deess: [["Detect", ["freq", "thresh", "range"]], ["Mode", ["mode", "listen"]]],
+  transient: [["Shape", ["attack", "sustain", "speed"]], ["Output", ["output", "mix"]]],
+  width: [["Width", ["width", "lowwidth", "highwidth", "xover"]], ["Mono and balance", ["monobass", "balance", "output"]]],
+  gate: [["Open", ["thresh", "range", "hyst"]], ["Timing", ["attack", "hold", "release"]], ["Listen to", ["schp", "sclp", "listen"]]],
+  filter: [["Filter", ["type", "slope", "cutoff", "reso", "drive"]], ["Movement", ["rate", "shape", "lfo", "env"]], ["Mix", ["mix"]]],
+  lofi: [["Digital", ["bits", "rate"]], ["Tape", ["wow", "flutter", "noise", "tone"]], ["Output", ["mix", "output"]]],
+  utility: [["Level", ["gain", "pan", "width"]], ["Switches", ["phasel", "phaser", "mono", "swap", "dc"]]],
+  doubler: [["Voices", ["voices", "detune", "delay", "width"]], ["Mix", ["mix", "lowcut"]]],
 };
 
 function pkSpec(kind, key) { return (PK_SPEC[kind] || []).find((s) => s[0] === key); }
@@ -90,6 +123,9 @@ function pkFmt(spec, v) {
   if (spec[2] === "toggle") return v >= 0.5 ? "On" : "Off";
   const r = pkReal(spec, v), u = spec[5] ?? "%";
   if (u === "x") return r.toFixed(r < 1 ? 2 : 1) + "x";
+  if (u === "oct") return (r > 0.05 ? "+" : "") + r.toFixed(1) + " oct";
+  if (u === "bit") return r.toFixed(1) + " bit";
+  if (u === "ct") return r.toFixed(1) + " ct";
   if (u === "°") return Math.round(r) + "°";
   if (u === "Hz" && r < 10) return r.toFixed(2) + " Hz";
   if (u === "Hz") return r >= 1000 ? (r / 1000).toFixed(r >= 10000 ? 1 : 2) + " kHz" : Math.round(r) + " Hz";
@@ -429,8 +465,8 @@ function pkPanel(w, slot) {
 }
 
 // effects that show how much they turn down, and that can listen to another track
-const PK_GR = new Set(["comp", "limiter", "clipper", "multi", "shaper"]);
-const PK_KEYED = new Set(["comp", "shaper"]);
+const PK_GR = new Set(["comp", "limiter", "clipper", "multi", "shaper", "deess", "gate"]);
+const PK_KEYED = new Set(["comp", "shaper", "gate"]);
 
 // what the displays draw from the engine (spectra, band levels), 25 times a second
 setInterval(async () => {
@@ -635,7 +671,9 @@ const PK_DISPLAY = {
   delay(slot, color) {
     return pkCanvas("dlyd", (ctx, w, h) => {
       const g = (k) => slot[k] ?? FX_DEFAULTS.delay[k];
-      const ms = pkReal(pkSpec("delay", "time"), g("time")), fb = g("feedback"), pp = g("pingpong"), mix = g("mix");
+      const sync = pkReal(pkSpec("delay", "sync"), g("sync") ?? 0), beats = [0.125, 1 / 6, 0.25, 0.375, 1 / 3, 0.5, 0.75, 2 / 3, 1, 1.5, 2, 4][sync - 1];
+      const bpm = (typeof song !== "undefined" && song.view?.meta?.bpm) || 120;
+      const ms = sync ? beats * 60000 / bpm : pkReal(pkSpec("delay", "time"), g("time")), fb = g("feedback"), pp = g("pingpong"), mix = g("mix");
       const span = Math.max(2000, ms * 6), X = (t) => 10 + t / span * (w - 20), mid = h / 2;
       ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fillRect(0, mid, w, 1);
       ctx.fillStyle = "rgba(255,255,255,0.4)"; ctx.font = "600 9px system-ui, sans-serif";
@@ -659,7 +697,9 @@ const PK_DISPLAY = {
         ctx.setLineDash([3, 4]); ctx.strokeStyle = color + "88"; ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
       }
       ctx.fillStyle = "rgba(255,255,255,0.5)";
-      ctx.fillText(`${Math.round(ms)} ms · ${Math.round(fb * 100)}% feedback`, w - 150, 14);
+      ctx.textAlign = "right";
+      ctx.fillText(`${sync ? pkFmt(pkSpec("delay", "sync"), g("sync")) + " · " : ""}${Math.round(ms)} ms · ${Math.round(fb * 100)}% feedback`, w - 8, 14);
+      ctx.textAlign = "left";
     }, 130);
   },
 
@@ -668,22 +708,27 @@ const PK_DISPLAY = {
     return pkCanvas("revd", (ctx, w, h) => {
       const g = (k) => slot[k] ?? FX_DEFAULTS.reverb[k];
       const size = g("size"), damp = g("damp"), width = g("width"), mix = g("mix");
-      const len = 0.25 + size * 0.75, base = h - 12;
+      const type = pkReal(pkSpec("reverb", "type"), g("type") ?? 0), pre = 0.2 * (g("predelay") ?? 0);
+      const rt = [0.3 + size * 4.7, 0.25 + 1.6 * size * size, 0.8 + 8 * size * size, 0.5 + 4.5 * size * size][type];
+      const len = Math.min(1, 0.15 + rt / 8), base = h - 12, x0 = 12 + pre / 2 * (w - 20);
       const grad = ctx.createLinearGradient(0, 0, w, 0);
       grad.addColorStop(0, color + "cc"); grad.addColorStop(1, damp > 0.5 ? "#30264066" : color + "22");
-      ctx.beginPath(); ctx.moveTo(12, base);
-      for (let x = 12; x <= w - 8; x++) {
-        const t = (x - 12) / (w - 20), env = Math.exp(-t / len * 3.2) * mix * 1.6;
+      ctx.beginPath(); ctx.moveTo(x0, base);
+      for (let x = x0; x <= w - 8; x++) {
+        const t = (x - x0) / (w - 20), env = Math.exp(-t / len * 3.2) * mix * 1.6;
         const jitter = 0.75 + 0.25 * Math.sin(x * 1.7) * Math.sin(x * 0.31);
         ctx.lineTo(x, base - Math.min(1, env * jitter) * (h - 24));
       }
       ctx.lineTo(w - 8, base); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
       for (let k = 0; k < 9; k++) { // early reflections
-        const t = 0.01 + k * 0.012 * (0.5 + size), x = 12 + t * (w - 20), a = (1 - k / 10) * mix * 1.4;
+        if (type === 3) break; // a plate has no early reflections
+        const t = 0.01 + k * 0.012 * (0.5 + size), x = x0 + t * (w - 20), a = (1 - k / 10) * mix * 1.4;
         ctx.fillStyle = "#fff"; ctx.fillRect(x, base - Math.min(1, a) * (h - 24), 2, Math.min(1, a) * (h - 24));
       }
       ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.font = "600 9px system-ui, sans-serif";
-      ctx.fillText(`${(0.3 + size * 4.7).toFixed(1)} s tail · width ${Math.round(width * 100)}%`, w - 160, 14);
+      ctx.textAlign = "right";
+      ctx.fillText(`${["Classic", "Room", "Hall", "Plate"][type]} · ${rt.toFixed(1)} s tail${pre > 0.001 ? ` · ${Math.round(pre * 1000)} ms pre-delay` : ""} · width ${Math.round(width * 100)}%`, w - 8, 14);
+      ctx.textAlign = "left";
     }, 130);
   },
 
@@ -744,7 +789,18 @@ const PK_DEFAULTS = {
   saturate: { drive: 0.25, mode: 0, bias: 0, tone: 0.5, mix: 1, output: 0.5, os: 0.333, auto: 1 },
   shaper: { depth: 1, rate: 0.5, shape: 0, curve: 0.5, hold: 0.1, phase: 0, trig: 0, thresh: 0.5, band: 0, xover: 0.3486, mix: 1, smooth: 0 },
 };
-const PK_NEW_DEFAULTS = { comp: { knee: 0, mix: 1, schp: 0, char: 0 }, limiter: { link: 1, tp: 1 } };
+Object.assign(PK_DEFAULTS, {
+  deess: { freq: 0.6578, thresh: 0.5, range: 0.4167, mode: 0, listen: 0 },
+  transient: { attack: 0.5, sustain: 0.5, speed: 0.5, output: 0.5, mix: 1 },
+  width: { width: 0.5, lowwidth: 0.5, highwidth: 0.5, xover: 0.4307, monobass: 0, balance: 0.5, output: 0.5 },
+  gate: { thresh: 0.5, range: 1, attack: 0.3333, hold: 0.04, release: 0.5304, hyst: 0.3333, schp: 0, sclp: 1, listen: 0 },
+  filter: { type: 0, slope: 0, cutoff: 0.6, reso: 0.3, drive: 0, rate: 0.5, shape: 0, lfo: 0.5, env: 0.5, mix: 1 },
+  lofi: { bits: 0.5, rate: 0.6, wow: 0.2, flutter: 0.1, noise: 0.15, tone: 0.7, mix: 1, output: 0.5 },
+  utility: { gain: 0.5, pan: 0.5, width: 0.5, phasel: 0, phaser: 0, mono: 0, swap: 0, dc: 0 },
+  doubler: { detune: 0.24, delay: 0.4, width: 0.8, voices: 0, mix: 0.5, lowcut: 0 },
+});
+const PK_NEW_DEFAULTS = { comp: { knee: 0, mix: 1, schp: 0, char: 0 }, limiter: { link: 1, tp: 1 },
+  delay: { sync: 0, lowcut: 0, highcut: 1, drive: 0, wow: 0, duck: 0 }, reverb: { type: 0, predelay: 0, lowcut: 0, highcut: 1, mod: 0.3 } };
 const pkKnobs = (kind) => PK_SPEC[kind].map((s) => [s[0], s[1], (v) => pkFmt(s, v)]);
 const PK_FX = [
   { id: "eqpro", name: "EQ Pro", sub: "8-band, dynamic, M/S", color: "#4fd1ff", knobs: pkKnobs("eqpro"), group: "EQ" },
@@ -752,6 +808,14 @@ const PK_FX = [
   { id: "clipper", name: "Clipper", sub: "loud without overs", color: "#ff4d6d", knobs: pkKnobs("clipper"), group: "Dynamics" },
   { id: "saturate", name: "Saturator", sub: "tape, tube, fuzz", color: "#ffb347", knobs: pkKnobs("saturate"), group: "Color" },
   { id: "shaper", name: "Shaper", sub: "pump in time", color: "#7cf29a", knobs: pkKnobs("shaper"), group: "Movement" },
+  { id: "deess", name: "De-esser", sub: "tames the s's", color: "#c3a6ff", knobs: pkKnobs("deess") },
+  { id: "transient", name: "Transient", sub: "more or less punch", color: "#ff9f6b", knobs: pkKnobs("transient") },
+  { id: "width", name: "Imager", sub: "stereo width, mono bass", color: "#5ee0d0", knobs: pkKnobs("width") },
+  { id: "gate", name: "Gate", sub: "silence between hits", color: "#9ad04f", knobs: pkKnobs("gate") },
+  { id: "filter", name: "Filter", sub: "sweeps and wobbles", color: "#ff6bd6", knobs: pkKnobs("filter") },
+  { id: "lofi", name: "Lo-fi", sub: "bits, tape, vinyl", color: "#d6b07a", knobs: pkKnobs("lofi") },
+  { id: "doubler", name: "Doubler", sub: "wide copies", color: "#7fb2ff", knobs: pkKnobs("doubler") },
+  { id: "utility", name: "Utility", sub: "gain, pan, phase, mono", color: "#b8b8c8", knobs: pkKnobs("utility") },
 ];
 
 // presets in real units, made into knob values
@@ -803,6 +867,22 @@ Object.assign(PK_PRESETS, {
     "Vocal air": pkPre("multi", { depth: 45, lowgain: -3, highgain: 3 }),
     "Squash": pkPre("multi", { depth: 100, time: 0.5, input: 4 }),
   },
+  deess: { "Vocal": pkPre("deess", { freq: 6500, thresh: -30, range: 8 }), "Harsh singer": pkPre("deess", { freq: 5000, thresh: -36, range: 12 }),
+    "Gentle air": pkPre("deess", { freq: 9000, thresh: -26, range: 5 }) },
+  transient: { "Punchy drums": pkPre("transient", { attack: 50, sustain: -20 }), "Tight snare": pkPre("transient", { attack: 30, sustain: -50 }),
+    "Soften attack": pkPre("transient", { attack: -50, sustain: 0 }), "Room up": pkPre("transient", { attack: 0, sustain: 60 }) },
+  width: { "Wide master": pkPre("width", { width: 120, lowwidth: 80, highwidth: 140, monobass: 120 }), "Mono bass": pkPre("width", { monobass: 150 }),
+    "Super wide": pkPre("width", { width: 170, monobass: 200 }), "Mono check": pkPre("width", { width: 0 }) },
+  gate: { "Drum tight": pkPre("gate", { thresh: -30, range: 80, attack: 0.3, hold: 30, release: 80 }), "Vocal clean": pkPre("gate", { thresh: -48, range: 18, release: 250 }),
+    "Kick (low only)": pkPre("gate", { thresh: -28, sclp: 200, release: 120 }) },
+  filter: { "Slow sweep": pkPre("filter", { type: "Low pass", cutoff: 800, reso: 40, rate: "4 bars", lfo: 3 }), "Wobble": pkPre("filter", { type: "Low pass", slope: "24 dB", cutoff: 300, reso: 60, rate: "1/8", lfo: 3, drive: 6 }),
+    "Auto-wah": pkPre("filter", { type: "Band pass", cutoff: 500, reso: 55, env: 3 }), "Radio": pkPre("filter", { type: "Band pass", cutoff: 1500, reso: 30 }),
+    "Build-up riser": pkPre("filter", { type: "High pass", cutoff: 60, reso: 30, rate: "4 bars", shape: "Saw", lfo: 4 }) },
+  lofi: { "Cassette": pkPre("lofi", { bits: 16, rate: 48000, wow: 35, flutter: 20, noise: 20, tone: 9000 }), "Sampler 12-bit": pkPre("lofi", { bits: 12, rate: 26000, wow: 0, flutter: 0, noise: 5, tone: 12000 }),
+    "Crushed": pkPre("lofi", { bits: 5, rate: 6000, wow: 0, flutter: 0, noise: 0, tone: 20000 }), "Old vinyl": pkPre("lofi", { bits: 16, rate: 48000, wow: 15, flutter: 5, noise: 60, tone: 7000 }) },
+  doubler: { "Vocal double": pkPre("doubler", { detune: 10, delay: 18, width: 80, voices: "2", mix: 45 }), "Huge chorus": pkPre("doubler", { detune: 22, delay: 25, width: 100, voices: "6", mix: 60 }),
+    "Subtle width": pkPre("doubler", { detune: 6, delay: 10, width: 60, voices: "2", mix: 30, lowcut: 200 }) },
+  utility: { "Mono": pkPre("utility", { mono: 1 }), "-6 dB": pkPre("utility", { gain: -6 }), "Flip phase": pkPre("utility", { phasel: 1, phaser: 1 }) },
   shaper: {
     "Quarter pump": pkPre("shaper", { shape: "Pump", rate: "1/4", depth: 100, curve: 50, hold: 5 }),
     "Lows only pump": pkPre("shaper", { shape: "Pump", rate: "1/4", depth: 100, band: "Lows", xover: 150 }),
@@ -1166,5 +1246,199 @@ Object.assign(PK_DISPLAY, {
     }, 150);
     cv.scope = (s) => { sc = s; cv.redraw(); };
     return cv;
+  },
+});
+
+Object.assign(PK_DISPLAY, {
+  // De-esser: where it listens (from the frequency up), how loud that is against the threshold,
+  // and what it took off over time
+  deess(slot, color) {
+    let lvl = -120;
+    const hist = [];
+    const cv = pkCanvas("dsd", (ctx, w, h) => {
+      const g = (k) => pkReal(pkSpec("deess", k), slot[k] ?? PK_DEFAULTS.deess[k]);
+      const f = g("freq"), thr = g("thresh");
+      const X = (hz) => 8 + Math.log(hz / 500) / Math.log(40) * (w * 0.55 - 16);
+      ctx.fillStyle = "rgba(255,255,255,0.05)";
+      for (const hz of [1000, 2000, 5000, 10000]) ctx.fillRect(Math.round(X(hz)), 8, 1, h - 16);
+      const grad = ctx.createLinearGradient(X(f) - 30, 0, X(f) + 10, 0); grad.addColorStop(0, color + "00"); grad.addColorStop(1, color + "55");
+      ctx.fillStyle = grad; ctx.fillRect(X(f) - 30, 8, X(20000) - X(f) + 30, h - 16);
+      ctx.fillStyle = color; ctx.fillRect(Math.round(X(f)), 8, 2, h - 16);
+      ctx.fillStyle = "rgba(255,255,255,0.45)"; ctx.font = "600 9px system-ui, sans-serif";
+      for (const [hz, l] of [[1000, "1k"], [2000, "2k"], [5000, "5k"], [10000, "10k"]]) ctx.fillText(l, X(hz) + 3, h - 6);
+      ctx.fillText(pkFmt(pkSpec("deess", "freq"), slot.freq ?? PK_DEFAULTS.deess.freq), X(f) + 5, 18);
+      // the level it hears against the threshold
+      const mx = w * 0.58, mw = 14, Y = (db) => 8 + (-Math.max(-60, Math.min(0, db))) / 60 * (h - 16);
+      ctx.fillStyle = "rgba(255,255,255,0.05)"; ctx.fillRect(mx, 8, mw, h - 16);
+      ctx.fillStyle = lvl > thr ? "#ff7a6b" : color; glow(ctx, ctx.fillStyle, 8); ctx.fillRect(mx, Y(lvl), mw, h - 8 - Y(lvl)); noGlow(ctx);
+      ctx.fillStyle = "#fff"; ctx.fillRect(mx - 3, Math.round(Y(thr)), mw + 6, 2);
+      const hx = mx + mw + 14, hw = w - hx - 8;
+      ctx.fillStyle = "rgba(255,255,255,0.04)"; ctx.fillRect(hx, 8, hw, h - 16);
+      ctx.beginPath(); ctx.moveTo(hx + hw - (hist.length - 1) / 149 * hw, 8);
+      hist.forEach((gr, k) => ctx.lineTo(hx + hw - (hist.length - 1 - k) / 149 * hw, 8 + Math.min(1, gr / 24) * (h - 16)));
+      ctx.lineTo(hx + hw, 8); ctx.closePath(); ctx.fillStyle = "#ff7a6b66"; ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.45)"; ctx.fillText("Taken off", hx + 4, h - 12);
+    }, 140);
+    cv.scope = (sc) => { if (sc?.length) lvl = sc[0]; };
+    cv.live = (m) => { hist.push(m[2]); if (hist.length > 150) hist.shift(); cv.redraw(); };
+    return cv;
+  },
+
+  // Transient: a hit before (grey) and after (colour)
+  transient(slot, color) {
+    let now = 0;
+    const cv = pkCanvas("trd", (ctx, w, h) => {
+      const att = (slot.attack ?? 0.5) * 2 - 1, sus = (slot.sustain ?? 0.5) * 2 - 1, mid = h / 2;
+      const env = (t) => Math.min(1, t / 0.01) * Math.exp(-t * 6);
+      const shaped = (t) => { const hit = Math.max(0, 1 - t / 0.06), tail = Math.min(1, Math.max(0, (t - 0.04) / 0.15)); return env(t) * 10 ** ((att * hit * 9 + sus * tail * 7) / 20); };
+      for (const [fn, c, lw] of [[env, "rgba(255,255,255,0.25)", 1.2], [shaped, color, 2]]) {
+        ctx.beginPath();
+        for (let x = 0; x <= w; x++) { const t = x / w * 0.6, a = fn(t) * (mid - 10) * Math.sin(x * 0.9); x ? ctx.lineTo(x, mid - a * 0.9) : ctx.moveTo(x, mid); }
+        ctx.strokeStyle = c; ctx.lineWidth = lw; if (lw > 1.5) glow(ctx, color, 8); ctx.stroke(); noGlow(ctx);
+      }
+      ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.font = "600 9px system-ui, sans-serif"; ctx.textAlign = "right";
+      ctx.fillText(`now ${(now > 0 ? "+" : "") + now.toFixed(1)} dB`, w - 8, 14); ctx.textAlign = "left";
+    }, 130);
+    cv.scope = (sc) => { if (sc?.length) { now = sc[0]; cv.redraw(); } };
+    return cv;
+  },
+
+  // Imager: the stereo picture (a vectorscope), correlation and balance
+  width(slot, color) {
+    let sc = null;
+    const trail = [];
+    const cv = pkCanvas("wdd", (ctx, w, h) => {
+      const sz = h - 16, cx = 8 + sz / 2, cy = 8 + sz / 2, R = sz / 2 - 4;
+      ctx.strokeStyle = "rgba(255,255,255,0.08)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R); ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+      ctx.moveTo(cx - R * 0.7, cy - R * 0.7); ctx.lineTo(cx + R * 0.7, cy + R * 0.7); ctx.moveTo(cx + R * 0.7, cy - R * 0.7); ctx.lineTo(cx - R * 0.7, cy + R * 0.7); ctx.stroke();
+      ctx.fillStyle = "rgba(255,255,255,0.4)"; ctx.font = "700 8.5px system-ui, sans-serif";
+      ctx.fillText("M", cx + 3, cy - R + 9); ctx.fillText("L", cx - R * 0.7 - 8, cy - R * 0.7); ctx.fillText("R", cx + R * 0.7 + 3, cy - R * 0.7);
+      // the dots: mid up, side across
+      trail.forEach((pts, age) => {
+        ctx.fillStyle = color; ctx.globalAlpha = (age + 1) / trail.length * 0.8;
+        for (let i = 0; i < pts.length; i += 2) {
+          const l = pts[i], r = pts[i + 1], m = (l + r) * 0.7, s = (r - l) * 0.7;
+          ctx.fillRect(cx + Math.max(-R, Math.min(R, s * R * 2)) - 1, cy - Math.max(-R, Math.min(R, m * R * 2)) - 1, 2.2, 2.2);
+        }
+      });
+      ctx.globalAlpha = 1;
+      const bx = 8 + sz + 22, bw = w - bx - 12;
+      if (sc && bw > 60) {
+        const bar = (y, label, v, lo, hi, fmt) => {
+          ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fillRect(bx, y, bw, 8);
+          const x = bx + (v - lo) / (hi - lo) * bw, zero = bx + (0 - lo) / (hi - lo) * bw;
+          ctx.fillStyle = v < 0 && label === "Correlation" ? "#ff7a6b" : color;
+          ctx.fillRect(Math.min(x, zero), y, Math.abs(x - zero) || 2, 8);
+          ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.font = "600 9px system-ui, sans-serif";
+          ctx.fillText(`${label} ${fmt(v)}`, bx, y - 4);
+        };
+        bar(26, "Correlation", sc[0], -1, 1, (v) => (v > 0 ? "+" : "") + v.toFixed(2));
+        bar(62, "Balance", sc[1], -1, 1, (v) => (Math.abs(v) < 0.02 ? "centre" : v < 0 ? "left " + Math.round(-v * 100) + "%" : "right " + Math.round(v * 100) + "%"));
+        const g = (k) => pkReal(pkSpec("width", k), slot[k] ?? PK_DEFAULTS.width[k]);
+        ctx.fillStyle = "rgba(255,255,255,0.5)";
+        ctx.fillText(`Width ${Math.round(g("width"))}% · lows ${Math.round(g("lowwidth"))}% · highs ${Math.round(g("highwidth"))}%`, bx, 100);
+        ctx.fillText(`Mono below ${pkFmt(pkSpec("width", "monobass"), slot.monobass ?? 0)}`, bx, 116);
+      }
+    }, 160);
+    cv.scope = (s) => { if (!s || s.length < 66) return; sc = s; trail.push(s.slice(2, 66)); if (trail.length > 6) trail.shift(); cv.redraw(); };
+    return cv;
+  },
+
+  // Gate: the level over time, the threshold, and when it's open
+  gate(slot, color) {
+    const lv = [], open = [];
+    const cv = pkCanvas("gtd", (ctx, w, h) => {
+      const g = (k) => pkReal(pkSpec("gate", k), slot[k] ?? PK_DEFAULTS.gate[k]);
+      const thr = g("thresh"), hy = g("hyst"), Y = (db) => 8 + (-Math.max(-80, Math.min(0, db))) / 80 * (h - 16);
+      const X = (k) => w - (lv.length - 1 - k) / 199 * w;
+      open.forEach((o, k) => { if (o > 0.02) { ctx.fillStyle = `rgba(154,208,79,${0.18 * o})`; ctx.fillRect(X(k) - w / 199, 8, w / 199 + 1, h - 16); } });
+      ctx.beginPath(); ctx.moveTo(X(0), h - 8);
+      lv.forEach((v, k) => ctx.lineTo(X(k), Y(v)));
+      ctx.lineTo(w, h - 8); ctx.closePath(); ctx.fillStyle = color + "40"; ctx.fill();
+      ctx.fillStyle = color; ctx.fillRect(0, Math.round(Y(thr)), w, 2);
+      ctx.fillStyle = color + "66"; ctx.fillRect(0, Math.round(Y(thr - hy)), w, 1);
+      ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.font = "600 9px system-ui, sans-serif";
+      ctx.fillText(`Opens at ${thr.toFixed(0)} dB, closes below ${(thr - hy).toFixed(0)} dB`, 8, 16);
+    }, 140);
+    cv.scope = (sc) => { if (!sc || sc.length < 2) return; lv.push(sc[0]); open.push(sc[1]); if (lv.length > 200) { lv.shift(); open.shift(); } cv.redraw(); };
+    return cv;
+  },
+
+  // Filter: its response, where the cutoff is now (it moves with the LFO and the envelope)
+  filter(slot, color) {
+    let fNow = null;
+    const cv = pkCanvas("fld", (ctx, w, h) => {
+      const g = (k) => pkReal(pkSpec("filter", k), slot[k] ?? PK_DEFAULTS.filter[k]);
+      const type = g("type"), stages = g("slope") ? 2 : 1, kk = 2 - 1.95 * (slot.reso ?? PK_DEFAULTS.filter.reso), q = 1 / kk;
+      const sr = ui.rate || 48000, X = (f) => Math.log(f / 20) / Math.log(1000) * w, Fx = (px) => 20 * 1000 ** (px / w), Y = (db) => h * 0.42 - db / 30 * (h * 0.42 - 8);
+      ctx.fillStyle = "rgba(255,255,255,0.05)";
+      for (const f of [100, 1000, 10000]) ctx.fillRect(Math.round(X(f)), 0, 1, h);
+      ctx.fillRect(0, Math.round(Y(0)), w, 1);
+      const draw = (fc, col, lw, fill) => {
+        const st = [];
+        const last = rbjJs(["lp", "hp", "bp", "notch"][type], fc, q, 0, sr);
+        for (let s = 0; s < stages; s++) st.push(s + 1 === stages ? last : rbjJs(["lp", "hp", "bp", "notch"][type], fc, 0.7071, 0, sr));
+        ctx.beginPath();
+        for (let px = 0; px <= w; px += 2) { const db = Math.max(-60, Math.min(30, eqDb(st, Fx(px), sr))); px ? ctx.lineTo(px, Y(db)) : ctx.moveTo(px, Y(db)); }
+        if (fill) { ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath(); const gr = ctx.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, color + "55"); gr.addColorStop(1, color + "05"); ctx.fillStyle = gr; ctx.fill(); }
+        else { ctx.strokeStyle = col; ctx.lineWidth = lw; glow(ctx, col, 10); ctx.stroke(); noGlow(ctx); }
+      };
+      const base = g("cutoff");
+      draw(base, "rgba(255,255,255,0.35)", 1.2, false);
+      const fc = fNow ?? base;
+      draw(fc, color, 2.2, true);
+      draw(fc, color, 2.2, false);
+      ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.font = "600 9px system-ui, sans-serif";
+      ctx.fillText(`${["Low pass", "High pass", "Band pass", "Notch"][type]} · ${pkFmt(pkSpec("filter", "cutoff"), pkNorm(pkSpec("filter", "cutoff"), fc))}`, 8, 14);
+    }, 150);
+    cv.scope = (sc) => { if (sc?.length) { fNow = sc[0]; cv.redraw(); } };
+    return cv;
+  },
+
+  // Lo-fi: a wave as it comes out (steps from the bits and the rate, wobble from wow)
+  lofi(slot, color) {
+    const t0 = performance.now();
+    const cv = pkCanvas("lfd", (ctx, w, h) => {
+      const g = (k) => pkReal(pkSpec("lofi", k), slot[k] ?? PK_DEFAULTS.lofi[k]);
+      const bits = g("bits"), rate = g("rate"), wow = slot.wow ?? 0, mid = h / 2, q = 2 ** (bits - 1);
+      const hold = Math.max(1, Math.round(48000 / rate / 40)), tt = (performance.now() - t0) / 1000;
+      ctx.beginPath();
+      for (let x = 0; x <= w; x++) { const y = Math.sin(x / w * 4 * Math.PI) * 0.8; x ? ctx.lineTo(x, mid - y * (mid - 10)) : ctx.moveTo(x, mid - y * (mid - 10)); }
+      ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1; ctx.stroke();
+      ctx.beginPath();
+      let held = 0;
+      for (let x = 0; x <= w; x++) {
+        if (x % hold === 0) { const ph = x / w * 4 * Math.PI + wow * 0.6 * Math.sin(tt * 3.4 + x / w * 3); held = Math.round(Math.sin(ph) * 0.8 * q) / q; }
+        const y = mid - held * (mid - 10);
+        x ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      glow(ctx, color, 8); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke(); noGlow(ctx);
+      ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.font = "600 9px system-ui, sans-serif";
+      ctx.fillText(`${bits.toFixed(1)} bit · ${pkFmt(pkSpec("lofi", "rate"), slot.rate ?? PK_DEFAULTS.lofi.rate)}`, 8, 14);
+    }, 130);
+    cv.live = () => cv.redraw();
+    return cv;
+  },
+
+  // Doubler: the copies, where they sit (left to right) and how far they're tuned
+  doubler(slot, color) {
+    return pkCanvas("dbd", (ctx, w, h) => {
+      const g = (k) => pkReal(pkSpec("doubler", k), slot[k] ?? PK_DEFAULTS.doubler[k]);
+      const voices = 1 + g("voices"), cents = g("detune"), width = slot.width ?? 0.8, mix = slot.mix ?? 0.5;
+      const cx = w / 2, cy = h / 2;
+      ctx.fillStyle = "rgba(255,255,255,0.05)"; ctx.fillRect(cx, 8, 1, h - 16); ctx.fillRect(8, cy, w - 16, 1);
+      ctx.fillStyle = "rgba(255,255,255,0.4)"; ctx.font = "700 8.5px system-ui, sans-serif";
+      ctx.fillText("L", 10, cy - 4); ctx.fillText("R", w - 16, cy - 4); ctx.fillText("+" + Math.round(cents) + " ct", cx + 4, 16); ctx.fillText("−" + Math.round(cents) + " ct", cx + 4, h - 10);
+      ctx.beginPath(); ctx.arc(cx, cy, 7, 0, 2 * Math.PI); ctx.fillStyle = "#fff"; ctx.fill();
+      for (let v = 0; v < 2 * voices; v++) {
+        const up = v % 2 === 0, k = (Math.floor(v / 2) + 1) / voices;
+        const pan = (up ? -1 : 1) * width * (0.5 + 0.5 * k), det = (up ? 1 : -1) * k;
+        const x = cx + pan * (w / 2 - 24), y = cy - det * (h / 2 - 22);
+        ctx.beginPath(); ctx.arc(x, y, 4 + 6 * mix, 0, 2 * Math.PI);
+        ctx.fillStyle = color; glow(ctx, color, 10); ctx.globalAlpha = 0.5 + 0.5 * mix; ctx.fill(); noGlow(ctx); ctx.globalAlpha = 1;
+      }
+    }, 130);
   },
 });

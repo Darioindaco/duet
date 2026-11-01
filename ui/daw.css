@@ -544,3 +544,4 @@ header .phere { flex-shrink: 0; }
 .pktoggle button i { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #6b6878; transition: left 0.12s, background 0.12s; }
 .pktoggle button.on { background: color-mix(in srgb, var(--c) 30%, #000); border-color: var(--c); }
 .pktoggle button.on i { left: 18px; background: var(--c); box-shadow: 0 0 8px var(--c); }
+.pkmeters .bar { min-height: 100px; }

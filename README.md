@@ -121,9 +121,20 @@ has two tabs:
    - **Shaper:** volume shaping in time with the song (pump, sine, square, saws,
      gate; 1/32 to 2 bars), or started by each hit on a sidechain; on everything,
      only the lows, or only the highs.
+   - **De-esser** (split or wide, *Listen* to hear what it catches), **Transient**
+     (more or less attack and sustain), **Gate** (hold, hysteresis, a filtered or
+     sidechain detector), **Imager** (width for lows and highs, mono bass,
+     balance, a vectorscope and correlation), **Filter** (low/high/band pass and
+     notch, 12 or 24 dB, drive, an LFO in time with the song and an envelope that
+     opens it as you play), **Lo-fi** (bits, sample rate, wow, flutter, hiss and
+     crackle), **Doubler** (up to 8 detuned copies spread wide) and **Utility**
+     (gain, pan, width, phase flips, mono, swap, DC cut).
    - The **Compressor** got a knee, parallel mix, a low cut on what it listens to,
      and four characters (clean, glue, punch, smooth); the **Limiter** got true
-     peak and stereo link.
+     peak and stereo link; the **Delay** syncs to the song (1/32 to a bar, dotted
+     and triplets) and has filters, drive, wow and ducking on its echoes; the
+     **Reverb** has Room, Hall and Plate next to the classic, with pre-delay,
+     filters on the tail and movement.
 
    Every built-in effect's window is a full plugin:
    - **A live display:** the EQ's curve with handles you drag (frequency and gain;

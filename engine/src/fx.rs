@@ -10,7 +10,7 @@
 
 use std::f32::consts::PI;
 
-pub const N_KINDS: usize = 15;
+pub const N_KINDS: usize = 23;
 pub const NAM: usize = 6;
 pub const VST: usize = 7;
 pub const EQ: usize = 8;
@@ -21,6 +21,14 @@ pub const CLIPPER: usize = 11;
 pub const MULTI: usize = 12;
 pub const SATURATE: usize = 13;
 pub const SHAPER: usize = 14;
+pub const DEESS: usize = 15;
+pub const TRANSIENT: usize = 16;
+pub const WIDTH: usize = 17;
+pub const GATE: usize = 18;
+pub const FILTER: usize = 19;
+pub const LOFI: usize = 20;
+pub const UTILITY: usize = 21;
+pub const DOUBLER: usize = 22;
 pub const MAX_PARAMS: usize = 80;
 /// what an effect can show in its window besides the meters (spectra, band levels), per slot
 pub const SCOPE_N: usize = 136;
@@ -38,7 +46,7 @@ pub struct FxInfo {
 
 /// Effects that can listen to another track (a sidechain).
 pub fn takes_key(kind: usize) -> bool {
-    matches!(kind, COMP | SHAPER)
+    matches!(kind, COMP | SHAPER | GATE)
 }
 
 /// The first values given, the rest 0.
@@ -67,8 +75,13 @@ pub const FX: [FxInfo; N_KINDS] = [
     // stereo: 0 = both sides together (tremolo) .. 1 = opposite (auto-pan)
     FxInfo { name: "tremolo", params: &["rate", "depth", "stereo"], defaults: d([0.4, 0.6, 0.0]), stepped: &[] },
     // dry 1 = the dry signal at full level (as on a channel); 0 for a send bus
-    FxInfo { name: "delay", params: &["time", "feedback", "mix", "pingpong", "dry"], defaults: d([0.35, 0.4, 0.35, 0.0, 1.0]), stepped: &[] },
-    FxInfo { name: "reverb", params: &["size", "damp", "mix", "width", "dry"], defaults: d([0.6, 0.4, 0.3, 1.0, 1.0]), stepped: &[] },
+    // sync: free (time) or a note value in time with the song; low/high cut on the echoes (0 / 1 = off),
+    // drive: grit in the repeats, wow: tape wobble, duck: echoes step back while you play
+    FxInfo { name: "delay", params: &["time", "feedback", "mix", "pingpong", "dry", "sync", "lowcut", "highcut", "drive", "wow", "duck"],
+             defaults: d([0.35, 0.4, 0.35, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]), stepped: &["sync"] },
+    // type: classic, room, hall, plate; predelay 0..200 ms; low/high cut on the tail; mod: movement in the tail
+    FxInfo { name: "reverb", params: &["size", "damp", "mix", "width", "dry", "type", "predelay", "lowcut", "highcut", "mod"],
+             defaults: d([0.6, 0.4, 0.3, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.3]), stepped: &["type"] },
     // input/output: -12..+12 dB around the middle of the knob
     FxInfo { name: "nam", params: &["input", "output"], defaults: d([0.5, 0.5]), stepped: &[] },
     // a VST3 plugin; its own controls live in its own window
@@ -89,6 +102,20 @@ pub const FX: [FxInfo; N_KINDS] = [
              defaults: d([0.25, 0.0, 0.0, 0.5, 1.0, 0.5, 0.333, 1.0]), stepped: &["mode", "os", "auto"] },
     FxInfo { name: "shaper", params: &["depth", "rate", "shape", "curve", "hold", "phase", "trig", "thresh", "band", "xover", "mix", "smooth"],
              defaults: d([1.0, 0.5, 0.0, 0.5, 0.1, 0.0, 0.0, 0.5, 0.0, 0.3486, 1.0, 0.0]), stepped: &["rate", "shape", "trig", "band"] },
+    FxInfo { name: "deess", params: &["freq", "thresh", "range", "mode", "listen"], defaults: d([0.6578, 0.5, 0.4167, 0.0, 0.0]), stepped: &["mode", "listen"] },
+    FxInfo { name: "transient", params: &["attack", "sustain", "speed", "output", "mix"], defaults: d([0.5, 0.5, 0.5, 0.5, 1.0]), stepped: &[] },
+    FxInfo { name: "width", params: &["width", "lowwidth", "highwidth", "xover", "monobass", "balance", "output"],
+             defaults: d([0.5, 0.5, 0.5, 0.4307, 0.0, 0.5, 0.5]), stepped: &[] },
+    FxInfo { name: "gate", params: &["thresh", "range", "attack", "hold", "release", "hyst", "schp", "sclp", "listen"],
+             defaults: d([0.5, 1.0, 0.3333, 0.04, 0.5304, 0.3333, 0.0, 1.0, 0.0]), stepped: &["listen"] },
+    FxInfo { name: "filter", params: &["type", "slope", "cutoff", "reso", "drive", "rate", "shape", "lfo", "env", "mix"],
+             defaults: d([0.0, 0.0, 0.6, 0.3, 0.0, 0.5, 0.0, 0.5, 0.5, 1.0]), stepped: &["type", "slope", "rate", "shape"] },
+    FxInfo { name: "lofi", params: &["bits", "rate", "wow", "flutter", "noise", "tone", "mix", "output"],
+             defaults: d([0.5, 0.6, 0.2, 0.1, 0.15, 0.7, 1.0, 0.5]), stepped: &[] },
+    FxInfo { name: "utility", params: &["gain", "pan", "width", "phasel", "phaser", "mono", "swap", "dc"],
+             defaults: d([0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0]), stepped: &["phasel", "phaser", "mono", "swap", "dc"] },
+    FxInfo { name: "doubler", params: &["detune", "delay", "width", "voices", "mix", "lowcut"],
+             defaults: d([0.24, 0.4, 0.8, 0.0, 0.5, 0.0]), stepped: &["voices"] },
 ];
 
 /// Tempo for tempo-synced plugins: the metronome's, written by the audio thread.
@@ -268,6 +295,14 @@ pub fn make(cfg: &SlotCfg, sr: f32) -> Result<Box<dyn Effect>, String> {
         MULTI => Box::new(crate::plugins::Multiband::new(sr)),
         SATURATE => Box::new(crate::plugins::Saturator::new(sr)),
         SHAPER => Box::new(crate::plugins::Shaper::new(sr)),
+        DEESS => Box::new(crate::plugins2::DeEsser::new(sr)),
+        TRANSIENT => Box::new(crate::plugins2::Transient::new(sr)),
+        WIDTH => Box::new(crate::plugins2::Imager::new(sr)),
+        GATE => Box::new(crate::plugins2::Gate::new(sr)),
+        FILTER => Box::new(crate::plugins2::Filter::new(sr)),
+        LOFI => Box::new(crate::plugins2::LoFi::new(sr)),
+        UTILITY => Box::new(crate::plugins2::Utility::new(sr)),
+        DOUBLER => Box::new(crate::plugins2::Doubler::new(sr)),
         _ => {
             let v = cfg.vst.as_ref().ok_or("no plugin chosen")?;
             Box::new(VstEffect { proc: crate::vst::VstProc::create(&v.path, &v.cid, v.state.as_deref(), sr as f64)? })
@@ -748,11 +783,20 @@ struct Delay {
     ring: [Ring; 2],
     lp: [f32; 2],
     sr: f32,
+    cut: [[crate::kit::Biquad; 2]; 2], // [side][low cut, high cut]
+    cut_at: (f32, f32),
+    wow: f32,
+    duck: crate::kit::Env,
 }
+
+/// note values for a synced delay, in beats (after "free")
+pub const DELAY_NOTES: [f64; 12] = [0.125, 1.0 / 6.0, 0.25, 0.375, 1.0 / 3.0, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0];
 
 impl Delay {
     fn new(sr: f32) -> Self {
-        Delay { ring: [Ring::new((sr * 1.6) as usize), Ring::new((sr * 1.6) as usize)], lp: [0.0; 2], sr }
+        let n = (sr * 4.1) as usize;
+        Delay { ring: [Ring::new(n), Ring::new(n)], lp: [0.0; 2], sr, cut: [[crate::kit::Biquad::new(); 2]; 2], cut_at: (-1.0, -1.0), wow: 0.0,
+            duck: crate::kit::Env::default() }
     }
 }
 
@@ -760,22 +804,60 @@ impl Effect for Delay {
     /// Ping-pong 0: each side echoes itself. 1: the echoes bounce left, right,
     /// left (the input goes in on the left).
     fn process(&mut self, p: &Params, l: &mut [f32], r: &mut [f32]) {
-        let d = ((0.06 + 1.1 * p[0]) * self.sr) as usize;
+        let sync = crate::kit::choice(p[5], DELAY_NOTES.len() + 1);
+        let secs = if sync == 0 {
+            0.06 + 1.1 * p[0] as f64
+        } else {
+            DELAY_NOTES[sync - 1] * 60.0 / crate::kit::song_time().bpm.max(20.0)
+        };
+        let max = (self.ring[0].buf.len() - 4) as f32;
+        let d = ((secs * self.sr as f64) as f32).clamp(2.0, max - 200.0);
         let fb = 0.92 * p[1];
         let (mix, pp, dry) = (p[2], p[3], p[4]);
+        let (lc_on, hc_on) = (p[6] > 0.005, p[7] < 0.995);
+        let (lcf, hcf) = (20.0 * 100f32.powf(p[6]), 1000.0 * 20f32.powf(p[7]));
+        if (lcf, hcf) != self.cut_at {
+            self.cut_at = (lcf, hcf);
+            for side in &mut self.cut {
+                side[0].c = crate::kit::rbj::highpass(lcf as f64, 0.7071, self.sr as f64);
+                side[1].c = crate::kit::rbj::lowpass(hcf as f64, 0.7071, self.sr as f64);
+            }
+        }
+        let drive = 1.0 + 6.0 * p[8];
+        let wow = p[9] * self.sr * 0.0025;
+        let duck = p[10];
+        let (da, dr) = (crate::kit::coef(5.0, self.sr), crate::kit::coef(250.0, self.sr));
         for k in 0..l.len() {
-            let el = self.ring[0].tap(d);
-            let er = self.ring[1].tap(d);
+            self.wow = (self.wow + 0.6 / self.sr) % 1.0;
+            let dd = d + wow * (2.0 * PI * self.wow).sin();
+            let mut el = self.ring[0].tap_frac(dd);
+            let mut er = self.ring[1].tap_frac(dd);
             self.lp[0] += (el - self.lp[0]) * 0.5; // repeats get darker, like tape
             self.lp[1] += (er - self.lp[1]) * 0.5;
-            let (lpl, lpr) = (self.lp[0], self.lp[1]);
+            el = self.lp[0];
+            er = self.lp[1];
+            if lc_on {
+                el = self.cut[0][0].run(el);
+                er = self.cut[1][0].run(er);
+            }
+            if hc_on {
+                el = self.cut[0][1].run(el);
+                er = self.cut[1][1].run(er);
+            }
+            if p[8] > 0.001 {
+                el = (el * drive).tanh() / drive.sqrt();
+                er = (er * drive).tanh() / drive.sqrt();
+            }
             let mono = 0.5 * (l[k] + r[k]);
             let in_l = l[k] + (mono - l[k]) * pp;
             let in_r = r[k] * (1.0 - pp);
-            self.ring[0].write(in_l + (lpl + (lpr - lpl) * pp) * fb);
-            self.ring[1].write(in_r + (lpr + (lpl - lpr) * pp) * fb);
-            l[k] = l[k] * dry + lpl * mix;
-            r[k] = r[k] * dry + lpr * mix;
+            self.ring[0].write(in_l + (el + (er - el) * pp) * fb);
+            self.ring[1].write(in_r + (er + (el - er) * pp) * fb);
+            // ducking: the echoes step back while the input is loud
+            let e = self.duck.run(l[k].abs().max(r[k].abs()), da, dr);
+            let g = mix * (1.0 - duck * (e * 4.0).min(1.0));
+            l[k] = l[k] * dry + el * g;
+            r[k] = r[k] * dry + er * g;
         }
     }
     fn reset(&mut self) {
@@ -791,6 +873,12 @@ impl Effect for Delay {
 struct Reverb {
     combs: [Vec<(Ring, usize, f32)>; 2], // ring, delay, filter store
     aps: [Vec<(Ring, usize)>; 2],
+    /// room, hall and plate
+    fdn: Box<crate::plugins2::Fdn>,
+    pre: crate::plugins2::Line,
+    cut: [[crate::kit::Biquad; 2]; 2],
+    cut_at: (f32, f32),
+    sr: f32,
 }
 
 impl Reverb {
@@ -813,12 +901,29 @@ impl Reverb {
         };
         let (cl, al) = side(0);
         let (cr, ar) = side(Self::SPREAD);
-        Reverb { combs: [cl, cr], aps: [al, ar] }
+        Reverb { combs: [cl, cr], aps: [al, ar], fdn: Box::new(crate::plugins2::Fdn::new(sr)), pre: crate::plugins2::Line::new((sr * 0.21) as usize),
+            cut: [[crate::kit::Biquad::new(); 2]; 2], cut_at: (-1.0, -1.0), sr }
     }
 }
 
 impl Effect for Reverb {
     fn process(&mut self, p: &Params, l: &mut [f32], r: &mut [f32]) {
+        let kind = crate::kit::choice(p[5], 4);
+        let predelay = 0.2 * p[6];
+        let (lc_on, hc_on) = (p[7] > 0.005, p[8] < 0.995);
+        let (lcf, hcf) = (20.0 * 50f32.powf(p[7]), 1000.0 * 20f32.powf(p[8]));
+        if kind > 0 {
+            self.fdn.process(kind - 1, p[0], p[1], p[3], p[2], p[4], predelay, if lc_on { lcf } else { 0.0 }, if hc_on { hcf } else { 0.0 }, p[9], l, r);
+            return;
+        }
+        if (lcf, hcf) != self.cut_at {
+            self.cut_at = (lcf, hcf);
+            for side in &mut self.cut {
+                side[0].c = crate::kit::rbj::highpass(lcf as f64, 0.7071, self.sr as f64);
+                side[1].c = crate::kit::rbj::lowpass(hcf as f64, 0.7071, self.sr as f64);
+            }
+        }
+        let pre = predelay * self.sr;
         let fb = 0.7 + 0.28 * p[0];
         let damp = p[1];
         let m = p[2];
@@ -826,7 +931,9 @@ impl Effect for Reverb {
         let dry = (1.0 - 0.5 * m) * p[4];
         let (wet1, wet2) = (3.0 * m * (0.5 + 0.5 * w), 3.0 * m * (0.5 - 0.5 * w));
         for k in 0..l.len() {
-            let inp = (l[k] + r[k]) * 0.5 * 0.015;
+            let mono = (l[k] + r[k]) * 0.5;
+            self.pre.push(mono);
+            let inp = if pre >= 1.0 { self.pre.read(pre) } else { mono } * 0.015;
             let mut out = [0.0f32; 2];
             for side in 0..2 {
                 let mut o = 0.0;
@@ -841,6 +948,12 @@ impl Effect for Reverb {
                     ring.write(o + b * 0.5);
                     o = b - o;
                 }
+                if lc_on {
+                    o = self.cut[side][0].run(o);
+                }
+                if hc_on {
+                    o = self.cut[side][1].run(o);
+                }
                 out[side] = o;
             }
             l[k] = l[k] * dry + out[0] * wet1 + out[1] * wet2;
@@ -848,6 +961,8 @@ impl Effect for Reverb {
         }
     }
     fn reset(&mut self) {
+        self.fdn.reset();
+        self.pre.clear();
         for side in 0..2 {
             for (r, _, s) in self.combs[side].iter_mut() {
                 r.clear();
@@ -1134,6 +1249,20 @@ mod tests {
 
     fn peak(x: &[f32]) -> f32 {
         x.iter().fold(0f32, |a, v| a.max(v.abs()))
+    }
+
+    #[test]
+    fn kinds_are_where_their_constants_say() {
+        for (k, name) in [(COMP, "comp"), (NAM, "nam"), (VST, "vst"), (EQ, "eq"), (LIMITER, "limiter"), (EQPRO, "eqpro"), (CLIPPER, "clipper"),
+            (MULTI, "multi"), (SATURATE, "saturate"), (SHAPER, "shaper"), (DEESS, "deess"), (TRANSIENT, "transient"), (WIDTH, "width"),
+            (GATE, "gate"), (FILTER, "filter"), (LOFI, "lofi"), (UTILITY, "utility"), (DOUBLER, "doubler")] {
+            assert_eq!(FX[k].name, name);
+        }
+        for f in FX.iter() {
+            for st in f.stepped {
+                assert!(f.params.contains(st), "{}: {st}", f.name);
+            }
+        }
     }
 
     #[test]
