@@ -1,11 +1,51 @@
 # Duet
 
-Free peer-to-peer jamming for two people, with a pedalboard. Audio goes straight
-from one computer to the other over UDP: no server, no account, no subscription.
+A free music studio for two, built for playing and producing together over the
+internet. Audio goes straight from one computer to the other over UDP — no
+server, no account, no subscription — fast enough to jam in real time, and the
+song you build is shared live on both computers, like a shared document.
+
+**Download:** the newest build is on the
+[Releases page](https://github.com/Darioindaco/duet/releases) — Mac (Apple
+Silicon and Intel) and Windows.
+
+## What's in it
+
+**Jamming**
+- Peer-to-peer, low-latency audio for two (paste each other's code), with a
+  jitter buffer that sets itself, a shared metronome and a video call.
+- A pedalboard per input: effects, NAM amp models (and TONE3000 downloads),
+  VST3 plugins; ASIO on Windows.
+
+**A shared song (a DAW for two)**
+- Playlist with audio and pattern clips, free placement or snapping (Smart,
+  bar to 1/16), split, trim, fades, crossfades, slip, duplicate, copy/paste —
+  every edit reaches your partner at once; undo/redo of your own edits.
+- Recording on both sides at once, each in full quality and corrected for its
+  own sound card; **takes**: loop recording (a take each time round), **punch**
+  in/out, **comping** in take lanes under the track or in the Takes tab.
+- **Tempo map**: tempo and time signature changes on the ruler; **markers and
+  sections** (intro, verse, chorus) to loop, duplicate or delete as a whole.
+- Clip editor: pitch and speed (tape or keep-pitch), reverse, chop (by hits or
+  the grid), **Tune** (Melodyne-style note correction, snap to key) and
+  **stems** (split a clip into vocals, drums, bass and other on your computer).
+- Sequencer: channel rack with steps, piano roll with velocities, a **paint
+  brush** like FL's, **chord browsing** (Shift + arrows on a note) and chord
+  progressions per key; MIDI keyboards; record notes live.
+- Instruments: synthesized drum kits (808/909…), a 2-osc synth with presets, a
+  sampler, VST3 instruments.
+- Mixer: strips with effect racks, buses, sends, sidechain, EQ curve, master
+  rack and limiter, delay compensation; **automation** lanes for any knob.
+- Browser: built-in sounds, your folders and bins, drag into the song.
+- **Loudness**: live LUFS (short-term, integrated) and true peak; export to WAV
+  (mix and stems), normalized to −14/−16/−9/−23 LUFS if you like.
+- Safety: autosave, **versions** to go back to, crash recovery, and `.duet`
+  song files with all their audio.
+- Presence: see where your partner is and what they select, follow their view.
 
 ## Install
 
-**Windows:** run `Duet.exe`. SmartScreen will warn because it isn't signed:
+**Windows:** unzip `Duet-windows.zip` and run `Duet.exe`. SmartScreen will warn because it isn't signed:
 *More info → Run anyway*. Allow it through the firewall when asked.
 
 **Mac:** unzip `Duet-mac-apple-silicon.zip` (M1/M2/M3/M4 Macs) or
