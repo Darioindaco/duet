@@ -1600,7 +1600,7 @@ class Daw:
         pats = p.live("pattern")
         for c in p.live("clip").values():
             pid = c.get("pattern")
-            if pid not in pats or not by_pat.get(pid):
+            if pid not in pats or not by_pat.get(pid) or c.get("mute"):
                 continue
             plen = self._pattern_len(pid)
             start, boff = float(c.get("start", 0)), float(c.get("boff", 0))

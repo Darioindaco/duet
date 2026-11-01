@@ -208,6 +208,15 @@ tracks has three strips:
 - **Bottom: bars and the loop**, as before (bar numbers follow the time
   signature changes).
 
+**Tools** (the row under *+ Track*, or the keys **1–7**; the cursor shows which one):
+*Pointer* (select, move, trim), *Pencil* (click empty space: the open pattern, or
+paste), *Scissors* (click a clip to cut it there), *Glue* (click a clip to join it
+to the one right after it, when they're one recording or one pattern carrying on),
+*Eraser* (click or drag over clips), *Mute* (click a clip) and *Fade* (drag from a
+clip's start or end). **Loop** next to them: on, a pattern block dragged longer
+plays the pattern again; off, it makes the pattern itself longer, to write more
+bars in the piano roll. Notes drawn past a pattern's end make it longer too.
+
 **Editing clips** (right-click a clip for the same things in a menu):
 
 | | |

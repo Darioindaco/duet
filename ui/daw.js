@@ -794,7 +794,7 @@ function drawClip(ctx, c, x, y, w, h, track) {
   const col = tColor(track), sel = song.sel.has(c.id);
   const r = 6;
   ctx.save();
-  if (c.mute) ctx.globalAlpha = 0.35; // muted: still there, greyed
+  if (c.mute || c._erasing) ctx.globalAlpha = 0.35; // muted (or being erased): still there, greyed
   ctx.beginPath();
   ctx.roundRect(x + 0.5, y + 0.5, Math.max(2, w - 1), h - 1, r);
   ctx.fillStyle = col + "26";
@@ -909,7 +909,7 @@ function drawPatternClip(ctx, c, x, y, w, h) {
   ctx.fillStyle = col;
   ctx.globalAlpha = sel ? 0.95 : 0.7;
   ctx.fillRect(x, y, w, 15);
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha = c.mute || c._erasing ? 0.35 : 1; // muted: greyed
   if (p) {
     const notes = (song.view.notes || []).filter((n) => n.pattern === p.id && n.track === c.track); // its own channel's
     if (notes.length) {
@@ -1191,7 +1191,8 @@ function lanesHover(e) {
   const p = lanePoint(e), at = p.inside ? song.view.tracks[p.row] : null;
   if (isAuto(at) || song.autoHover) { autoHoverAt(isAuto(at) ? at : null, p); if (isAuto(at)) return; }
   const h = p.inside && p.lane < 0 ? hitZone(p) : null;
-  $("lanes").style.cursor = h ? CURSORS[h.zone] : p.inside && p.lane >= 0 && takeLaneAt(p) ? "crosshair" : "";
+  const tool = song.tool && song.tool !== "pointer" && !(song.tool === "pencil" && h);
+  $("lanes").style.cursor = tool ? toolCursor() : h ? CURSORS[h.zone] : p.inside && p.lane >= 0 && takeLaneAt(p) ? "crosshair" : "";
   const key = h ? h.c.id + h.zone : "";
   if (key !== song.hoverKey) { song.hoverKey = key; song.hover = h ? h.c.id : null; songDraw(); }
 }
@@ -1207,6 +1208,7 @@ function lanesDown(e) {
   if (playlistLocked()) { lanes.releasePointerCapture?.(e.pointerId); lockedToast(); return; }
   if (isAuto(row)) { autoDown(e, p, row); return; }
   if (p.lane >= 0) { takeLaneDown(e, p); return; }
+  if (song.tool && song.tool !== "pointer" && toolDown(e, p)) return;
   const h = hitZone(p);
   if (!h) { bandSelect(e, p); return; }
   const c = h.c;
@@ -1288,6 +1290,13 @@ function commitDrag(d) {
     }
   } else {
     const moved = new Set();
+    // looping off: a pattern block dragged longer makes the pattern longer (not another round of it)
+    const pc = d.anchor;
+    if (!song.patLoop && d.zone === "right" && pc.pattern && d.result[pc.id]) {
+      const p = (v.patterns || []).find((q) => q.id === pc.pattern);
+      const need = (pc.boff || 0) + d.result[pc.id].blen;
+      if (p && need > patLen(p) + 1e-6) ch.push(["pattern", p.id, { len: need }]);
+    }
     for (const [id, r] of Object.entries(d.result)) {
       const { row, ...f } = r;
       if (row != null) f.track = v.tracks[row].id;
@@ -1355,7 +1364,7 @@ function lanesDbl(e) {
 }
 
 function muteSel(on) {
-  const sel = selClips().filter((k) => !k.pattern);
+  const sel = selClips();
   if (sel.length) songEdit(sel.map((k) => ["clip", k.id, { mute: on ?? !sel[0].mute }]));
 }
 

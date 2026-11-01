@@ -502,10 +502,11 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
       <div class="win" id="win-song" data-w="song" data-title="Playlist">
         <section class="card song">
           <div class="arr">
-            <div class="corner"><button class="addtrack" id="addTrack">+ Track</button><div class="spacer"></div>
+            <div class="corner"><div class="crow"><button class="addtrack" id="addTrack">+ Track</button><div class="spacer"></div>
               <button class="cbtn" id="snapBtn" aria-label="Snap to grid">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 3v9a7 7 0 0 0 14 0V3"/><path d="M5 7h4M15 7h4"/><path d="M9 3v9a3 3 0 0 0 6 0V3"/></svg><span id="snapLbl"></span></button>
               <button class="cbtn" id="zoomOut" title="Zoom out (ctrl + scroll)" aria-label="Zoom out">−</button><button class="cbtn" id="zoomIn" title="Zoom in (ctrl + scroll)" aria-label="Zoom in">+</button></div>
+              <div class="crow tools" id="plTools" role="toolbar" aria-label="Playlist tools"></div></div>
             <div class="rulerwrap"><canvas id="ruler" title="Click: jump here. Drag: mark the loop. Top: markers and sections; middle: tempo and time signature. Right-click to add; double-click to edit."></canvas></div>
             <div class="theads"><div class="theads-in" id="theadsIn"></div></div>
             <div class="lanewrap" id="lanewrap">
@@ -698,6 +699,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="clipedit.js"></script>
 <script src="tune.js"></script>
 <script src="takes.js"></script>
+<script src="tools.js"></script>
 <script src="keys.js"></script>
 <script src="instr.js"></script>
 <script src="seq.js"></script>
@@ -1841,6 +1843,7 @@ async function boot(a) {
   songSetup();
   instSetup();
   seqSetup();
+  toolsSetup();
   browserSetup();
   ceSetup();
   keysSetup();

@@ -505,7 +505,7 @@ function prRender() {
   };
   hereMarks();
   $("prSize").style.height = (hi - lo + 1) * seq.rowH + "px";
-  $("prSize").style.width = Math.max(patLen(p) + bpb(), 8) * seq.ppb + "px";
+  $("prSize").style.width = Math.max(patLen(p) + 4 * bpb(), 8) * seq.ppb + "px"; // room past the end: notes there make it longer
   const lanes = $("prLanes");
   if (seq.prTop == null && t) {
     // open where the notes are (or around middle C / the kick), once the layout has settled
@@ -757,18 +757,20 @@ function prDown(e) {
     if (d.mode === "box") { /* the selection is already made */ }
     else if (d.mode === "paint") {
       const ch = d.ghosts.map((g) => { const id = newId("n"); seq.sel.add(id); return ["note", id, { pattern: g.pattern, track: g.track, start: g.start, len: g.len, key: g.key, vel: g.vel }]; });
-      if (ch.length) songEdit(ch);
+      if (ch.length) songEdit([...ch, ...growPattern(p, Math.max(...d.ghosts.map((g) => g.start + g.len)))]);
     }
     else if (d.mode === "new") {
       const id = newId("n");
       seq.lastLen = d.ghost.len;
       seq.sel.clear(); seq.sel.add(id);
-      songEdit([["note", id, { pattern: d.ghost.pattern, track: d.ghost.track, start: d.ghost.start, len: d.ghost.len, key: d.ghost.key, vel: d.ghost.vel }]]);
+      songEdit([["note", id, { pattern: d.ghost.pattern, track: d.ghost.track, start: d.ghost.start, len: d.ghost.len, key: d.ghost.key, vel: d.ghost.vel }],
+        ...growPattern(p, d.ghost.start + d.ghost.len)]);
     } else if (d.moved && d.copy) {
       placeNotes(d.sel.map((n) => ({ ...n, ...d.res[n.id] })), t);
     } else if (d.moved) {
       if (d.mode === "len") seq.lastLen = d.res[d.anchor.id]?.len || seq.lastLen;
-      songEdit(Object.entries(d.res).map(([id, f]) => ["note", id, f]));
+      const ends = d.sel.map((n) => { const r = { ...n, ...d.res[n.id] }; return r.start + r.len; });
+      songEdit([...Object.entries(d.res).map(([id, f]) => ["note", id, f]), ...growPattern(p, Math.max(0, ...ends))]);
     }
     prDraw();
   };
