@@ -326,8 +326,10 @@ function stemsPaint(live, c, st) {
   }
   live.append(ceBtn(stemsUi.set === "2" ? "Split into vocals + instrumental" : "Split into 4 stems", "", async () => {
     const r = await api.stems_split(c.id, stemsUi.set);
-    if (r && r.error) toast(r.error, true);
-    stemsRefresh();
+    if (r && r.error) { toast(r.error, true); stemsRefresh(); return; }
+    // it runs in the background: back to the song (the clip shows how far it is)
+    closeClipEditor();
+    toast("Making the stems in the background. Keep working — only the playlist waits for it.");
   }, "btn teal"));
 }
 

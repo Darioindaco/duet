@@ -131,6 +131,10 @@ function snapBeat(b, mode = song.snap) {
   if (mode === 0) { const a = barFloor(b), z = barNext(b); return b - a < z - b ? a : z; }
   return Math.round(b / mode) * mode;
 }
+// while a clip is being split into stems the playlist is locked (moving things under the split would
+// put the stems in the wrong place); everything else keeps working
+const playlistLocked = () => !!(song.st && song.st.stems && song.st.stems.job);
+function lockedToast() { toast("The playlist is locked while the stems are made — it's back in a moment (or Stop the split)."); }
 // the snap for a mouse event: Alt turns it around (off → the grid you can see, on → free)
 const snapFor = (ev) => (ev && ev.altKey ? (song.snap === -1 ? -3 : -1) : song.snap);
 function fmtPos(beats) {
@@ -371,7 +375,7 @@ function songPaint(d) {
   }).join("");
   if (was && was.xfer && Object.keys(was.xfer).length !== names.length) songDraw();
   if (String(was && was.processing) !== String(d.processing)) { songDraw(); if (typeof ceDraw === "function") ceDraw(); }
-  if (JSON.stringify(was && was.stems && was.stems.job) !== JSON.stringify(d.stems && d.stems.job)) songDraw();
+  if (JSON.stringify(was && was.stems && was.stems.job) !== JSON.stringify(d.stems && d.stems.job)) { songDraw(); lockBanner(); }
   // meters
   for (const t of song.view ? song.view.tracks : []) {
     const m = document.querySelector(`.th[data-id="${t.id}"] .lv i`);
@@ -1200,6 +1204,7 @@ function lanesDown(e) {
   const lanes = $("lanes");
   lanes.setPointerCapture(e.pointerId);
   const row = song.view.tracks[p.row];
+  if (playlistLocked()) { lanes.releasePointerCapture?.(e.pointerId); lockedToast(); return; }
   if (isAuto(row)) { autoDown(e, p, row); return; }
   if (p.lane >= 0) { takeLaneDown(e, p); return; }
   const h = hitZone(p);
@@ -1341,6 +1346,7 @@ function bandSelect(e, p) {
 function lanesDbl(e) {
   // double-click: a pattern opens in the sequencer, an audio clip in the
   // clip editor; empty space gets the current pattern
+  if (playlistLocked()) { lockedToast(); return; }
   const p = lanePoint(e), c = hitClip(p.beat, p.row);
   if (isAuto(song.view.tracks[p.row])) return;
   if (!c) { insertPattern(p); return; }
@@ -1462,6 +1468,7 @@ function lanesContext(e) {
   const p = lanePoint(e);
   if (!p.inside) return;
   const row = song.view.tracks[p.row];
+  if (playlistLocked()) { lockedToast(); return; }
   if (isAuto(row)) { autoContext(p, row, e.clientX, e.clientY); return; }
   if (p.lane >= 0) { takeLaneContext(e, p); return; }
   const h = hitZone(p), items = [];
@@ -2134,4 +2141,22 @@ function demoSong() {
       levels: playing ? { t1: 0.4, t2: 0.25 } : {}, xfer: { "take-k1.wav": [3_100_000, 4_600_000, "in"] }, notices: [],
       ...demoPartner() }),
   };
+}
+
+// the bar over the playlist while it's locked (a split into stems)
+function lockBanner() {
+  const j = song.st && song.st.stems && song.st.stems.job;
+  let el = $("plLock");
+  if (!j) { if (el) el.hidden = true; return; }
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "plLock";
+    el.className = "pllock";
+    el.innerHTML = '<span></span><button class="btn sq">Stop</button>';
+    el.querySelector("button").onclick = () => api.stems_cancel();
+    $("lanewrap").append(el);
+  }
+  el.hidden = false;
+  el.querySelector("span").textContent = "🔒 Making stems" + (j.stage === "splitting" ? ` · ${Math.round((j.progress || 0) * 100)}%` : j.stage === "writing" ? " · writing" : "…")
+    + " — the playlist is locked until it's done; the rest of Duet works as usual.";
 }

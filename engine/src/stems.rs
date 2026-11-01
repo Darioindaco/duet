@@ -62,6 +62,9 @@ impl Separator {
             .map_err(oerr)?
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(oerr)?
+            // leave room for the audio, the interface and your partner: not every core
+            .with_intra_threads(std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(2).max(1)))
+            .map_err(oerr)?
             .commit_from_file(model)
             .map_err(oerr)?;
         let mut planner = RealFftPlanner::<f32>::new();

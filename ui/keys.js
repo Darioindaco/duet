@@ -104,6 +104,7 @@ function songKeys(e) {
   if (!a) return;
   if (ui.view === "seq" && a[0] !== "export" && a[0] !== "shortcuts") return;
   if (!GLOBAL_ACTIONS.has(a[0]) && ui.view !== "song") return;
+  if (playlistLocked() && a[2] === "Editing") { e.preventDefault(); lockedToast(); return; }
   if (e.target.closest("button")) e.target.blur(); // or Space would press that button too
   e.preventDefault();
   a[4]();

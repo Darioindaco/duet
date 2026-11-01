@@ -271,6 +271,7 @@ function brTarget(el, ev) {
 const DRUM_PADS = Array.from({ length: 16 }, (_, i) => 36 + i);
 
 async function brToSong(f, track, beat) {
+  if (playlistLocked()) { lockedToast(); return; }
   // a big file takes a moment to copy into the project: say so
   const slow = setTimeout(() => toast(`Adding ${f.name}…`), 400);
   const res = await api.lib_to_song(f.path, track, beat);
