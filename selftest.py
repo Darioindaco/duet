@@ -1886,7 +1886,18 @@ def test_clip_gain():
         d.edit([["clip", "c1", {"gain": 1.0, "fade_in": 2.0}]])
         early, late = level(0.3, 0.7), level(1.4, 1.8)
         assert early < 0.5 * late, (early, late)
-        print(f"clip gain: ok  (a pattern block at half gain: {half / full:.2f} of the level; a fade in rises)")
+        # a muted note (the piano roll's mute tool) is silent, and comes back
+        d.edit([["clip", "c1", {"fade_in": 0.0}], ["note", "n1", {"mute": True}]])
+        assert level(1.0, 2.0) < 0.05 * full
+        d.edit([["note", "n1", {"mute": False}]])
+        assert level(1.0, 2.0) > 0.8 * full
+        # the pattern on its own, from beat 4 of it (the piano roll's ruler)
+        d.play_pattern("p1", 4.0)
+        e.process(x)
+        pos = e.state()["daw_pos"]  # seconds: beat 4 at 120 BPM is 2 s
+        assert d.pattern_mode == "p1" and 1.95 < pos < 2.2, pos
+        d.stop()
+        print(f"clip gain: ok  (a pattern block at half gain: {half / full:.2f} of the level; a fade in rises; a muted note is silent)")
     finally:
         d.close()
         e.close()

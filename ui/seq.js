@@ -39,8 +39,6 @@ function patColor(pid) {
 // ---------- setup ----------
 function seqSetup() {
   seq.ppb = store.get("prZoom", 96);
-  setPrTool(store.get("prTool", "draw"));
-  $("prPaint").onclick = () => setPrTool(seq.tool === "paint" ? "draw" : "paint");
   seq.snap = store.get("prSnap", 0.25);
   $("patSel").onchange = () => {
     const v = $("patSel").value;
@@ -48,11 +46,12 @@ function seqSetup() {
   };
   // a length chosen here is also one round of it again
   $("patLen").onchange = () => seq.pat && songEdit([["pattern", seq.pat, { len: +$("patLen").value * bpb(), base: null }]]);
+  // the rack's play button plays the pattern (PAT), like FL's
   $("patPlay").onclick = async () => {
-    const st = song.st;
-    if (st && st.playing) { await api.daw_stop(); return; }
+    if (song.st && song.st.playing) { await api.daw_stop(); return; }
     if (!seq.pat) newPattern();
-    await api.daw_play_pattern(seq.pat);
+    setPlayMode("pat", false);
+    await startPlaying();
   };
   $("patPlace").onclick = placePattern;
   $("patMore").onclick = patMenu;
@@ -74,12 +73,13 @@ function seqSetup() {
   document.addEventListener("keydown", seqKeys);
   quantSetup();
   chordSetup();
+  rollSetup();
 }
 
 function seqKeys(e) {
   if (ui.view !== "seq" || e.target.closest("input, select, textarea") || !$("vstm").hidden || !$("newTrackM").hidden) return;
   const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
-  if (e.code === "Space") { e.preventDefault(); $("patPlay").click(); }
+  if (e.code === "Space") { e.preventDefault(); togglePlay(); }
   else if ((e.key === "Delete" || e.key === "Backspace") && seq.sel.size) {
     e.preventDefault();
     const ids = [...seq.sel]; seq.sel.clear();
@@ -87,8 +87,11 @@ function seqKeys(e) {
   } else if (chordKey(e)) { e.preventDefault(); }
   else if (e.key === "Escape") { quantClose(); seq.sel.clear(); prDraw(); }
   else if (e.key.startsWith("Arrow") && seq.sel.size) { e.preventDefault(); nudgeSel(e); }
-  else if (!ctrl && !e.altKey && k === "b") { e.preventDefault(); setPrTool(seq.tool === "paint" ? "draw" : "paint"); }
-  else if (!ctrl && !e.altKey && k === "p") { e.preventDefault(); setPrTool("draw"); }
+  else if (!ctrl && !e.altKey && !e.shiftKey && PR_TOOLS.some((x) => x[1].toLowerCase() === k)) {
+    e.preventDefault();
+    const id = PR_TOOLS.find((x) => x[1].toLowerCase() === k)[0];
+    setPrTool(id === "paint" && seq.tool === "paint" ? "draw" : id);
+  }
   else if (!ctrl) return;
   else if (k === "a") { e.preventDefault(); for (const n of patNotes(seq.pat, seq.channel)) seq.sel.add(n.id); prDraw(); }
   else if (k === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
@@ -538,12 +541,15 @@ function prDraw() {
   const sx = lanes.scrollLeft, sy = lanes.scrollTop, ppb = seq.ppb, rh = seq.rowH;
   ctx.fillStyle = "#100f14";
   ctx.fillRect(0, 0, w, h);
+  const scaleSet = prScaleSet();
   for (let k = hi; k >= lo; k--) {
     const y = (hi - k) * rh - sy;
     if (y > h || y + rh < 0) continue;
     const black = [1, 3, 6, 8, 10].includes(k % 12) && !(t && isDrums(t));
     ctx.fillStyle = black ? "#0c0b0f" : (t && isDrums(t) && PAD_NAMES[k]) ? "#16141c" : "#131118";
     ctx.fillRect(0, y, w, rh);
+    // the scale's notes lit (and the rest a little darker)
+    if (scaleSet && !(t && isDrums(t))) { ctx.fillStyle = scaleSet.has(k % 12) ? "rgba(79,214,198,0.07)" : "rgba(0,0,0,0.25)"; ctx.fillRect(0, y, w, rh); }
     ctx.fillStyle = k % 12 === 0 ? "#2a2634" : "#1a1820";
     ctx.fillRect(0, y + rh - 1, w, 1);
   }
@@ -589,10 +595,11 @@ function prDraw() {
     const x = nn.start * ppb - sx, y = (hi - nn.key) * rh - sy, nw = Math.max(3, nn.len * ppb - 1);
     if (x > w || x + nw < 0 || y > h || y + rh < 0) continue;
     const sel = seq.sel.has(nn.id);
-    ctx.globalAlpha = 0.45 + 0.55 * ((nn.vel ?? 100) / 127);
-    ctx.fillStyle = col;
+    ctx.globalAlpha = nn.mute ? 0.35 : 0.45 + 0.55 * ((nn.vel ?? 100) / 127);
+    ctx.fillStyle = nn.mute ? "#6b6577" : col;
     ctx.beginPath(); ctx.roundRect(x + 0.5, y + 1.5, nw, rh - 3, 3); ctx.fill();
     ctx.globalAlpha = 1;
+    if (nn.mute) { ctx.strokeStyle = "#0c0b10"; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(x + 2, y + rh / 2); ctx.lineTo(x + nw - 2, y + rh / 2); ctx.stroke(); }
     ctx.strokeStyle = sel ? "#fff" : "rgba(0,0,0,0.5)";
     ctx.lineWidth = sel ? 1.5 : 1;
     ctx.stroke();
@@ -602,13 +609,15 @@ function prDraw() {
       ctx.fillText(isDrums(t) ? "" : noteName(nn.key), x + 4, y + rh - 5);
     }
   }
-  // playhead while the pattern plays
-  const st = song.st;
-  if (st && st.playing && song.view.patternMode === p.id) {
-    const px = (curPos() % plen) * ppb - sx;
+  // the playhead: the pattern on its own (PAT), or its block in the song (SONG); the play tool's line
+  const pb = prPlayBeat();
+  if (pb != null) {
+    const px = pb * ppb - sx;
     ctx.fillStyle = "#efeaf4";
-    ctx.fillRect(Math.round(px), 0, 1, h);
+    ctx.fillRect(Math.round(px), 0, 1.5, h);
   }
+  if (seq.scrub != null) { ctx.fillStyle = "#4fd6c6"; ctx.fillRect(Math.round(seq.scrub * ppb - sx), 0, 1, h); }
+  if (seq.prCursor && !(pb != null)) { ctx.fillStyle = "rgba(79,214,198,0.5)"; ctx.fillRect(Math.round(seq.prCursor * ppb - sx), 0, 1, h); }
   if (d && d.mode === "box" && d.moved) {
     const x0 = Math.min(d.b0, d.b1) * ppb - sx, x1 = Math.max(d.b0, d.b1) * ppb - sx;
     const y0 = (hi - Math.max(d.k0, d.k1)) * rh - sy, y1 = (hi - Math.min(d.k0, d.k1) + 1) * rh - sy;
@@ -620,6 +629,7 @@ function prDraw() {
   chordDrawPreview(ctx, sx, sy, hi, ppb, rh, col);
   hereDrawRoll(ctx, sx, sy, hi, w, h);
   velDraw(notes, t, sx);
+  rulerDraw();
 }
 
 function velDraw(notes, t, sx) {
@@ -672,7 +682,8 @@ function prHover(e) {
   seq.mouse = pt.inside ? pt : null;
   if (seq.drag || e.buttons) return;
   const h = pt.inside ? prHit(pt) : null;
-  $("prLanes").style.cursor = h ? (h.zone === "end" ? "e-resize" : (e.ctrlKey || e.metaKey) ? "copy" : "grab") : seq.tool === "paint" ? "cell" : "crosshair";
+  const tc = { delete: "not-allowed", mute: "pointer", slice: "col-resize", select: "default", play: "ew-resize" }[seq.tool];
+  $("prLanes").style.cursor = tc || (h ? (h.zone === "end" ? "e-resize" : (e.ctrlKey || e.metaKey) ? "copy" : "grab") : seq.tool === "paint" ? "cell" : "crosshair");
 }
 
 // Left: draw a note / move it / stretch its end (ctrl: move a copy). Shift or
@@ -685,13 +696,14 @@ function prDown(e) {
   const pt = prPoint(e);
   if (!pt.inside || !t) return;
   if (!p) { newPattern(); return; }
+  if (rollToolDown(e, pt, p, t)) return;
   const lanes = $("prLanes");
   lanes.setPointerCapture(e.pointerId);
   const h = prHit(pt);
   const free = e.altKey;
   const drums = isDrums(t);
   let d;
-  if (!h && (e.shiftKey || e.ctrlKey || e.metaKey)) {
+  if (!h && (e.shiftKey || e.ctrlKey || e.metaKey || seq.tool === "select")) {
     d = { mode: "box", b0: pt.beat, k0: pt.key, b1: pt.beat, k1: pt.key, keep: new Set(seq.sel), moved: false, res: {} };
   } else if (!h && seq.tool === "paint") {
     // the brush: a note every note-length along where you drag, at the pitch the mouse is on
@@ -709,7 +721,7 @@ function prDown(e) {
     seq.sel.clear();
   } else {
     const copy = (e.ctrlKey || e.metaKey) && h.zone === "body";
-    if (e.shiftKey) { seq.sel.has(h.n.id) ? seq.sel.delete(h.n.id) : seq.sel.add(h.n.id); prDraw(); return; }
+    if (e.shiftKey || seq.tool === "select") { if (e.shiftKey) { seq.sel.has(h.n.id) ? seq.sel.delete(h.n.id) : seq.sel.add(h.n.id); } else { seq.sel.clear(); seq.sel.add(h.n.id); } prDraw(); return; }
     if (!seq.sel.has(h.n.id)) { seq.sel.clear(); seq.sel.add(h.n.id); }
     const sel = patNotes(p.id, t.id).filter((n) => seq.sel.has(n.id));
     d = { mode: h.zone === "end" ? "len" : "move", copy, anchor: h.n, grab: pt.beat - h.n.start, key0: pt.key, sel, moved: false, res: {}, x0: e.clientX, y0: e.clientY };
@@ -781,10 +793,9 @@ function prDown(e) {
 }
 
 function setPrTool(tool) {
-  seq.tool = tool === "paint" ? "paint" : "draw";
+  seq.tool = PR_TOOLS.some((x) => x[0] === tool) ? tool : "draw";
   store.set("prTool", seq.tool);
-  const b = $("prPaint");
-  if (b) b.classList.toggle("on", seq.tool === "paint");
+  for (const b of document.querySelectorAll("#prTools button")) b.classList.toggle("on", b.dataset.t === seq.tool);
 }
 
 // the brush puts a note in cell j (j note-lengths from where it started), unless one's there already
@@ -854,8 +865,12 @@ function seqFrame() {
   if (!(winShown("rack") || winShown("roll")) || !song.st) return;
   const playing = song.st.playing && song.view?.patternMode;
   $("patPlay").classList.toggle("on", !!(song.st.playing));
+  rollPlayIcon();
+  // the roll's playhead runs in both modes, and its position readout
+  const pb = prPlayBeat();
+  if (song.st.playing && winShown("roll")) { rollFollow(); prDraw(); }
+  if ($("prPos")) $("prPos").textContent = pb == null ? "–" : `${Math.floor(pb / bpb()) + 1}.${Math.floor(pb % bpb()) + 1}`;
   if (playing) {
-    prDraw();
     const p = curPattern(), steps = Math.round(patLen(p) / STEP);
     const s = Math.floor((curPos() % patLen(p)) / STEP);
     for (const row of document.querySelectorAll("#chanRows .cells")) {

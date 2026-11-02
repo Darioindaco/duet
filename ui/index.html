@@ -391,7 +391,9 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
     <div class="seg views" id="viewSeg"><button data-w="song" title="Playlist (F5)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M3 6h9M7 12h11M3 18h7"/></svg><span>Playlist</span></button><button data-w="rack" title="Channel rack (F6)"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="3" y="4" width="4" height="4" rx="1"/><rect x="10" y="4" width="4" height="4" rx="1" opacity=".4"/><rect x="17" y="4" width="4" height="4" rx="1"/><rect x="3" y="11" width="4" height="4" rx="1" opacity=".4"/><rect x="10" y="11" width="4" height="4" rx="1"/><rect x="17" y="11" width="4" height="4" rx="1" opacity=".4"/><rect x="3" y="18" width="4" height="3" rx="1"/><rect x="10" y="18" width="4" height="3" rx="1" opacity=".4"/><rect x="17" y="18" width="4" height="3" rx="1"/></svg><span>Channel rack</span></button><button data-w="roll" title="Piano roll (F7)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M3 5h6M8 10h8M12 15h9M5 20h5"/></svg><span>Piano roll</span></button><button data-w="mixer" title="Mixer (F9)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 3v18M12 3v18M18 3v18"/><rect x="4" y="13" width="4" height="3" rx="1" fill="currentColor"/><rect x="10" y="6" width="4" height="3" rx="1" fill="currentColor"/><rect x="16" y="15" width="4" height="3" rx="1" fill="currentColor"/></svg><span>Mixer</span></button><button data-w="master" title="Master: loudness (LUFS), true peak, spectrum, stereo (F10)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M4 20V10M9 20V4M14 20v-7M19 20V8"/></svg><span>Master</span></button><button class="wsbtn" id="wsBtn" title="Workspace: arrange the windows, save a layout" aria-label="Workspace">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 10h18M10 10v11"/></svg></button></div>
     <div class="tgrp" title="The song: play, record and its tempo">
-      <button class="tbtn play" id="tpPlay" title="Play / stop the song (space)" aria-label="Play or stop"></button>
+      <div class="pmode" id="playMode" title="What Space and ▶ play: the pattern you're editing (PAT, looped) or the whole song (SONG)">
+        <button data-v="pat">PAT</button><button data-v="song">SONG</button></div>
+      <button class="tbtn play" id="tpPlay" title="Play / stop (space): the pattern or the song, as PAT / SONG says" aria-label="Play or stop"></button>
       <button class="tbtn rec" id="tpRec" title="Record (R): every armed track, yours and your partner's" aria-label="Record">
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="currentColor"/></svg></button>
       <div class="lcd" id="lcd"><b id="tpPos">1.1.00</b><span id="tpTime">0:00.0</span></div>
@@ -543,13 +545,20 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
               <select id="qStr" aria-label="Strength" title="How far the notes move toward the grid"></select>
               <button class="ttog" id="qEnds" title="Also line up where the notes end">Ends</button>
               <button class="qx" id="qX" aria-label="Close" title="Done (Esc)">✕</button></div>
-            <div class="spacer"></div>
-            <span class="prhint" title="Shift/ctrl + drag on empty space: select a box · ctrl + drag a note: copy · arrows: move the selection · ctrl+C / X / V: copy, cut, paste at the mouse · ctrl+B: duplicate · ctrl+Q: quantize · ctrl+H: humanize · ctrl+L: legato · alt + scroll on a note: velocity · one note selected, hold Shift + ↑/↓ or scroll: chords on it (←/→ inversions), let go to keep">Click: note · right-drag: erase · shift-drag: select · ctrl+Q / H / B / L · hover for more</span>
-            <button class="btn sq cpbtn" id="prPaint" title="Paint brush (B): hold and drag to paint notes, one every note length, at the pitch under the mouse. P or B again: back to the pencil">🖌 Paint</button>
+            <button class="prplay" id="prPlay" title="Play / stop (space): the pattern or the song, as PAT / SONG says" aria-label="Play or stop"></button>
+            <span class="prmode" id="prMode" title="Click: switch between playing the pattern (PAT) and the song (SONG)"></span>
+            <span class="prpos" id="prPos" title="Where it's playing in this pattern (bar.beat)">1.1</span>
+            <div class="prtools" id="prTools"></div>
+            <button class="btn sq cpbtn" id="prMenu" title="Tools: quantize, chop, glue, strum, arpeggiate, flip, velocities, selections">Tools ▾</button>
             <button class="btn sq cpbtn" id="prChords" title="Chord progressions in a key (and: select a note, hold Shift and press ↑/↓ or scroll to browse chords on it)">Chords</button>
+            <select id="prScale" aria-label="Scale" title="Light up the notes of a key (dims the rest)"></select>
             <select id="prSnap" aria-label="Snap"></select>
+            <button class="btn sq cpbtn on" id="prFollow" title="The view follows the playhead">Follow</button>
+            <div class="spacer"></div>
+            <span class="prhint" title="Shift/ctrl + drag on empty space: select a box · ctrl + drag a note: copy · arrows: move the selection · ctrl+C / X / V: copy, cut, paste at the mouse · ctrl+B: duplicate · ctrl+Q: quantize · ctrl+H: humanize · ctrl+L: legato · alt + scroll on a note: velocity · one note selected, hold Shift + ↑/↓ or scroll: chords on it (←/→ inversions), let go to keep · click the ruler to play from there">?</span>
             <div class="zoom"><button id="prZoomOut" aria-label="Zoom out">−</button><button id="prZoomIn" aria-label="Zoom in">+</button></div></div>
           <div class="prwrap" id="prWrap">
+            <div class="prrulepad"></div><canvas id="prRuler" title="Click: play from here (PAT), or jump there in the song (SONG)"></canvas>
             <div class="prkeys"><div id="prKeysIn"></div></div>
             <div class="prlanewrap"><canvas id="prCv"></canvas><div class="prlanes" id="prLanes"><div id="prSize"></div></div></div>
             <div class="prvelpad"></div>
@@ -727,6 +736,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="keys.js"></script>
 <script src="instr.js"></script>
 <script src="seq.js"></script>
+<script src="roll.js"></script>
 <script src="chords.js"></script>
 <script src="presence.js"></script>
 <script src="mixer.js"></script>
@@ -992,7 +1002,7 @@ function buildMetronome() {
   $("bpmMinus").onclick = () => setBpm(metro.bpm - 1);
   $("bpmPlus").onclick = () => setBpm(metro.bpm + 1);
   $("bpm").onchange = () => setBpm(+$("bpm").value || metro.bpm);
-  $("bpm").onkeydown = (e) => e.key === "Enter" && $("bpm").blur();
+  $("bpm").onkeydown = (e) => { if (e.key === "Enter") $("bpm").blur(); };
   $("beatsSel").onchange = () => { metro.beats = +$("beatsSel").value; metroLead(); };
   const taps = [];
   $("tapBtn").onclick = () => {
@@ -1230,7 +1240,7 @@ function stripEl(t) {
     nm.onclick = (e) => e.stopPropagation();
     nm.onchange = track ? () => nm.value.trim() && songEdit([["track", track.id, { name: nm.value.trim() }]])
       : () => { ui.names[t] = nm.value.trim() || undefined; saveMixer(); sendNames(); fxRefresh(); };
-    nm.onkeydown = (e) => e.key === "Enter" && nm.blur();
+    nm.onkeydown = (e) => { if (e.key === "Enter") nm.blur(); };
     head.append(nm);
   } else {
     head.insertAdjacentHTML("beforeend", `<div class="nm">${esc(stripName(t))}</div>`);

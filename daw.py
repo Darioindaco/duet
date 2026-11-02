@@ -73,7 +73,7 @@ FIELDS = {
     "file": {"frames", "sr", "owner", "name", "del"},
     # len: how long it is to write in; base: how long one round is when a block loops (unset: len)
     "pattern": {"name", "len", "base", "color", "del"},
-    "note": {"pattern", "track", "start", "len", "key", "vel", "del"},
+    "note": {"pattern", "track", "start", "len", "key", "vel", "mute", "del"},
     # a marker on the timeline (beat, name, color); a section marker starts a part that lasts until the next one
     "marker": {"beat", "name", "color", "section", "del"},
 }
@@ -89,7 +89,7 @@ FIELD_DEFAULTS = {
              "tsrc": False, "once": False, "loop": None, "del": False},
     "file": {"del": False},
     "pattern": {"del": False},
-    "note": {"vel": 100, "del": False},
+    "note": {"vel": 100, "mute": False, "del": False},
     "marker": {"color": None, "section": False, "del": False},
 }
 # controls you turn rather than click: a run of turns is one undo step
@@ -1663,7 +1663,7 @@ class Daw:
 
         def put(n, t, until):
             slot = self.slots.get(n.get("track"))
-            if slot is None:
+            if slot is None or n.get("mute"):  # a muted note stays in the pattern, silent
                 return
             dur = min(float(n.get("len", 0.25)), until - t)
             if dur > 1e-6:
@@ -2118,8 +2118,8 @@ class Daw:
                     out.add(r[5:])
         return out
 
-    def play_pattern(self, pid: str):
-        """Play one pattern on its own, looped (just here, not for the partner)."""
+    def play_pattern(self, pid: str, at: float = 0.0):
+        """Play one pattern on its own, looped (just here, not for the partner), from beat `at` in it."""
         with self.lock:
             if pid not in self.p.live("pattern"):
                 return
@@ -2128,7 +2128,8 @@ class Daw:
             self.pattern_mode = pid
             self._push()
             self.play_from = self.cursor
-            self.e.daw_play(0.0)
+            at = min(max(0.0, float(at)), max(0.0, self._pattern_len(pid) - 1e-3))
+            self.e.daw_play(self._tm().b2s(at) if at else 0.0)
             self.version += 1
 
     def _apply_rack(self, t: str, old: list, new: list):

@@ -328,10 +328,11 @@ function setMainView(v) {
 // (the keys: keys.js)
 
 // ---------- transport ----------
+// Space and ▶: stop, or play what PAT / SONG says (roll.js)
 async function togglePlay() {
   const st = song.st;
   if (st && (st.playing || st.recording)) await api.daw_stop();
-  else await api.daw_play(null);
+  else await startPlaying();
 }
 async function toggleRec() {
   const st = song.st;
@@ -1855,7 +1856,7 @@ async function toggleSongMenu() {
   const inp = $("songRename");
   inp.value = v.meta.name;
   inp.onchange = () => inp.value.trim() && songEdit([["meta", "meta", { name: inp.value.trim() }]]);
-  inp.onkeydown = (e) => e.key === "Enter" && inp.blur();
+  inp.onkeydown = (e) => { if (e.key === "Enter") inp.blur(); }; // (a handler that returns false would swallow every key)
   $("mExport").onclick = () => { menu.hidden = true; openExport(); };
   $("mVersions").onclick = () => { menu.hidden = true; openVersions(); };
   $("mSaveFile").onclick = async () => {

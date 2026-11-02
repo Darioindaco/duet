@@ -550,7 +550,29 @@ the shared song (your partner sees every note you place, and you theirs).
   | Delete, undo | *Delete*, *Ctrl+Z* / *Ctrl+Y* |
 
   *Ctrl+Q*, *H* and *L* work on the selection, or on all of the channel's notes.
-- **▶** plays the pattern on its own, looped (*space*), while you work on it.
+- **PAT / SONG** (in the top bar, next to ▶, as in FL): what *Space* and ▶
+  play. *PAT* plays the pattern you're editing on its own, looped; *SONG* plays
+  the playlist. Switching while it plays switches what plays. The channel
+  rack's ▶ plays the pattern (and switches to PAT).
+- **The piano roll's own transport:** ▶ / ■, which mode it's in (click it to
+  switch), where it is in the pattern (bar.beat), and a **ruler** with the
+  **playhead**: in PAT it runs through the pattern, in SONG it follows the
+  pattern's block under the song's playhead, so you can write notes while the
+  song plays and see where you are (*Follow* keeps it in view). Click the ruler
+  to play from there (PAT), or to jump the song to that spot of the block
+  (SONG).
+- **Tools** (FL's keys): *P* draw, *B* paint, *D* delete (click or drag over
+  notes), *T* mute (a muted note stays, silent and grey; again: back on), *C*
+  slice (click a note to cut it in two on the grid), *E* select (drag a box), *Y*
+  play (drag across to hear the notes under the mouse).
+- **Tools ▾**: quantize, legato, humanize, duplicate, **chop** into grid-length
+  pieces, **glue** touching notes of the same pitch, **strum** chords (lowest or
+  highest first), **arpeggiate** chords (up, down, up and down, on the grid),
+  **flip** upside down or back to front, an octave up or down, velocities
+  (random, louder, softer, crescendo, diminuendo), mute the selection, invert
+  the selection, select every note at the same pitch. On the selection, or on
+  all of the channel's notes.
+- **Scale:** light up the notes of the song's key (or any key) in the roll.
 - **Into the song:** *+ Into the song* puts the pattern in the playlist at the
   playhead, or double-click an empty spot in the playlist. A pattern block plays
   the pattern's notes on their channels; drag its right end to make it longer and

@@ -342,8 +342,8 @@ class Api:
     def daw_presence(self, here):
         self._daw.set_presence(here)
 
-    def daw_play_pattern(self, pid):
-        self._daw.play_pattern(pid)
+    def daw_play_pattern(self, pid, at=0.0):
+        self._daw.play_pattern(pid, float(at or 0.0))
 
     def daw_undo(self):
         return self._daw.undo()
