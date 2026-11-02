@@ -46,21 +46,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-15          # Apple Silicon (M1 and newer); macos-14 runners stopped starting
-            arch: apple-silicon
-            rustflags: ""
-            cargo_args: ""
-          - os: macos-15-intel    # older Intel MacBooks
-            arch: intel
-            # Every Intel Mac that runs macOS 11+ is Haswell or newer, so AVX2/FMA
-            # are always there; NAM's maths runs much faster with them.
-            rustflags: "-C target-cpu=haswell"
-            # no ready-made ONNX Runtime for Intel Macs: built without the stem splitter
-            cargo_args: "--no-default-features"
-        exclude:
-          # Intel only when asked for (or for a manual run / a version tag)
-          - arch: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[intel]')) && 'none' || 'intel' }}
+        # Apple Silicon (M1 and newer) always; macos-14 runners stopped starting. Older Intel
+        # MacBooks only when asked for ([intel], a manual run or a version tag): every Intel Mac
+        # that runs macOS 11+ is Haswell or newer, so AVX2/FMA are always there (NAM's maths runs
+        # much faster with them); there's no ready-made ONNX Runtime for Intel Macs, so it's
+        # built without the stem splitter.
+        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[intel]')) && '[{"os":"macos-15","arch":"apple-silicon","rustflags":"","cargo_args":""},{"os":"macos-15-intel","arch":"intel","rustflags":"-C target-cpu=haswell","cargo_args":"--no-default-features"}]' || '[{"os":"macos-15","arch":"apple-silicon","rustflags":"","cargo_args":""}]') }}
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
