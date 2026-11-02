@@ -11,10 +11,12 @@ threads that never wait for Python or the UI.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import os
 import random
+import shutil
 import socket
 import subprocess
 import sys
@@ -734,6 +736,7 @@ def main():
                                    background_color="#0e0d12")
     api._window = window
     window.events.closed += api.shutdown
+    clear_stale_web_cache()
     # Served from http://127.0.0.1:<fixed port> rather than file://: the camera needs a
     # secure origin, and a stable origin + persistent storage keep saved settings and
     # the camera permission across launches.
@@ -751,6 +754,38 @@ def data_dir() -> Path:
     path = base / "Duet"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def clear_stale_web_cache() -> None:
+    """After an update, throw away the webview's HTTP cache before the page loads.
+
+    The page always comes from the same origin (see pick_port), and WebKit on macOS kept serving
+    the previous version's scripts from its disk cache despite the server's no-cache headers: a
+    new Duet.app showed the old UI. So when the UI files differ from last launch's, the cache goes
+    (only the cache: saved settings and the camera permission live elsewhere and stay).
+    """
+    h = hashlib.sha256()
+    ui = resource("ui")
+    for f in sorted(p for p in ui.rglob("*") if p.is_file()):
+        h.update(f.relative_to(ui).as_posix().encode())
+        h.update(f.read_bytes())
+    stamp, stamp_file = h.hexdigest(), data_dir() / "ui.stamp"
+    try:
+        if stamp_file.read_text(encoding="utf-8") == stamp:
+            return
+    except OSError:
+        pass
+    if sys.platform == "darwin":
+        caches = [Path.home() / "Library" / "Caches" / "app.duet.jam" / "WebKit"]
+    else:  # WebView2 keeps its profile in storage_path
+        profile = data_dir() / "webview" / "EBWebView" / "Default"
+        caches = [profile / "Cache", profile / "Code Cache", profile / "Service Worker" / "CacheStorage"]
+    for c in caches:
+        shutil.rmtree(c, ignore_errors=True)
+    try:
+        stamp_file.write_text(stamp, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def load_settings() -> dict:
