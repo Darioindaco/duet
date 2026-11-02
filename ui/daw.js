@@ -1843,6 +1843,8 @@ async function toggleSongMenu() {
       <button id="mSaveFile"><span>Save as a file…</span></button>
       <button id="mOpenFile"><span>Open a song file…</span></button>
       <button id="mExport"><span>Export as WAV…</span><kbd>Ctrl+E</kbd></button>
+      <button id="mMidiIn"><span>Import a MIDI file…</span></button>
+      <button id="mMidiOut"><span>Export the notes as MIDI…</span></button>
       <button id="mKeys"><span>Keyboard shortcuts…</span><kbd>Ctrl+/</kbd></button>
       <button id="mSound"><span>Audio &amp; MIDI settings</span></button>
       <button id="mConnect"><span>Connect to your partner</span></button>
@@ -1858,6 +1860,8 @@ async function toggleSongMenu() {
   inp.onchange = () => inp.value.trim() && songEdit([["meta", "meta", { name: inp.value.trim() }]]);
   inp.onkeydown = (e) => { if (e.key === "Enter") inp.blur(); }; // (a handler that returns false would swallow every key)
   $("mExport").onclick = () => { menu.hidden = true; openExport(); };
+  $("mMidiIn").onclick = () => { menu.hidden = true; midiImport(); };
+  $("mMidiOut").onclick = () => { menu.hidden = true; midiExport(); };
   $("mVersions").onclick = () => { menu.hidden = true; openVersions(); };
   $("mSaveFile").onclick = async () => {
     menu.hidden = true;
@@ -2143,6 +2147,7 @@ function demoSong() {
     stems_cancel: async () => {},
     // (the demo makes up its answers: a steady beat at 96, hits every half second)
     tune_audition: async () => ({ ok: true }), tune_audition_stop: async () => {},
+    midi_import: async () => ({ error: "Not in the demo." }), midi_export: async () => ({ error: "Not in the demo." }),
     daw_analyze: async (id, what) => {
       const c = view.clips.find((k) => k.id === id);
       if (!c) return { error: "That clip is gone." };

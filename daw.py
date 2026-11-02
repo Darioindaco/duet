@@ -44,6 +44,8 @@ import zipfile
 import traceback
 from pathlib import Path
 
+import midifile
+
 KINDS = ("meta", "track", "clip", "file", "pattern", "note", "marker")
 MAX_TRACKS = 32
 META_DEFAULTS = {"name": "Untitled", "bpm": 120.0, "beats": 4, "loop": False, "loop_start": 0.0, "loop_end": 16.0,
@@ -1655,28 +1657,38 @@ class Daw:
     def _notes(self, b2s) -> list:
         """Every channel's notes in seconds: patterns unrolled where their clips
         are (repeating to fill a clip), or the open pattern alone in pattern mode."""
-        p = self.p
         out = [[] for _ in range(MAX_TRACKS)]
+
+        def put(n, t, dur):
+            slot = self.slots.get(n.get("track"))
+            if slot is None or n.get("mute"):  # a muted note stays in the pattern, silent
+                return
+            s0 = b2s(t)
+            out[slot].append((s0, b2s(t + dur) - s0, int(n.get("key", 60)) & 127, max(1, min(127, int(n.get("vel", 100))))))
+
+        self._unroll(put, self.pattern_mode)
+        return out
+
+    def _unroll(self, put, pattern_mode=None):
+        """Call put(note, beat, length in beats) for every note as the song plays it (or the pattern
+        alone): blocks repeat their pattern to fill them, notes are cut at a block's end."""
+        p = self.p
         by_pat: dict[str, list] = {}
         for n in p.live("note").values():
             by_pat.setdefault(n.get("pattern"), []).append(n)
 
-        def put(n, t, until):
-            slot = self.slots.get(n.get("track"))
-            if slot is None or n.get("mute"):  # a muted note stays in the pattern, silent
-                return
+        def emit(n, t, until):
             dur = min(float(n.get("len", 0.25)), until - t)
             if dur > 1e-6:
-                s0 = b2s(t)
-                out[slot].append((s0, b2s(t + dur) - s0, int(n.get("key", 60)) & 127, max(1, min(127, int(n.get("vel", 100))))))
+                put(n, t, dur)
 
-        if self.pattern_mode:
-            plen = self._pattern_len(self.pattern_mode)
-            for n in by_pat.get(self.pattern_mode, []):
+        if pattern_mode:
+            plen = self._pattern_len(pattern_mode)
+            for n in by_pat.get(pattern_mode, []):
                 t = float(n.get("start", 0))
                 if 0 <= t < plen:
-                    put(n, t, plen)
-            return out
+                    emit(n, t, plen)
+            return
         pats = p.live("pattern")
         for c in p.live("clip").values():
             pid = c.get("pattern")
@@ -1696,9 +1708,8 @@ class Daw:
                         continue  # a block plays its own channel's notes (each channel has its own row)
                     t = base + float(n.get("start", 0))
                     if start - 1e-9 <= t < end and float(n.get("start", 0)) < plen:
-                        put(n, t, end)
+                        emit(n, t, end)
                 k += 1
-        return out
 
     def _apply_inst(self, slot: int, old: dict | None, new: dict | None):
         t = f"T{slot}"
@@ -1781,6 +1792,97 @@ class Daw:
                                                   "len": f["frames"] / f["sr"], "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}])
             self._do(changes)
             return {"ok": True, "track": track}
+
+    # --- MIDI files ------------------------------------------------------------------
+
+    def import_midi(self, path: str, pattern: str | None = None, track: str | None = None, at: float = 0.0) -> dict:
+        """A MIDI file into the song. With a pattern and a channel (the piano roll): all its notes into
+        that channel's part of the pattern. Without: a new pattern named after the file, a new channel
+        per part (a drum kit for channel 10, a synth for the rest), its blocks in the playlist at `at`
+        (beats); an empty song takes the file's tempo."""
+        try:
+            m = midifile.read(path)
+        except (OSError, midifile.MidiError) as exc:
+            return {"error": f"Couldn't read that MIDI file: {exc}"}
+        parts = [t for t in m["tracks"] if t["notes"]]
+        if not parts:
+            return {"error": "There are no notes in that file."}
+        with self.lock:
+            p, ch = self.p, []
+            bar = int(p.meta()["beats"])
+            end = max(s + ln for t in parts for s, ln, *_ in t["notes"])
+            length = max(bar, math.ceil(end / bar - 1e-9) * bar)
+            note = lambda pid, tid, s, ln, k, v: ["note", new_id("n"), {"pattern": pid, "track": tid, "start": round(s, 5),
+                                                                        "len": round(max(1 / 64, ln), 5), "key": int(k) & 127, "vel": max(1, min(127, int(v)))}]
+            if pattern and track:
+                pat, tr = p.live("pattern").get(pattern), p.live("track").get(track)
+                if not pat or not tr or not tr.get("inst"):
+                    return {"error": "Pick a channel and a pattern first."}
+                n = 0
+                for t in parts:
+                    for s, ln, k, v in t["notes"]:
+                        ch.append(note(pattern, track, s, ln, k, v))
+                        n += 1
+                if length > self._pattern_len(pattern):
+                    ch.append(["pattern", pattern, {"len": float(length)}])
+                self._do(ch)
+                return {"ok": True, "notes": n, "pattern": pattern}
+            pid = new_id("p")
+            ch.append(["pattern", pid, {"name": Path(path).stem[:40] or "MIDI", "len": float(length), "base": float(length)}])
+            tracks = p.live("track")
+            order = max([float(t.get("order", 0)) for t in tracks.values() if not t.get("bus")] or [0]) + 1
+            made = []
+            for i, t in enumerate(parts):
+                tid = new_id("t")
+                drums = t["channel"] == 9
+                name = (t["name"] or ("Drums" if drums else f"MIDI {i + 1}"))[:40]
+                ch.append(["track", tid, {"name": name, "order": order + i, "owner": self.me, "vol": 0.8, "pan": 0.0, "rack": [],
+                                          "inst": {"kind": "drums" if drums else "synth"}}])
+                ch.extend(note(pid, tid, s, ln, k, v) for s, ln, k, v in t["notes"])
+                ch.append(["clip", new_id("c"), {"track": tid, "pattern": pid, "start": max(0.0, float(at)), "blen": float(length), "boff": 0.0}])
+                made.append(name)
+            # a song with nothing in it yet takes the file's tempo
+            if m["bpm"] and not p.live("clip") and not p.live("note"):
+                ch.append(["meta", "meta", {"bpm": round(float(m["bpm"]), 2)}])
+            self._do(ch)
+            return {"ok": True, "pattern": pid, "channels": made, "notes": sum(len(t["notes"]) for t in parts)}
+
+    def export_midi(self, path: str, pattern: str | None = None) -> dict:
+        """The song's notes as a MIDI file (or one pattern's): a track per channel, drums on channel 10."""
+        with self.lock:
+            p = self.p
+            tracks = p.live("track")
+            parts: dict[str, list] = {}
+            if pattern:
+                if pattern not in p.live("pattern"):
+                    return {"error": "That pattern is gone."}
+                for n in p.live("note").values():
+                    if n.get("pattern") == pattern and not n.get("mute"):
+                        parts.setdefault(n.get("track"), []).append((float(n.get("start", 0)), float(n.get("len", 0.25)),
+                                                                     int(n.get("key", 60)), int(n.get("vel", 100))))
+            else:
+                def put(n, t, dur):
+                    if not n.get("mute"):
+                        parts.setdefault(n.get("track"), []).append((t, dur, int(n.get("key", 60)), int(n.get("vel", 100))))
+                self._unroll(put)
+            out, chan = [], 0
+            for tid, notes in parts.items():
+                tr = tracks.get(tid) or {}
+                drums = (tr.get("inst") or {}).get("kind") == "drums"
+                c = 9 if drums else chan
+                if not drums:
+                    chan = (chan + 1) % 16
+                    if chan == 9:
+                        chan = 10
+                out.append({"name": tr.get("name") or "Channel", "channel": c, "notes": sorted(notes)})
+            bpm, beats = float(p.meta()["bpm"]), int(p.meta()["beats"])
+        if not out:
+            return {"error": "There are no notes to export."}
+        try:
+            midifile.write(path, out, bpm, beats)
+        except OSError as exc:
+            return {"error": f"Couldn't write it: {exc}"}
+        return {"ok": True, "tracks": len(out), "notes": sum(len(t["notes"]) for t in out), "path": str(path)}
 
     def analyze(self, clip: str, what: str, sensitivity: float = 0.5) -> dict:
         """Look into a clip's audio (the stretch of the file it plays)."""

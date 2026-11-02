@@ -181,6 +181,8 @@ function rollMenu(x, y) {
   if (!t || !p) { toast("Pick a channel and a pattern first."); return; }
   const n = targetNotes().length, what = seq.sel.size ? `${seq.sel.size} selected` : `all ${n}`;
   showCtx([
+    ["Import a MIDI file into this pattern…", "", () => midiImport(p.id, t.id)],
+    ["Export this pattern as a MIDI file…", "", () => midiExport(p.id)],
     [`Quantize… (${what})`, "Ctrl+Q", quantOpen],
     ["Legato: each note until the next", "Ctrl+L", legato],
     ["Humanize: looser timing and velocity", "Ctrl+H", humanize],
@@ -318,6 +320,26 @@ function rollSameKey() {
   if (!keys.size && seq.mouse) keys.add(seq.mouse.key);
   seq.sel = new Set(all.filter((n) => keys.has(n.key)).map((n) => n.id));
   prDraw();
+}
+
+// --- MIDI files -------------------------------------------------------------------------------
+
+async function midiImport(pattern, track) {
+  const r = await api.midi_import(pattern || null, track || null, pattern ? 0 : curPos());
+  if (!r) return;
+  if (r.error) { toast(r.error, true); return; }
+  if (pattern) toast(`${r.notes} note${r.notes === 1 ? "" : "s"} brought in.`);
+  else {
+    seq.pat = r.pattern;
+    toast(`Brought in ${r.notes} notes on ${r.channels.length} new channel${r.channels.length === 1 ? "" : "s"} (${r.channels.join(", ")}), as a pattern in the playlist.`);
+  }
+}
+
+async function midiExport(pattern) {
+  const r = await api.midi_export(pattern || null);
+  if (!r) return;
+  if (r.error) toast(r.error, true);
+  else toast(`Saved ${r.notes} notes on ${r.tracks} track${r.tracks === 1 ? "" : "s"}: ${r.path.split(/[\\/]/).pop()}`);
 }
 
 // --- the tools on the roll (called from prDown for anything but draw and paint) -----------------

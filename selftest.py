@@ -1904,6 +1904,56 @@ def test_clip_gain():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_midi_files():
+    """A MIDI file in and out: our writer read back exactly; a file imported as new channels (a drum
+    kit for channel 10) and a pattern in the playlist, the song exported again with the same notes;
+    a file into an existing pattern's channel."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    import midifile
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-midi-"))
+    d = Daw(e, root / "songs", "me")
+    try:
+        lead = [(0.0, 1.0, 60, 100), (1.0, 0.5, 64, 90), (1.5, 0.5, 67, 80), (2.0, 2.0, 72, 110)]
+        kick = [(float(b), 0.25, 36, 120) for b in range(8)]
+        f = root / "in.mid"
+        midifile.write(f, [{"name": "Lead", "channel": 0, "notes": lead, "bend": [(1.0, 0.5)], "cc": [(0.5, 1, 64)]},
+                           {"name": "Beat", "channel": 9, "notes": kick}], bpm=93.0, beats=4)
+        m = midifile.read(f)
+        assert abs(m["bpm"] - 93.0) < 0.01 and m["beats"] == 4, m
+        got = {t["name"]: t for t in m["tracks"]}
+        assert [tuple(round(x, 4) for x in n) for n in got["Lead"]["notes"]] == lead and len(got["Beat"]["notes"]) == 8
+        assert got["Lead"]["cc"] == [(0.5, 1, 64)] and abs(got["Lead"]["bend"][0][1] - 0.5) < 0.001
+        r = d.import_midi(str(f))
+        assert r.get("ok") and r["notes"] == 12 and sorted(r["channels"]) == ["Beat", "Lead"], r
+        v = d.view()
+        kinds = {t["name"]: (t.get("inst") or {}).get("kind") for t in v["tracks"]}
+        assert kinds["Beat"] == "drums" and kinds["Lead"] == "synth", kinds
+        assert abs(v["meta"]["bpm"] - 93.0) < 0.01, v["meta"]["bpm"]
+        assert len([c for c in v["clips"] if c.get("pattern") == r["pattern"]]) == 2
+        out = root / "out.mid"
+        x = d.export_midi(str(out))
+        assert x.get("ok") and x["notes"] == 12, x
+        back = {t["name"]: sorted(n[:3] for n in t["notes"]) for t in midifile.read(out)["tracks"]}
+        assert back["Lead"] == sorted(n[:3] for n in lead) and len(back["Beat"]) == 8, back
+        # into an existing pattern's channel (the piano roll)
+        lid = [t["id"] for t in v["tracks"] if t["name"] == "Lead"][0]
+        before = len([n for n in d.view()["notes"] if n["track"] == lid])
+        assert d.import_midi(str(f), r["pattern"], lid).get("ok")
+        assert len([n for n in d.view()["notes"] if n["track"] == lid]) == before + 12
+        print("midi files: ok  (written and read back exactly; imported as 2 channels and a pattern, exported again; into a channel)")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_takes():
     """Loop recording makes a take each time round (the last whole one plays); comping picks a take
     for a stretch; punch keeps only what's between the in and out points, stops by itself after the
@@ -2180,6 +2230,7 @@ if __name__ == "__main__":
     test_takes()
     test_channel_blocks()
     test_clip_gain()
+    test_midi_files()
     test_instruments()
     test_patterns()
     test_live()

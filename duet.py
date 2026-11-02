@@ -342,6 +342,27 @@ class Api:
     def daw_presence(self, here):
         self._daw.set_presence(here)
 
+    def midi_import(self, pattern=None, track=None, at=0.0):
+        """Pick a .mid file and bring it in: into a pattern's channel (the piano roll), or as new
+        channels and a pattern in the playlist."""
+        picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
+                                                 file_types=("MIDI files (*.mid;*.midi)", "All files (*.*)"))
+        if not picked:
+            return None
+        path = picked[0] if isinstance(picked, (list, tuple)) else picked
+        return self._daw.import_midi(path, pattern or None, track or None, float(at or 0.0))
+
+    def midi_export(self, pattern=None):
+        """The song's notes (or a pattern's) as a .mid file, wherever you choose."""
+        name = (self._daw.p.meta().get("name") or "Song").strip() or "Song"
+        picked = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename=f"{name}.mid")
+        if not picked:
+            return None
+        path = picked[0] if isinstance(picked, (list, tuple)) else picked
+        if not str(path).lower().endswith((".mid", ".midi")):
+            path = str(path) + ".mid"
+        return self._daw.export_midi(path, pattern or None)
+
     def daw_play_pattern(self, pid, at=0.0):
         self._daw.play_pattern(pid, float(at or 0.0))
 
