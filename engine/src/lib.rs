@@ -1465,6 +1465,45 @@ impl Engine {
         Ok(d)
     }
 
+    /// Hear one note of a voice as it would be after a move (the Tune editor, while you drag it): the
+    /// stretch start..end of the file (seconds), with a little room either side, moved and played
+    /// to you alone after the mix. A new one cuts off the one playing.
+    #[allow(clippy::too_many_arguments)]
+    fn daw_tune_audition(&self, py: Python<'_>, key: &str, start: f64, end: f64, center: f32, shift: f32, drift: f32, modulation: f32, gain: f32) -> PyResult<()> {
+        let a = self.loaded_file(key)?;
+        let out_sr = self.samplerate() as u32;
+        let data = py.allow_threads(|| {
+            let sr = a.sr as f64;
+            let n = a.samples.len();
+            let x = ((start - 0.03).max(0.0) * sr) as usize;
+            let y = (((end + 0.06) * sr) as usize).min(n).min(x + (8.0 * sr) as usize);
+            if y <= x + 64 {
+                return None;
+            }
+            let cut = daw::AudioData { sr: a.sr, samples: a.samples[x..y].to_vec(), right: a.right.as_ref().map(|r| r[x..y].to_vec()) };
+            let off = x as f64 / sr;
+            let mv = tune::TuneNote { start: start - off, end: end - off, center, shift: shift.clamp(-24.0, 24.0), drift: drift.clamp(0.0, 1.0),
+                modulation: modulation.clamp(0.0, 3.0), gain: gain.clamp(-60.0, 24.0) };
+            let mut moved = if mv.moves() { tune::render(&cut, &[mv]) } else { cut };
+            // in and out softly
+            let fade = ((0.01 * sr) as usize).min(moved.samples.len() / 2);
+            let len = moved.samples.len();
+            for ch in std::iter::once(&mut moved.samples).chain(moved.right.as_mut()) {
+                for k in 0..fade {
+                    let g = k as f32 / fade as f32;
+                    ch[k] *= g;
+                    ch[len - 1 - k] *= g;
+                }
+            }
+            let right = moved.right.as_ref().map(|r| daw::resample(r, moved.sr, out_sr));
+            Some(Arc::new(daw::AudioData { sr: out_sr, samples: daw::resample(&moved.samples, moved.sr, out_sr), right }))
+        });
+        if data.is_some() {
+            self.cmd(Cmd::Preview(data));
+        }
+        Ok(())
+    }
+
     /// How much of each pitch class (C..B) a loaded file has in seconds offset..offset+dur.
     fn daw_chroma(&self, py: Python<'_>, key: &str, offset: f64, dur: f64) -> PyResult<Vec<f32>> {
         let a = self.loaded_file(key)?;
@@ -1490,7 +1529,7 @@ impl Engine {
     /// A clip: (file, start s, offset s, len s, gain, (fade in s, fade out s, in curve, out curve),
     /// speed, pitch, stretch, reverse, tune, loop s (0: none)).
     #[allow(clippy::type_complexity)]
-    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, (f64, f64, f32, f32), f64, f32, bool, bool, Vec<(f64, f64, f32, f32, f32)>, f64)>>,
+    fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, (f64, f64, f32, f32), f64, f32, bool, bool, Vec<(f64, f64, f32, f32, f32, f32, f32)>, f64)>>,
                     notes: Option<Vec<Vec<(f64, f64, u8, u8)>>>) {
         let notes: Vec<Vec<NoteDesc>> = notes
             .unwrap_or_default()
@@ -1508,9 +1547,13 @@ impl Engine {
                     .map(|(key, start, offset, len, gain, (fade_in, fade_out, fic, foc), speed, pitch, stretch, reverse, tune, loop_len)| {
                         let moves: Vec<tune::TuneNote> = tune
                             .into_iter()
-                            .filter(|m| m.0.is_finite() && m.1.is_finite() && m.2.is_finite() && m.3.is_finite() && m.4.is_finite() && m.1 > m.0)
-                            .map(|(start, end, center, shift, drift)| tune::TuneNote { start, end, center, shift: shift.clamp(-24.0, 24.0), drift: drift.clamp(0.0, 1.0) })
-                            .filter(|m| m.shift.abs() > 1e-4 || m.drift > 1e-4)
+                            .filter(|m| m.0.is_finite() && m.1.is_finite() && m.2.is_finite() && m.3.is_finite() && m.4.is_finite()
+                                && m.5.is_finite() && m.6.is_finite() && m.1 > m.0)
+                            .map(|(start, end, center, shift, drift, modulation, gain)| tune::TuneNote {
+                                start, end, center, shift: shift.clamp(-24.0, 24.0), drift: drift.clamp(0.0, 1.0),
+                                modulation: modulation.clamp(0.0, 3.0), gain: gain.clamp(-60.0, 24.0),
+                            })
+                            .filter(|m| m.moves())
                             .collect();
                         let tune_hash = if moves.is_empty() { 0 } else { tune::tune_hash(&moves) };
                         ClipDesc {

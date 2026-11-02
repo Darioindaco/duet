@@ -1042,6 +1042,13 @@ def test_tune():
         notes = p["notes"]
         assert len(notes) == 4, notes
         assert all(abs(n[2] - want) < 0.08 for n, (want, _) in zip(notes, plan)), [round(n[2], 2) for n in notes]
+        # dragging a note: you hear just that note, moved (to you alone)
+        s0, e0, c0 = notes[0]
+        assert da.tune_audition(vid, s0, e0, c0, 2.0) == {"ok": True}
+        a.process([0.0] * N)
+        pos, total = a.preview_state
+        assert total > int((e0 - s0) * 48000 * 0.9), (pos, total)
+        a.preview(None)
         # Snap to key, full strength, leaving notes within 12 cents
         scale = {9, 11, 0, 2, 4, 5, 7}
         moves = []

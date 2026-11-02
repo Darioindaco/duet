@@ -117,8 +117,9 @@ STEM_SETS = {
 
 
 def tune_moves(tune) -> list:
-    """A clip's tune (the Tune tab) for the engine: [(start, end, centre,
-    shift, drift)], seconds of the file; whatever the partner sent, in range."""
+    """A clip's tune (the Tune editor) for the engine: [(start, end, centre,
+    shift, drift, vibrato, gain dB)], seconds of the file; whatever the partner sent, in range
+    (older songs have no vibrato or gain: as sung)."""
     if not isinstance(tune, dict) or not isinstance(tune.get("notes"), list):
         return []
     out = []
@@ -128,7 +129,9 @@ def tune_moves(tune) -> list:
         a, b = num(n[0], -1, 0, 1e7), num(n[1], -1, 0, 1e7)
         if a < 0 or b <= a:
             continue
-        out.append((a, b, num(n[2], 60.0, 0.0, 140.0), num(n[3], 0.0, -24.0, 24.0), num(n[4], 0.0, 0.0, 1.0)))
+        mod = num(n[5], 1.0, 0.0, 3.0) if len(n) > 5 else 1.0
+        gain = num(n[6], 0.0, -60.0, 24.0) if len(n) > 6 else 0.0
+        out.append((a, b, num(n[2], 60.0, 0.0, 140.0), num(n[3], 0.0, -24.0, 24.0), num(n[4], 0.0, 0.0, 1.0), mod, gain))
     return out
 
 
@@ -1806,6 +1809,20 @@ class Daw:
         except Exception as exc:
             return {"error": str(exc)}
         return {"error": f"Nothing called {what}."}
+
+    def tune_audition(self, clip: str, start: float, end: float, center: float, shift: float,
+                      drift: float = 0.0, mod: float = 1.0, gain: float = 0.0) -> dict:
+        """Hear one note of a clip's voice as it would sound moved (while you drag it in Tune)."""
+        with self.lock:
+            c = self.p.live("clip").get(clip)
+            if not c or not c.get("file") or c["file"] not in self.loaded:
+                return {"error": "The audio isn't here yet."}
+            key = c["file"]
+        try:
+            self.e.daw_tune_audition(key, float(start), float(end), float(center), float(shift), float(drift), float(mod), float(gain))
+            return {"ok": True}
+        except Exception as exc:
+            return {"error": str(exc)}
 
     # --- stems ---------------------------------------------------------------------
 

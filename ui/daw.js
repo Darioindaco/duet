@@ -225,6 +225,7 @@ function setSongView(v) {
   songRender();
   seqRender();
   paintConflict();
+  twSongChanged();
 }
 
 // ---------- setup ----------
@@ -1531,6 +1532,7 @@ function lanesContext(e) {
       items.push(["Open in the sequencer", "dbl-click", () => { seq.pat = c.pattern; setMainView("seq"); }]);
     } else {
       items.push(["Edit clip…", "dbl-click", () => openClipEditor(c.id)]);
+      items.push(["Tune the voice…", "", () => openTune(c.id)]);
       items.push(...takeMenuItems(c));
       items.push(["Split into stems…", "", () => { openClipEditor(c.id); ce.tab = "stems"; ceRender(); }]);
       items.push([c.mute ? "Unmute clip" : "Mute clip", "Alt+M", () => muteSel(!c.mute)]);
@@ -2139,6 +2141,7 @@ function demoSong() {
     stems_split: async () => ({ error: "The demo has no stem model." }),
     stems_cancel: async () => {},
     // (the demo makes up its answers: a steady beat at 96, hits every half second)
+    tune_audition: async () => ({ ok: true }), tune_audition_stop: async () => {},
     daw_analyze: async (id, what) => {
       const c = view.clips.find((k) => k.id === id);
       if (!c) return { error: "That clip is gone." };

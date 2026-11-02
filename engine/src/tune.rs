@@ -298,6 +298,21 @@ pub struct TuneNote {
     pub center: f32,
     pub shift: f32,
     pub drift: f32,
+    /// how much of its vibrato (the fast wobble around the slow line): 1 as sung, 0 none, 2 twice
+    pub modulation: f32,
+    /// its level, dB (0 as sung)
+    pub gain: f32,
+}
+
+impl TuneNote {
+    /// does this move change the pitch at all
+    pub fn pitched(&self) -> bool {
+        self.shift.abs() > 0.001 || self.drift > 0.001 || (self.modulation - 1.0).abs() > 0.001
+    }
+    /// does it change anything
+    pub fn moves(&self) -> bool {
+        self.pitched() || self.gain.abs() > 0.01
+    }
 }
 
 /// The file with the notes moved. Stretches nothing touches are copied as they are.
@@ -310,7 +325,7 @@ pub fn render(a: &AudioData, moves: &[TuneNote]) -> AudioData {
     let pad = (0.15 * sr) as usize;
     let mut spans: Vec<(usize, usize)> = moves
         .iter()
-        .filter(|m| m.shift.abs() > 0.001 || m.drift > 0.001)
+        .filter(|m| m.pitched())
         .map(|m| (((m.start * sr) as usize).saturating_sub(pad), (((m.end * sr) as usize) + pad).min(n)))
         .filter(|(x, y)| x < y)
         .collect();
@@ -329,6 +344,23 @@ pub fn render(a: &AudioData, moves: &[TuneNote]) -> AudioData {
         psola(&a.samples[x..y], &marks, &shift, &mut l[x..y]);
         if let (Some(src), Some(dst)) = (&a.right, r.as_mut()) {
             psola(&src[x..y], &marks, &shift, &mut dst[x..y]);
+        }
+    }
+    // each note's level, with 8 ms ramps so it never clicks
+    let ramp = (0.008 * sr).max(1.0);
+    for m in moves.iter().filter(|m| m.gain.abs() > 0.01) {
+        let g = 10f32.powf(m.gain.clamp(-60.0, 24.0) / 20.0);
+        let (a0, b0) = ((m.start * sr) as isize, (m.end * sr) as isize);
+        let from = (a0 - ramp as isize).max(0) as usize;
+        let to = ((b0 + ramp as isize).max(0) as usize).min(n);
+        for k in from..to {
+            let ki = k as isize;
+            let w = if ki < a0 { 1.0 - (a0 - ki) as f64 / ramp } else if ki > b0 { 1.0 - (ki - b0) as f64 / ramp } else { 1.0 };
+            let gk = 1.0 + (g - 1.0) * w.clamp(0.0, 1.0) as f32;
+            l[k] *= gk;
+            if let Some(r) = r.as_mut() {
+                r[k] *= gk;
+            }
         }
     }
     AudioData { sr: a.sr, samples: l, right: r }
@@ -354,8 +386,10 @@ fn shift_curve(t: &Track, moves: &[TuneNote], x: usize, y: usize) -> Vec<f32> {
         let a = ((m.start * t.sr as f64 - t.from as f64) / HOP as f64).floor().max(0.0) as usize;
         let b = (((m.end * t.sr as f64 - t.from as f64) / HOP as f64).ceil().max(0.0) as usize).min(frames);
         for k in a..b {
+            // drift: the slow line pulled to the centre; modulation: the fast wobble around it scaled
             let d = if slow[k].is_finite() { m.drift * (m.center - slow[k]) } else { 0.0 };
-            f[k] = m.shift + d;
+            let v = if slow[k].is_finite() && t.midi[k].is_finite() { (m.modulation - 1.0) * (t.midi[k] - slow[k]) } else { 0.0 };
+            f[k] = m.shift + d + v;
         }
     }
     // gaps: a glide between two notes up to 120 ms apart, else back to nothing
@@ -494,7 +528,8 @@ pub fn tune_hash(moves: &[TuneNote]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for m in moves {
-        ((m.start * 1e4) as i64, (m.end * 1e4) as i64, (m.center * 1e3) as i32, (m.shift * 1e4) as i32, (m.drift * 1e3) as i32).hash(&mut h);
+        ((m.start * 1e4) as i64, (m.end * 1e4) as i64, (m.center * 1e3) as i32, (m.shift * 1e4) as i32, (m.drift * 1e3) as i32,
+         (m.modulation * 1e3) as i32, (m.gain * 1e2) as i32).hash(&mut h);
     }
     h.finish() | 1 // never 0 (0 is "not tuned")
 }
@@ -548,7 +583,7 @@ mod tests {
         let moves: Vec<TuneNote> = found
             .iter()
             .enumerate()
-            .map(|(i, n)| TuneNote { start: n.start, end: n.end, center: n.center, shift: if i < 2 { n.center.round() - n.center } else { 0.0 }, drift: 0.0 })
+            .map(|(i, n)| TuneNote { start: n.start, end: n.end, center: n.center, shift: if i < 2 { n.center.round() - n.center } else { 0.0 }, drift: 0.0, modulation: 1.0, gain: 0.0 })
             .collect();
         let b = render(&a, &moves);
         assert_eq!(b.samples.len(), a.samples.len());
@@ -572,7 +607,7 @@ mod tests {
         let a = voice(44100, &[(64.0, 0.0), (67.0, 0.0)], 0.6, 0.1);
         let found = notes(&track(&a, 0, a.samples.len()));
         assert_eq!(found.len(), 2);
-        let moves: Vec<TuneNote> = found.iter().zip([3.0f32, -5.0]).map(|(n, sh)| TuneNote { start: n.start, end: n.end, center: n.center, shift: sh, drift: 0.0 }).collect();
+        let moves: Vec<TuneNote> = found.iter().zip([3.0f32, -5.0]).map(|(n, sh)| TuneNote { start: n.start, end: n.end, center: n.center, shift: sh, drift: 0.0, modulation: 1.0, gain: 0.0 }).collect();
         let c = centers(&render(&a, &moves));
         assert_eq!(c.len(), 2, "{c:?}");
         assert!((c[0] - 67.0).abs() < 0.08 && (c[1] - 62.0).abs() < 0.08, "{c:?}");
@@ -596,7 +631,7 @@ mod tests {
         let a = AudioData::mono(sr, x);
         let nt = notes(&track(&a, 0, n));
         assert_eq!(nt.len(), 1, "{nt:?}");
-        let b = render(&a, &[TuneNote { start: nt[0].start, end: nt[0].end, center: nt[0].center, shift: 0.0, drift: 1.0 }]);
+        let b = render(&a, &[TuneNote { start: nt[0].start, end: nt[0].end, center: nt[0].center, shift: 0.0, drift: 1.0, modulation: 1.0, gain: 0.0 }]);
         let slope = |a: &AudioData| {
             let t = track(a, 0, n);
             let k = t.midi.len();
@@ -608,6 +643,30 @@ mod tests {
         };
         let (before, after) = (slope(&a), slope(&b));
         assert!(before > 0.15 && after.abs() < 0.08, "sag {before} -> {after}");
+    }
+
+    #[test]
+    fn modulation_flattens_the_vibrato_and_gain_turns_a_note_down() {
+        let sr = 44100;
+        let a = voice(sr, &[(69.0, 0.0)], 1.2, 0.2);
+        let n = a.samples.len();
+        let nt = notes(&track(&a, 0, n));
+        assert!(!nt.is_empty());
+        let wobble = |b: &AudioData| {
+            let t = track(b, 0, n);
+            let k = t.midi.len();
+            let v: Vec<f32> = t.midi[k / 5..k * 3 / 5].iter().copied().filter(|m| m.is_finite()).collect();
+            let mean = v.iter().sum::<f32>() / v.len() as f32;
+            (v.iter().map(|m| (m - mean).powi(2)).sum::<f32>() / v.len() as f32).sqrt()
+        };
+        let mv = |modulation, gain| TuneNote { start: nt[0].start, end: nt[0].end, center: nt[0].center, shift: 0.0, drift: 0.0, modulation, gain };
+        let (before, flat) = (wobble(&a), wobble(&render(&a, &[mv(0.0, 0.0)])));
+        assert!(before > 0.12 && flat < before * 0.5, "vibrato {before} -> {flat}");
+        let quiet = render(&a, &[mv(1.0, -12.0)]);
+        let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
+        let mid = |x: &[f32]| rms(&x[n / 4..n / 2]);
+        let db = 20.0 * (mid(&quiet.samples) / mid(&a.samples)).log10();
+        assert!((db + 12.0).abs() < 0.5, "{db} dB");
     }
 
     #[test]

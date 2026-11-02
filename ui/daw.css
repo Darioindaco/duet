@@ -566,3 +566,42 @@ header .phere { flex-shrink: 0; }
 .plugauto { display: flex; gap: 6px; margin-top: 8px; }
 .plugauto .mb { flex: 1; }
 .plugauto .mb { white-space: nowrap; font-size: 11.5px; padding-left: 6px; padding-right: 6px; }
+
+/* ---------- Tune: its own window (tunewin.js) ---------- */
+.twin { position: fixed; z-index: 60; display: flex; flex-direction: column; background: #121117; border: 1px solid var(--line-2); border-radius: 12px;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.65); overflow: hidden; min-width: 560px; min-height: 320px; }
+.twin[hidden] { display: none; }
+.twbar { height: 30px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 11px; background: #1a1821; border-bottom: 1px solid #26232e; cursor: grab; font: 700 12px system-ui, sans-serif; }
+.twbar:active { cursor: grabbing; }
+.twdot { width: 10px; height: 10px; border-radius: 50%; background: var(--me); box-shadow: 0 0 8px currentColor; }
+.twtools { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: #15131b; border-bottom: 1px solid #22202a; flex-wrap: wrap; }
+.twtools .spacer { flex: 1; }
+.twsep { width: 1px; height: 18px; background: #2c2935; margin: 0 2px; }
+.twl { font: 700 10px system-ui, sans-serif; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-left: 4px; }
+.twplay { width: 30px; height: 26px; border-radius: 6px; border: 1px solid #34303f; background: #1f1c27; color: var(--text); cursor: pointer; display: grid; place-items: center; }
+.twplay.on { background: #4fd6c6; color: #0d0c11; border-color: #4fd6c6; }
+.twfollow, .twbtn { height: 26px; padding: 0 10px; border-radius: 6px; border: 1px solid #34303f; background: #1f1c27; color: var(--text); font: 650 11.5px system-ui, sans-serif; cursor: pointer; }
+.twfollow.on { border-color: #4fd6c6; color: #4fd6c6; }
+.twassist { border-color: #4fd6c6aa; color: #4fd6c6; }
+.twseg { display: flex; border: 1px solid #34303f; border-radius: 6px; overflow: hidden; }
+.twseg button { height: 24px; padding: 0 10px; border: 0; background: #1a1821; color: var(--muted); font: 650 11.5px system-ui, sans-serif; cursor: pointer; }
+.twseg button + button { border-left: 1px solid #2c2935; }
+.twseg button.on { background: #4fd6c6; color: #0d0c11; }
+.twkey { height: 26px; border-radius: 6px; border: 1px solid #34303f; background: #1a1821; color: var(--text); font: 600 11.5px system-ui, sans-serif; }
+.twsure { font-size: 10.5px; color: var(--faint); }
+.twmain { flex: 1; min-height: 0; position: relative; }
+.twcv { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.twinfo { flex: none; min-height: 32px; display: flex; align-items: center; gap: 14px; padding: 6px 12px; background: #15131b; border-top: 1px solid #22202a; font: 12px system-ui, sans-serif; color: var(--text); flex-wrap: wrap; }
+.twinfo .fine { color: var(--faint); font-size: 11px; }
+.twnote { font: 800 15px system-ui, sans-serif; color: #4fd6c6; }
+.twgrip { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, #4a4655 50%, #4a4655 58%, transparent 58%, transparent 70%, #4a4655 70%, #4a4655 78%, transparent 78%); }
+.twpop { position: absolute; z-index: 5; width: 300px; padding: 10px 12px; border-radius: 10px; background: #1b1922; border: 1px solid #34303f; box-shadow: 0 14px 40px rgba(0,0,0,0.6); display: grid; gap: 8px; font: 12px system-ui, sans-serif; }
+.twph { font-weight: 800; }
+.twpop label { display: grid; grid-template-columns: 100px 1fr 54px; align-items: center; gap: 8px; color: var(--muted); }
+.twpop label b { color: var(--text); text-align: right; font-weight: 700; }
+.twpop .twchk { display: flex; gap: 6px; font-size: 11px; }
+.twpa { display: flex; gap: 6px; justify-content: flex-end; }
+.twpa .go { background: #4fd6c6; color: #0d0c11; border-color: #4fd6c6; font-weight: 800; }
+.twtools select.twkey { width: auto; max-width: 210px; flex: none; }
+.twsure { white-space: nowrap; }
+.twtools select.twkey { height: 26px; padding: 0 22px 0 8px; line-height: normal; }

@@ -127,7 +127,7 @@ has two tabs:
      vibrato and slides through), amount, transpose. The display draws the pitch
      it hears and what comes out on the notes of the scale. It is 32 ms late at
      48 kHz; the rest of the mix waits for it, but for singing through it live
-     the offline Tune in the clip editor is the better choice.
+     the Tune window (right-click a clip) is the better choice.
    - **De-esser** (split or wide, *Listen* to hear what it catches), **Transient**
      (more or less attack and sustain), **Gate** (hold, hysteresis, a filtered or
      sidechain detector), **Imager** (width for lows and highs, mono bass,
@@ -341,22 +341,38 @@ and *Undo* takes it back.
   to move it, right-click it to take it away. *Chop into clips* cuts the clip
   at every mark: each piece is its own clip, to move, copy or delete.
 - **Tune** (for a voice, or any one instrument playing one note at a time),
-  like Melodyne. The voice is shown as notes on a piano roll: each note a
-  blob shaped by how loud it is, the pitch line running through it, the rows
-  of the song's key lighter. Notes that are off are amber.
+  like a note editor for audio, in **a window of its own** (right-click a
+  clip → *Tune the voice…*, or the clip editor's Tune tab; drag it by its
+  title, size it from its corner). The voice is shown as notes on a piano
+  roll: each note a blob shaped by how loud it is, the pitch line running
+  through it, the rows of the song's key lit; notes off the key have an amber
+  edge, a moved note shows where it was sung.
+  - **You hear what you do:** pressing a note plays it, and dragging it plays
+    it again at every step it reaches, moved, so you hear where it goes (just
+    you, over the mix).
+  - **Play from anywhere:** click the ruler (or empty space) to put the play
+    cursor there; *Space* or ▶ plays the song from it, the playhead runs
+    through the notes and the view follows (*Follow*). Again: stop.
+  - **Tools** (keys 1-4): *Pitch* (drag up or down; snaps to the scale, to
+    semitones or not at all, Alt: free), *Vibrato* (drag up for more of a
+    note's wobble, down for less, to dead straight), *Drift* (pull its slow
+    wandering onto its centre) and *Level* (louder or softer, in dB). A
+    double-click puts a note back: into the key, as sung, all or nothing, 0 dB.
+    The strip at the bottom says what the selected note is, how far it's off,
+    and what's been done to it.
   - **The key** is found by itself, from the rest of the song (the other
     clips, drums left out, and the notes in patterns), and says how sure it
     is (C major and A minor have the same notes: either works). Or pick one.
   - **✦ Snap to key** puts every note that's off into the key (or just the
     selected ones), but not like Auto-Tune: *Strength* says how far (85%
-    leaves it human), *Smooth drift* takes out a note's slow wandering while
-    its vibrato stays, *Leave within ±N cents* doesn't touch notes that are
-    close enough, and short notes (slides, ornaments) and notes outside the
-    key that were clearly sung on purpose are left alone.
-  - **By hand:** drag a note up or down (it snaps to the key, or to
-    semitones; *Alt* for free), double-click it to put it in key, ↑ ↓ a
-    semitone, *Delete* puts it back as sung, drag on empty space to select
-    several. *Back to how it was sung* undoes it all.
+    leaves it human), *Take out drift* takes out a note's slow wandering
+    while its vibrato stays, *Leave within ±N cents* doesn't touch notes that
+    are close enough, and short notes (slides, ornaments) and notes outside
+    the key that were clearly sung on purpose are left alone.
+  - Keys: ↑ ↓ a semitone (and you hear it), *Delete* puts the selected notes
+    back as sung, *Ctrl+A* all, drag on empty space to select several; *Reset*
+    puts everything (or the selection) back. Wheel zooms in time, Shift+wheel
+    scrolls, Alt+wheel zooms the pitch.
   - The voice keeps its character (its formants) and its timing: notes are
     moved by PSOLA (cut at the voice's own periods and laid down again), and
     whatever isn't moved stays exactly as it was. It's part of the song:
@@ -719,7 +735,8 @@ to it through lock-free queues and atomics.
 | `engine/src/stems.rs` | The stem splitter: Demucs's spectrogram, its network in ONNX Runtime, the overlap-add (matches PyTorch Demucs to 2e-5) |
 | `tools/export_demucs.py` | Exports Demucs's network to ONNX (CI runs it for a commit with `[models]` and publishes the release `models-htdemucs-1`) |
 | `engine/src/tune.rs` | Tune: a voice's pitch (YIN), its notes, a mix's pitch classes for the key, and moving notes by PSOLA |
-| `ui/tune.js` | The clip editor's Tune tab: the notes on a piano roll, the key, Snap to key |
+| `ui/tune.js` | Tune's shared parts (keys, scales, targets) and the clip editor's Tune tab |
+| `ui/tunewin.js` | The Tune window: notes on a piano roll, tools, hearing notes as you drag them, playhead |
 | `engine/src/stretch.rs` | Keep-pitch speed and transposing (Signalsmith Stretch), and finding a clip's hits, tempo and peak |
 | `ui/clipedit.js` | The clip editor (double-click an audio clip) |
 | `ui/keys.js` | Keyboard shortcuts: the actions, the sets in other programs' style, the settings window |

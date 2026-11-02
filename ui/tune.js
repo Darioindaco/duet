@@ -111,51 +111,12 @@ async function tuneDetect(c) {
 // --- the panel ---------------------------------------------------------------------
 
 function tuneTab(c) {
+  // Tune has a window of its own now: open it, and say so here
   const box = document.createElement("div");
   box.className = "tunepanel";
-  tuneLoad(c);
-  const notes = tuneNotes(c), scale = tuneScale(tuneKey(c));
-  // the key: detected (how sure), or chosen
-  const sel = document.createElement("select");
-  sel.className = "cenum tkey";
-  sel.title = "The song's key: notes are put into it";
-  const t = tuneOf(c);
-  sel.append(new Option(tn.detected && tn.detected.key ? `Detected: ${keyLabel(tn.detected.key)}` : tn.detecting ? "Detecting…" : "Detected: —", "auto", false, t.key === undefined));
-  for (const k of KEYS) sel.append(new Option(keyLabel(k), k, false, t.key === k));
-  sel.append(new Option("Chromatic (no key)", "none", false, t.key === null));
-  sel.onchange = () => tuneSave(c, notes, sel.value === "auto" ? undefined : sel.value === "none" ? null : sel.value);
-  const sure = document.createElement("span");
-  sure.className = "fine";
-  const d = tn.detected;
-  // its relative key (C major / A minor) has the same notes: say so rather than "not sure"
-  const rel = (k) => { const [r, m] = k.split(" "), i = NOTE_NAMES_JS.indexOf(r); return m === "major" ? `${NOTE_NAMES_JS[(i + 9) % 12]} minor` : `${NOTE_NAMES_JS[(i + 3) % 12]} major`; };
-  const twin = d && d.key && d.others[0] === rel(d.key);
-  sure.textContent = !d || !d.key ? "" : twin ? `the same notes as ${keyLabel(d.others[0])}` + (d.confidence < 0.3 ? " (either fits)" : "")
-    : d.confidence >= 0.6 ? "pretty sure" : d.confidence >= 0.3 ? "fairly sure" : `not sure: maybe ${d.others.slice(0, 2).map(keyLabel).join(" or ")}`;
-  box.append(ceRow("Key", sel, sure, ceBtn("Detect again", "Listen to the song again for its key", () => { tn.detected = null; tuneDetect(c); })));
-  // the assistant
-  const off = notes.filter((n) => n.end - n.start >= 0.08 && Math.abs(tuneTarget(n.center, scale) - (n.center + n.shift)) * 100 > tn.tolerance);
-  const which = tn.sel.size ? `${tn.sel.size} selected note${tn.sel.size === 1 ? "" : "s"}` : "every note that's off";
-  box.append(ceRow("Assist", ceBtn("✦ Snap to key", `Into ${scale ? keyLabel(tuneKey(c)) : "the nearest note"}: ${which}`, () => tuneSnap(c), "btn teal"),
-    tuneVal(tn.sel.size ? `${tn.sel.size} selected` : notes.length ? `${off.length} of ${notes.length} notes are off` : "")));
-  const pct = (v) => Math.round(v * 100) + "%";
-  box.append(ceRow("Strength", ceRange(tn.strength, (v) => { tn.strength = v; tuneRefresh(); }, "How far a note goes toward its target: 100% is right on it"), tuneVal(pct(tn.strength), "str")));
-  box.append(ceRow("Smooth drift", ceRange(tn.drift, (v) => { tn.drift = v; tuneRefresh(); }, "Takes out a note's slow wandering (vibrato stays)"), tuneVal(pct(tn.drift), "dr")));
-  box.append(ceRow("Leave within", ceRange(tn.tolerance / 50, (v) => { tn.tolerance = Math.round(v * 50); tuneRefresh(); }, "Notes this close to their target aren't touched"), tuneVal(`±${tn.tolerance} cents`, "tol")));
-  const keep = document.createElement("label");
-  keep.className = "tcheck";
-  keep.innerHTML = `<input type="checkbox" ${tn.keepChromatic ? "checked" : ""}> Leave notes outside the key that were clearly meant`;
-  keep.querySelector("input").onchange = (e) => { tn.keepChromatic = e.target.checked; tuneRender(); };
-  const snap = document.createElement("label");
-  snap.className = "tcheck";
-  snap.innerHTML = `<input type="checkbox" ${tn.scaleSnap ? "checked" : ""}> Dragged notes snap to the key`;
-  snap.querySelector("input").onchange = (e) => { tn.scaleSnap = e.target.checked; };
-  box.append(ceRow("", keep, snap));
-  box.append(ceRow("", ceBtn("Back to how it was sung", "Undo every move on this clip", () => { tn.sel.clear(); tuneSave(c, notes.map((n) => ({ ...n, shift: 0, drift: 0 }))); })));
-  const hint = document.createElement("p");
-  hint.className = "fine";
-  hint.textContent = "Drag a note up or down (Alt: free) · double-click: into the key · ↑ ↓ a semitone · Delete: back as sung · drag on empty space to select · scroll to zoom";
-  box.append(hint);
+  box.append(ceRow("Tune", ceBtn("Open the Tune window", "The voice's notes, in a window of their own", () => openTune(c.id), "btn teal"),
+    tuneVal("Drag notes, hear them as you go, play from anywhere.")));
+  if (tw.clipId !== c.id || !tw.el || tw.el.hidden) setTimeout(() => openTune(c.id));
   return box;
 }
 

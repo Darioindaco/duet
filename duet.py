@@ -275,6 +275,15 @@ class Api:
         hits are, in seconds of the file) or "tempo" (BPM or None)."""
         return self._daw.analyze(str(clip), str(what), float(sensitivity))
 
+    def tune_audition(self, clip, start, end, center, shift, drift=0.0, mod=1.0, gain=0.0):
+        return self._daw.tune_audition(str(clip), start, end, center, shift, drift, mod, gain)
+
+    def tune_audition_stop(self):
+        try:
+            self._engine.preview(None)
+        except Exception:
+            pass
+
     def stems_state(self):
         return self._daw.stems_state()
 
