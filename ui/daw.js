@@ -2060,6 +2060,7 @@ function demoSong() {
       ...Array.from({ length: 8 }, (_, i) => ({ id: "h" + i, pattern: "pa", track: "t4", start: i / 2, len: 0.25, key: 42, vel: i % 2 ? 70 : 100 })),
       ...[[0, 45, 1.5], [1.5, 45, 0.5], [2, 48, 1], [3, 50, 1], [4, 41, 1.5], [5.5, 41, 0.5], [6, 43, 1], [7, 48, 1]].map(([b, k, l], i) => ({ id: "b" + i, pattern: "pb", track: "t5", start: b, len: l, key: k, vel: 100 })),
     ],
+    ctls: [{ id: "k1", pattern: "pb", track: "t5", cc: 74, points: [[0, 0.3], [4, 0.85], [6, 0.5], [8, 0.3]] }],
     markers: [{ id: "m1", beat: 0, name: "Intro", section: true }, { id: "m2", beat: 16, name: "Verse", section: true },
       { id: "m3", beat: 24, name: "drop the bass", section: false }],
     patternMode: null,
@@ -2074,7 +2075,7 @@ function demoSong() {
       for (const [kind, id, f] of changes) {
         if (kind === "meta") Object.assign(view.meta, f);
         const bus = kind === "track" && (f.bus || view.buses.some((b) => b.id === id));
-        const list = { track: bus ? view.buses : view.tracks, clip: view.clips, pattern: view.patterns, note: view.notes, marker: view.markers }[kind];
+        const list = { track: bus ? view.buses : view.tracks, clip: view.clips, pattern: view.patterns, note: view.notes, marker: view.markers, ctl: view.ctls }[kind];
         if (!list) continue;
         const o = list.find((x) => x.id === id);
         if (f.del) { if (o) list.splice(list.indexOf(o), 1); continue; }

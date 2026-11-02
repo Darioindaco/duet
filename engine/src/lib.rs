@@ -150,6 +150,11 @@ struct Inner {
     noterec: Mutex<rtrb::Consumer<(u8, NoteEv, i64)>>,
     /// the strip a MIDI keyboard plays (encoded Target; u64::MAX = none)
     midi_target: std::sync::atomic::AtomicU64,
+    /// the last controller the MIDI keyboard moved (for MIDI-learn): a count of moves << 16 |
+    /// number (128: the pitch wheel) << 8 | value 0..127; 0 before the first
+    midi_cc: std::sync::atomic::AtomicU64,
+    /// where each controller (and at 128 the wheel) was last put: 0x8000 | value 0..127, 0 never moved
+    midi_vals: Box<[std::sync::atomic::AtomicU16]>,
     daw: Mutex<DawCtl>,
     files: Mutex<transfer::Transfers>,
     running: AtomicBool,
@@ -182,6 +187,23 @@ impl Inner {
     }
     fn cmd(&self, c: Cmd) {
         let _ = self.cmds.lock().unwrap().push(c);
+    }
+    /// Something from the MIDI keyboard: a controller move is kept for MIDI-learn; it all goes to
+    /// the instrument it plays.
+    fn midi_in(&self, ev: NoteEv) {
+        let moved = match ev {
+            NoteEv::Cc(n, v) => Some((n as u64, v as u64)),
+            NoteEv::Bend(b) => Some((128, ((b + 1.0) * 63.5).round().clamp(0.0, 127.0) as u64)),
+            _ => None,
+        };
+        if let Some((n, v)) = moved {
+            let count = (self.midi_cc.load(Relaxed) >> 16) + 1;
+            self.midi_cc.store(count << 16 | n << 8 | v, Relaxed);
+            self.midi_vals[n as usize].store(0x8000 | v as u16, Relaxed);
+        }
+        if let Some(t) = decode_target(self.midi_target.load(Relaxed)) {
+            self.note(t, ev);
+        }
     }
     fn note(&self, t: Target, ev: NoteEv) {
         let _ = self.notes.lock().unwrap().push((t, ev, false));
@@ -476,6 +498,8 @@ impl Engine {
             live_in: Mutex::new(livenotes::In::default()),
             track_keys: Mutex::new([0; MAX_TRACKS]),
             midi_target: std::sync::atomic::AtomicU64::new(u64::MAX),
+            midi_cc: std::sync::atomic::AtomicU64::new(0),
+            midi_vals: (0..129).map(|_| std::sync::atomic::AtomicU16::new(0)).collect(),
             daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], notes: vec![], autos: vec![], stretching: false, stretch_now: None, rec: None, export: None }),
             noterec: Mutex::new(noterec_rx),
             files: Mutex::new(transfer::Transfers::new(std::env::temp_dir().join("duet-incoming"))),
@@ -483,11 +507,7 @@ impl Engine {
             start: Instant::now(),
         });
         let sink_inner = inner.clone();
-        let midi = midi::MidiThread::spawn(Arc::new(move |ev| {
-            if let Some(t) = decode_target(sink_inner.midi_target.load(Relaxed)) {
-                sink_inner.note(t, ev);
-            }
-        }));
+        let midi = midi::MidiThread::spawn(Arc::new(move |ev| sink_inner.midi_in(ev)));
         Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), midi, local: local_addr, public: Mutex::new(None), stems: Mutex::new(None) })
     }
 
@@ -1022,6 +1042,23 @@ impl Engine {
         py.allow_threads(|| self.midi.open(name)).map_err(PyRuntimeError::new_err)
     }
 
+    /// The MIDI keyboard's knobs and faders, for MIDI-learn: (how many moves so far, the number of
+    /// the last one moved (128: the pitch wheel), where each is now 0..1 or -1 if it never moved).
+    fn midi_controllers(&self) -> (u64, u32, Vec<f32>) {
+        let cc = self.inner.midi_cc.load(Relaxed);
+        let vals = self.inner.midi_vals.iter()
+            .map(|a| { let x = a.load(Relaxed); if x & 0x8000 != 0 { (x & 127) as f32 / 127.0 } else { -1.0 } })
+            .collect();
+        (cc >> 16, ((cc >> 8) & 255) as u32, vals)
+    }
+
+    /// A raw MIDI message as if it came from the keyboard (tests, and what a learn can be tried with).
+    fn midi_feed(&self, msg: Vec<u8>) {
+        if let Some(ev) = midi::parse(&msg) {
+            self.inner.midi_in(ev);
+        }
+    }
+
     /// Which strip the MIDI keyboard plays (None: none). The old one gets an
     /// all-notes-off, so nothing hangs.
     #[pyo3(signature = (target=None))]
@@ -1524,19 +1561,34 @@ impl Engine {
     /// notes[i] = [(start, duration, key, velocity)] for Ti's instrument.
     /// A clip is (key, start, offset, length, gain, fade in, fade out, speed,
     /// pitch in semitones, keep pitch, reverse).
-    #[pyo3(signature = (tracks, notes=None))]
+    #[pyo3(signature = (tracks, notes=None, ctls=None))]
     #[allow(clippy::type_complexity)]
     /// A clip: (file, start s, offset s, len s, gain, (fade in s, fade out s, in curve, out curve),
     /// speed, pitch, stretch, reverse, tune, loop s (0: none)).
     #[allow(clippy::type_complexity)]
     fn daw_timeline(&self, py: Python<'_>, tracks: Vec<Vec<(String, f64, f64, f64, f32, (f64, f64, f32, f32), f64, f32, bool, bool, Vec<(f64, f64, f32, f32, f32, f32, f32)>, f64)>>,
-                    notes: Option<Vec<Vec<(f64, f64, u8, u8)>>>) {
-        let notes: Vec<Vec<NoteDesc>> = notes
+                    notes: Option<Vec<Vec<(f64, f64, u8, u8)>>>, ctls: Option<Vec<Vec<(f64, u8, f32)>>>) {
+        let mut notes: Vec<Vec<NoteDesc>> = notes
             .unwrap_or_default()
             .into_iter()
             .take(MAX_TRACKS)
-            .map(|ns| ns.into_iter().map(|(t, dur, key, vel)| NoteDesc { t, dur, key, vel }).collect())
+            .map(|ns| ns.into_iter().map(|(t, dur, key, vel)| NoteDesc { t, dur, key, vel, ctl: 0 }).collect())
             .collect();
+        // controller moves and the pitch wheel per track: (seconds, number 0..127 or 128 for the wheel, 0..1)
+        for (i, cs) in ctls.unwrap_or_default().into_iter().take(MAX_TRACKS).enumerate() {
+            while notes.len() <= i {
+                notes.push(Vec::new());
+            }
+            for (t, n, v) in cs.into_iter().filter(|c| c.0.is_finite() && c.2.is_finite()) {
+                let v = v.clamp(0.0, 1.0);
+                notes[i].push(if n >= 128 {
+                    let raw = (v * 16383.0).round() as u16;
+                    NoteDesc { t, dur: 0.0, key: (raw & 127) as u8, vel: (raw >> 7) as u8, ctl: 2 }
+                } else {
+                    NoteDesc { t, dur: 0.0, key: n & 127, vel: (v * 127.0).round() as u8, ctl: 1 }
+                });
+            }
+        }
         self.inner.daw.lock().unwrap().notes = notes;
         let desc = tracks
             .into_iter()

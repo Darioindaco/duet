@@ -392,3 +392,222 @@ function rollToolDown(e, pt, p, t) {
   }
   return false;
 }
+
+// --- controller lanes -------------------------------------------------------------------------
+// The lane under the notes edits velocity, or a MIDI controller / the pitch wheel for the channel
+// in this pattern (a "ctl" in the song: points [[beat, 0..1]], straight lines between them).
+// Drag: draw (shift: a straight line); drag a dot: move it; right-drag: erase.
+
+const LANE_H = 64;
+const LANES = [[null, "Velocity"], [1, "Mod wheel"], [128, "Pitch bend"], [11, "Expression"], [7, "Volume"],
+  [74, "Brightness"], [71, "Resonance"], [10, "Pan"]];
+const patCtls = (pid, tid) => (song.view.ctls || []).filter((k) => k.pattern === pid && (tid == null || k.track === tid));
+const laneName = (cc) => (LANES.find((l) => l[0] === cc) || [cc, `CC ${cc}`])[1];
+const laneRest = (cc) => (cc === 128 || cc === 10 ? 0.5 : cc === 7 || cc === 11 ? 100 / 127 : 0);
+
+function laneCC() { return seq.lane ?? null; }
+
+function laneInit() {
+  const v = store.get("prLane", null);
+  seq.lane = v == null ? null : +v;
+  $("prLane").onchange = () => {
+    const x = $("prLane").value;
+    if (x === "other") {
+      const n = parseInt(prompt("Controller number (0–127)", "16"), 10);
+      if (!(n >= 0 && n <= 127)) { laneOptions(true); return; }
+      seq.lane = n;
+    } else seq.lane = x === "vel" ? null : +x;
+    store.set("prLane", seq.lane);
+    laneOptions(true);
+    prDraw();
+  };
+  laneOptions(true);
+}
+
+// the menu, with a dot on lanes that have something in them for this channel and pattern
+function laneOptions(force) {
+  const t = prChannel(), p = curPattern();
+  const have = new Set(t && p ? patCtls(p.id, t.id).filter((k) => (k.points || []).length).map((k) => k.cc) : []);
+  const cur = laneCC();
+  const ccs = [...LANES.map((l) => l[0])];
+  for (const c of [...have, cur]) if (c != null && !ccs.includes(c)) ccs.push(c);
+  const key = ccs.join() + "|" + [...have].join() + "|" + cur;
+  const sel = $("prLane");
+  if (!force && sel.dataset.key === key) return;
+  sel.dataset.key = key;
+  sel.innerHTML = ccs.map((c) => `<option value="${c == null ? "vel" : c}">${laneName(c)}${have.has(c) ? " •" : ""}</option>`).join("")
+    + `<option value="other">Other CC…</option>`;
+  sel.value = cur == null ? "vel" : String(cur);
+  $("prLaneHint").textContent = cur == null ? "drag the bars" : "drag: draw · right: erase";
+  const cv = $("prVel");
+  cv.style.cursor = cur == null ? "ns-resize" : "crosshair";
+  cv.title = cur == null ? "Velocity: drag the bars up or down"
+    : `${laneName(cur)}: drag to draw (shift: a straight line), drag a dot to move it, right-drag to erase`;
+}
+
+function lanePoints(k) {
+  return (k?.points || []).filter((q) => Array.isArray(q) && isFinite(q[0]) && isFinite(q[1])).map((q) => [+q[0], +q[1]]).sort((a, b) => a[0] - b[0]);
+}
+
+function laneValueAt(pts, x) {
+  if (!pts.length) return null;
+  if (x <= pts[0][0]) return pts[0][1];
+  for (let i = 1; i < pts.length; i++) {
+    if (x < pts[i][0]) { const [x0, v0] = pts[i - 1], [x1, v1] = pts[i]; return v0 + (v1 - v0) * (x - x0) / Math.max(1e-9, x1 - x0); }
+  }
+  return pts[pts.length - 1][1];
+}
+
+function laneFmt(cc, v) {
+  if (cc === 128) { const c = Math.round((v - 0.5) * 200); return (c > 0 ? "+" : "") + c + "%"; }
+  if (cc === 10) { const c = Math.round((v - 0.5) * 200); return c === 0 ? "C" : c < 0 ? `${-c}L` : `${c}R`; }
+  return String(Math.round(v * 127));
+}
+
+function ctlDraw(t, sx) {
+  laneOptions();
+  const cv = $("prVel"), w = $("prLanes").clientWidth, h = LANE_H;
+  const ctx = sizeCanvas(cv, w, h);
+  ctx.fillStyle = "#0c0b10";
+  ctx.fillRect(0, 0, w, h);
+  const p = curPattern(), cc = laneCC(), ppb = seq.ppb;
+  if (!p) return;
+  const yOf = (v) => 4 + (1 - v) * (h - 8);
+  // beat lines and the middle (bend, pan)
+  for (let b = Math.floor(sx / ppb); b * ppb - sx < w; b++) {
+    ctx.fillStyle = b % bpb() === 0 ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.04)";
+    ctx.fillRect(Math.round(b * ppb - sx), 0, 1, h);
+  }
+  const mid = cc === 128 || cc === 10;
+  if (mid) { ctx.fillStyle = "rgba(255,255,255,0.12)"; ctx.fillRect(0, Math.round(yOf(0.5)), w, 1); }
+  const lane = patCtls(p.id, t.id).find((k) => k.cc === cc);
+  const d = seq.ctlDrag;
+  const pts = d ? d.pts : lanePoints(lane);
+  const col = t.mine ? song.colors.me : song.colors.partner;
+  if (!pts.length) {
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.beginPath(); ctx.moveTo(0, yOf(laneRest(cc)) + 0.5); ctx.lineTo(w, yOf(laneRest(cc)) + 0.5); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#5f586b";
+    ctx.font = "600 11px system-ui, sans-serif";
+    ctx.fillText(`Drag here to draw ${laneName(cc).toLowerCase()} for this channel`, 10, 16);
+  } else {
+    // the curve: filled from the bottom (or from the middle), a line on top
+    const xs = [], step = 2;
+    for (let x = 0; x <= w + step; x += step) xs.push([x, laneValueAt(pts, (x + sx) / ppb)]);
+    const base = mid ? yOf(0.5) : h;
+    ctx.beginPath();
+    ctx.moveTo(0, base);
+    for (const [x, v] of xs) ctx.lineTo(x, yOf(v));
+    ctx.lineTo(w + step, base);
+    ctx.closePath();
+    ctx.globalAlpha = 0.22; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.beginPath();
+    xs.forEach(([x, v], i) => (i ? ctx.lineTo(x, yOf(v)) : ctx.moveTo(x, yOf(v))));
+    ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
+    for (const [b, v] of pts) {
+      const x = b * ppb - sx;
+      if (x < -4 || x > w + 4) continue;
+      ctx.beginPath(); ctx.arc(x, yOf(v), d && d.hot === b ? 4 : 2.8, 0, 2 * Math.PI);
+      ctx.fillStyle = d && d.hot === b ? "#fff" : col; ctx.fill();
+    }
+  }
+  // past the pattern's end: dimmed; the playhead
+  const xe = patLen(p) * ppb - sx;
+  if (xe < w) { ctx.fillStyle = "rgba(0,0,0,0.45)"; ctx.fillRect(Math.max(0, xe), 0, w, h); }
+  const pb = prPlayBeat();
+  if (pb != null) { ctx.fillStyle = "rgba(239,234,244,0.7)"; ctx.fillRect(Math.round(pb * ppb - sx), 0, 1, h); }
+  if (d && d.show != null) {
+    ctx.font = "700 11px system-ui, sans-serif";
+    ctx.fillStyle = "#efeaf4";
+    ctx.fillText(laneFmt(cc, d.show), 8, 14);
+  }
+}
+
+function ctlDown(e, t, p) {
+  e.preventDefault();
+  const cc = laneCC(), cv = $("prVel"), r = cv.getBoundingClientRect(), h = r.height;
+  const sx = $("prLanes").scrollLeft, ppb = seq.ppb;
+  const lane = patCtls(p.id, t.id).find((k) => k.cc === cc);
+  const orig = lanePoints(lane);
+  const at = (ev) => {
+    let v = Math.max(0, Math.min(1, 1 - (ev.clientY - r.top - 4) / (h - 8)));
+    if ((cc === 128 || cc === 10) && Math.abs(v - 0.5) < 0.03) v = 0.5; // the middle is sticky
+    return { beat: Math.max(0, (ev.clientX - r.left + sx) / ppb), v };
+  };
+  const g = seq.snap || 1 / 16;
+  const snapB = (b, free) => (free ? b : Math.round(b / g) * g);
+  const round = (q) => [Math.round(q[0] * 10000) / 10000, Math.round(q[1] * 10000) / 10000];
+  const d = seq.ctlDrag = { pts: orig.slice(), show: null, hot: null };
+  const a = at(e);
+  const near = orig.findIndex(([b, v]) => Math.abs(b * ppb - (a.beat * ppb)) < 7 && Math.abs((1 - v) * (h - 8) + 4 - (e.clientY - r.top)) < 9);
+  let move;
+  if (e.button === 2) {
+    // erase the points the mouse goes over
+    let lo = a.beat, hi = a.beat;
+    move = (ev) => {
+      const q = at(ev);
+      lo = Math.min(lo, q.beat); hi = Math.max(hi, q.beat);
+      const pad = 6 / ppb;
+      d.pts = orig.filter(([b]) => b < lo - pad || b > hi + pad);
+    };
+  } else if (near >= 0) {
+    // move a dot (between its neighbours)
+    const prev = near > 0 ? orig[near - 1][0] : 0, next = near < orig.length - 1 ? orig[near + 1][0] : Infinity;
+    move = (ev) => {
+      if (ev === e) { d.hot = orig[near][0]; d.show = orig[near][1]; return; } // a click alone leaves it where it is
+      const q = at(ev);
+      const b = Math.max(prev + 1e-4, Math.min(next - 1e-4, snapB(q.beat, ev.altKey)));
+      d.pts = orig.slice();
+      d.pts[near] = [b, q.v];
+      d.hot = b; d.show = q.v;
+    };
+  } else {
+    // draw: a point every small step the mouse passes (shift: a straight line from where it started)
+    const step = Math.max(1 / 64, Math.min(g, 0.25) / 2);
+    const drawn = new Map();
+    const b0 = snapB(a.beat, e.altKey);
+    let lo = b0, hi = b0, last = { beat: b0, v: a.v };
+    drawn.set(b0, a.v);
+    move = (ev) => {
+      const q = at(ev);
+      const b = Math.max(0, Math.round(q.beat / step) * step);
+      if (ev.shiftKey) {
+        drawn.clear();
+        lo = Math.min(b0, b); hi = Math.max(b0, b);
+        drawn.set(b0, a.v); drawn.set(b, q.v);
+      } else {
+        // fill in between the last position and this one, so a fast drag leaves no gaps
+        const n = Math.max(1, Math.round(Math.abs(b - last.beat) / step));
+        for (let i = 1; i <= n; i++) {
+          const bb = Math.round((last.beat + (b - last.beat) * i / n) / step) * step;
+          drawn.set(Math.max(0, bb), last.v + (q.v - last.v) * i / n);
+        }
+        lo = Math.min(lo, b); hi = Math.max(hi, b);
+        last = { beat: b, v: q.v };
+      }
+      d.pts = [...orig.filter(([x]) => x < lo - 1e-6 || x > hi + 1e-6), ...drawn.entries()].sort((x, y) => x[0] - y[0]);
+      d.show = q.v;
+    };
+  }
+  const up = () => {
+    cv.removeEventListener("pointermove", move);
+    cv.removeEventListener("pointerup", up);
+    cv.removeEventListener("pointercancel", up);
+    seq.ctlDrag = null;
+    // a run of the same value keeps only its ends
+    const pts = d.pts.map(round).filter((q, i, all) => !(i > 0 && i < all.length - 1 && all[i - 1][1] === q[1] && all[i + 1][1] === q[1]));
+    if (JSON.stringify(pts) !== JSON.stringify(orig.map(round))) {
+      if (lane) songEdit([["ctl", lane.id, pts.length ? { points: pts } : { del: true }]]);
+      else if (pts.length) songEdit([["ctl", newId("k"), { pattern: p.id, track: t.id, cc, points: pts }]]);
+    }
+    prDraw();
+  };
+  cv.setPointerCapture(e.pointerId);
+  cv.addEventListener("pointermove", move);
+  cv.addEventListener("pointerup", up);
+  cv.addEventListener("pointercancel", up);
+  move(e);
+  prDraw();
+}

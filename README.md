@@ -31,7 +31,8 @@ Silicon and Intel) and Windows.
   **stems** (split a clip into vocals, drums, bass and other on your computer).
 - Sequencer: channel rack with steps, piano roll with velocities, a **paint
   brush** like FL's, **chord browsing** (Shift + arrows on a note) and chord
-  progressions per key; MIDI keyboards; record notes live.
+  progressions per key; **controller lanes** (mod wheel, pitch bend, any CC);
+  MIDI keyboards with **MIDI-learn**; record notes live; **MIDI files** in and out.
 - Instruments: synthesized drum kits (808/909…), a 2-osc synth with presets, a
   sampler, VST3 instruments and AU instruments (Mac).
 - Mixer: strips with effect racks, buses, sends, sidechain, EQ curve, master
@@ -573,6 +574,23 @@ the shared song (your partner sees every note you place, and you theirs).
   the selection, select every note at the same pitch. On the selection, or on
   all of the channel's notes.
 - **Scale:** light up the notes of the song's key (or any key) in the roll.
+- **Controller lanes:** the menu left of the bars under the notes picks what
+  they edit: *Velocity*, or a controller for the channel in this pattern — *Mod
+  wheel*, *Pitch bend*, *Expression*, *Volume*, *Brightness* (CC74),
+  *Resonance* (CC71), *Pan* or any other CC. Drag to draw (*Shift*: a straight
+  line), drag a dot to move it, right-drag to erase; lanes with something in
+  them have a dot in the menu. Straight lines run between the points, and each
+  time the pattern plays the lane starts at its value there. The built-in synth
+  follows the mod wheel (vibrato), pitch bend (±2 semitones), volume,
+  expression and brightness (the filter); VST3 and AU instruments get them as
+  MIDI, to do with what they map them to.
+- **MIDI files:** *Song menu → Import a MIDI file…* makes a channel per part of
+  the file (channel 10 becomes a drum kit) and a pattern with them, in the
+  playlist at the playhead; its controllers and pitch bends become lanes, and an
+  empty song takes its tempo. In the piano roll, the import goes into the open
+  pattern on the selected channel (*Tools ▾*). *Export the notes as MIDI…* writes
+  the song (or, from the piano roll, the pattern): a track per channel, with the
+  lanes as controllers.
 - **Into the song:** *+ Into the song* puts the pattern in the playlist at the
   playhead, or double-click an empty spot in the playlist. A pattern block plays
   the pattern's notes on their channels; drag its right end to make it longer and
@@ -679,7 +697,14 @@ as usual, and a song track set to that strip records it.
 
 **Playing it:**
 - A **MIDI keyboard**: pick it under *Sound → MIDI keyboard* (Duet opens it again
-  by itself next time, also when you plug it back in).
+  by itself next time, also when you plug it back in). Its mod wheel, pitch
+  bend and other controllers go to the instrument too.
+- **MIDI-learn:** right-click a knob or fader of a song channel or the master
+  (volume, pan, an effect's knob, an instrument's knob) → *Link to a MIDI
+  controller…*, then move a knob, fader or the wheel on your keyboard: from then
+  on it turns that control (in the song, so your partner sees it move too).
+  Right-click again to link it to another one or unlink it. Links are kept on
+  your computer, since they're about your keyboard.
 - Your **computer keyboard**: press **Keys** (top right). The row *A S D F G H J
   K L ;* are the white keys, *W E T Y U O P* the black ones; *Z / X* move an
   octave down / up. While Keys is on, those letters play notes instead of the
@@ -773,10 +798,13 @@ to it through lock-free queues and atomics.
 | `ui/wm.js` | The workspace: windows that move, size and snap, layouts |
 | `ui/daw.js`, `ui/daw.css` | The playlist: transport, track headers, timeline with waveforms, song menu |
 | `ui/seq.js`, `ui/seq.css` | The sequencer: patterns, channel rack with steps, piano roll with velocities |
+| `ui/roll.js` | The piano roll's FL-style parts (PAT/SONG, its transport and ruler, tools) and its controller lanes |
 | `ui/instr.js`, `ui/instr.css` | Instruments: the synth panel (sections, presets, envelopes), the drum kit (kits, pads, per-pad knobs), the computer keyboard, MIDI keyboards |
 | `ui/presence.js` | Seeing each other work: the partner's pointer, selection, view and live notes; Follow |
 | `library.py` | The sample library: folders, bins, search, import |
 | `ui/auto.js` | Automation lanes in the playlist: drawing them, *Automate* on knobs and faders |
+| `ui/learn.js` | MIDI-learn: linking the keyboard's knobs and faders to controls |
+| `midifile.py` | Standard MIDI files: reading and writing notes, controllers and pitch bends |
 | `ui/browser.js` | The browser on the left: folders, bins, preview, drag sounds into the song |
 | `ui/mixer.js` | Buses, FL-style routing (arrows, cables, sends, live strips' sends too), effect windows, the sidechain picker, the EQ's curve |
 | `.github/workflows/build.yml` | Every push: engine tests + self-test on Linux. The Mac apps (built, tested, smoke-tested) for main, or on request: Actions → build → Run workflow |

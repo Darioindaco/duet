@@ -79,6 +79,10 @@ pub enum NoteEv {
     Release,
     /// silence now (panic)
     AllOff,
+    /// a controller (number, value 0..127): 1 mod wheel, 7 volume, 11 expression, 74 brightness, ...
+    Cc(u8, u8),
+    /// the pitch wheel, -1..1 (the middle: 0)
+    Bend(f32),
 }
 
 /// What an instrument slot holds, without its DSP: the control side's mirror.
@@ -224,6 +228,7 @@ impl Instrument for Sampler {
                 }
             }
             NoteEv::AllOff => self.voices.clear(),
+            NoteEv::Cc(..) | NoteEv::Bend(_) => {}
         }
     }
 
@@ -328,7 +333,11 @@ impl Instrument for VstInst {
                 for k in 0..128u8 {
                     self.queue((false, k, 0));
                 }
+                self.proc.midi_bend(0.0); // a wheel left bent doesn't stay bent
             }
+            // controllers and the pitch wheel go straight to the plugin (VST3: what it maps them to)
+            NoteEv::Cc(n, v) => self.proc.midi_cc(n, v),
+            NoteEv::Bend(b) => self.proc.midi_bend(b),
         }
     }
 

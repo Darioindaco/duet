@@ -695,6 +695,8 @@ pub struct Instance {
     editor: Mutex<Option<editor::Editor>>,
     pub has_editor: bool,
     touched: Arc<AtomicU64>,
+    /// MIDI controller (0..129) -> the parameter the plugin wants it on (IMidiMapping)
+    pub midi_map: Vec<Option<ParamID>>,
 }
 
 unsafe impl Send for Instance {}
@@ -881,7 +883,37 @@ impl VstProc {
             VstProc::Au(p) => p.set_param(id, v),
         }
     }
+    /// A MIDI controller (VST3: the parameter the plugin maps it to, if any; AU: as MIDI).
+    pub fn midi_cc(&mut self, n: u8, v: u8) {
+        match self {
+            VstProc::Vst3(p) => {
+                if let Some(id) = p.inst.midi_map.get(n as usize).copied().flatten() {
+                    p.set_param(id, v as f32 / 127.0);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            VstProc::Au(p) => p.midi(0xB0, n as u32 & 127, v as u32 & 127),
+        }
+    }
+    /// The pitch wheel, -1..1.
+    pub fn midi_bend(&mut self, b: f32) {
+        match self {
+            VstProc::Vst3(p) => {
+                if let Some(id) = p.inst.midi_map.get(PITCH_BEND).copied().flatten() {
+                    p.set_param(id, (b.clamp(-1.0, 1.0) + 1.0) * 0.5);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            VstProc::Au(p) => {
+                let raw = ((b.clamp(-1.0, 1.0) * 8192.0).round() as i32 + 8192).clamp(0, 16383) as u32;
+                p.midi(0xE0, raw & 127, raw >> 7)
+            }
+        }
+    }
 }
+
+/// VST3's controller numbers past the 128 MIDI ones: aftertouch is 128, the pitch wheel 129.
+const PITCH_BEND: usize = 129;
 
 /// A running plugin's automatable parameters (VST3 or AU), by its id.
 pub fn plugin_params(id: u64) -> Option<Vec<ParamInfo>> {
@@ -1264,7 +1296,17 @@ unsafe fn build(
             None => false,
         }
     });
-    let inst = Arc::new(Instance { name, component, processor, controller, _handler: handler, latency, editor: Mutex::new(None), has_editor, touched });
+    // which parameter each MIDI controller and the pitch wheel move (instruments map them; most effects don't)
+    let mut midi_map = vec![None; 130];
+    if let Some(mm) = controller.as_ref().and_then(|c| c.cast::<IMidiMapping>()) {
+        for (n, slot) in midi_map.iter_mut().enumerate() {
+            let mut id: ParamID = 0;
+            if mm.getMidiControllerAssignment(0, 0, n as i16, &mut id) == kResultOk {
+                *slot = Some(id);
+            }
+        }
+    }
+    let inst = Arc::new(Instance { name, component, processor, controller, _handler: handler, latency, editor: Mutex::new(None), has_editor, touched, midi_map });
     Ok((inst, in_ch, out_ch))
 }
 

@@ -87,6 +87,8 @@ pub struct NoteAt {
     pub on: bool,
     pub key: u8,
     pub vel: u8,
+    /// 0 a note; 1 a controller (key: its number, vel: its value); 2 the pitch wheel (key, vel: its 14 bits)
+    pub ctl: u8,
 }
 
 /// Every track's clips, sorted by start, and the notes its instrument plays,
@@ -349,7 +351,12 @@ pub fn render_inst(tl: &Timeline, t: usize, inst: &mut InstSlot, pos: i64, l: &m
             inst.inst.process(&inst.cfg.p, &mut l[done..at], &mut r[done..at]);
             done = at;
         }
-        inst.inst.note(if e.on { NoteEv::On(e.key, e.vel) } else { NoteEv::Off(e.key) });
+        inst.inst.note(match e.ctl {
+            1 => NoteEv::Cc(e.key, e.vel),
+            2 => NoteEv::Bend((((e.key as i32 & 127) | ((e.vel as i32 & 127) << 7)) - 8192) as f32 / 8192.0),
+            _ if e.on => NoteEv::On(e.key, e.vel),
+            _ => NoteEv::Off(e.key),
+        });
     }
     if done < n {
         inst.inst.process(&inst.cfg.p, &mut l[done..], &mut r[done..]);
@@ -363,6 +370,8 @@ pub struct NoteDesc {
     pub dur: f64,
     pub key: u8,
     pub vel: u8,
+    /// 0 a note; 1 a controller, 2 the pitch wheel (an instant: dur unused)
+    pub ctl: u8,
 }
 
 /// Loaded audio, by file key: one copy each, at the file's own rate (an hour
@@ -518,12 +527,17 @@ impl AudioCache {
             let ev = &mut tl.notes[t];
             for n in ns {
                 let on = s(n.t);
+                if n.ctl > 0 {
+                    ev.push(NoteAt { pos: on, on: false, key: n.key & 127, vel: n.vel & 127, ctl: n.ctl });
+                    continue;
+                }
                 let off = s(n.t + n.dur).max(on + 1);
-                ev.push(NoteAt { pos: on, on: true, key: n.key & 127, vel: n.vel.clamp(1, 127) });
-                ev.push(NoteAt { pos: off, on: false, key: n.key & 127, vel: 0 });
+                ev.push(NoteAt { pos: on, on: true, key: n.key & 127, vel: n.vel.clamp(1, 127), ctl: 0 });
+                ev.push(NoteAt { pos: off, on: false, key: n.key & 127, vel: 0, ctl: 0 });
             }
-            // at the same moment a note ends before the next one starts (repeated notes)
-            ev.sort_by_key(|e| (e.pos, e.on));
+            // at the same moment: controllers first (a note starts already bent), then a note's end
+            // before the next one starts (repeated notes)
+            ev.sort_by_key(|e| (e.pos, e.ctl == 0, e.on));
         }
         tl
     }
@@ -1291,9 +1305,9 @@ mod tests {
     fn notes_play_on_their_exact_sample() {
         let mut cache = AudioCache::default();
         let notes = vec![vec![], vec![
-            NoteDesc { t: 0.0, dur: 0.1, key: 60, vel: 100 },
-            NoteDesc { t: 300.0 / 48000.0, dur: 0.01, key: 62, vel: 100 },
-            NoteDesc { t: 1000.0 / 48000.0, dur: 0.01, key: 64, vel: 100 },
+            NoteDesc { t: 0.0, dur: 0.1, key: 60, vel: 100, ctl: 0 },
+            NoteDesc { t: 300.0 / 48000.0, dur: 0.01, key: 62, vel: 100, ctl: 0 },
+            NoteDesc { t: 1000.0 / 48000.0, dur: 0.01, key: 64, vel: 100, ctl: 0 },
         ]];
         let tl = cache.build(&[], &notes, 48000);
         assert_eq!(tl.notes[1].len(), 6);

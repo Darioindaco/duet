@@ -561,7 +561,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
             <div class="prrulepad"></div><canvas id="prRuler" title="Click: play from here (PAT), or jump there in the song (SONG)"></canvas>
             <div class="prkeys"><div id="prKeysIn"></div></div>
             <div class="prlanewrap"><canvas id="prCv"></canvas><div class="prlanes" id="prLanes"><div id="prSize"></div></div></div>
-            <div class="prvelpad"></div>
+            <div class="prvelpad"><select id="prLane" aria-label="What the lane under the notes edits"></select><span class="lanehint" id="prLaneHint"></span></div>
             <canvas id="prVel" title="Velocity: drag the bars up or down"></canvas>
           </div>
         </section>
@@ -727,6 +727,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="wm.js"></script>
 <script src="daw.js"></script>
 <script src="auto.js"></script>
+<script src="learn.js"></script>
 <script src="clipedit.js"></script>
 <script src="tune.js"></script>
 <script src="tunewin.js"></script>
@@ -840,6 +841,7 @@ function knob({ label, value, def = value, min = 0, max = 1, fmt = pct, color = 
     v = nv; render();
     if (emit) onChange(v);
   };
+  el.midiSet = (x) => set(min + x * (max - min)); // MIDI-learn: 0..1 over the whole range
   const svg = el.querySelector("svg");
   svg.addEventListener("pointerdown", (e) => {
     svg.setPointerCapture(e.pointerId);
@@ -1190,6 +1192,7 @@ function fader({ value, onChange }) {
     cap.style.top = usable(pos); unity.style.top = usable(faderPos(1));
   };
   const set = (p, emit = true) => { pos = Math.max(0, Math.min(1, p)); place(); if (emit) onChange(faderGain(pos)); };
+  el.midiSet = (p) => set(p);
   el.addEventListener("pointerdown", (e) => {
     e.stopPropagation();
     el.setPointerCapture(e.pointerId);
@@ -1891,6 +1894,7 @@ async function boot(a) {
   songSetup();
   instSetup();
   seqSetup();
+  mlSetup();
   toolsSetup();
   masterSetup();
   browserSetup();
@@ -2176,6 +2180,7 @@ function demoApi() {
       return copy();
     },
     inst_param: async () => {}, inst_pad: async () => copy(), inst_pad_open: async () => null, note: async () => {},
+    midi_controllers: async () => window.mockMidi || { count: 0, last: 0, values: Array(129).fill(-1) },
     midi_inputs: async () => ["Arturia KeyStep 37"], midi_open: async () => ({ ok: true }), midi_target: async () => {},
     nam_library: async () => [{ path: "C:/models/plexi.nam", title: "Plexi 1959", name: "Crunch" }, { path: "C:/models/twin.nam", title: "Twin Reverb", name: "Clean" }],
     nam_open_file: async () => null,

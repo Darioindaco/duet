@@ -31,6 +31,11 @@ fn encode(e: &Ev) -> Option<[u8; ENTRY]> {
         NoteEv::Off(k) => (2, k, 0),
         NoteEv::Sustain(on) => (3, on as u8, 0),
         NoteEv::AllOff => (4, 0, 0),
+        NoteEv::Cc(n, v) => (5, n & 127, v & 127),
+        NoteEv::Bend(b) => {
+            let raw = ((b.clamp(-1.0, 1.0) * 8192.0).round() as i32 + 8192).clamp(0, 16383) as u16;
+            (6, (raw & 127) as u8, (raw >> 7) as u8)
+        }
         NoteEv::Release => return None, // the transport's own business
     };
     let mut out = [0u8; ENTRY];
@@ -46,6 +51,8 @@ fn decode(b: &[u8]) -> Option<Ev> {
         2 => NoteEv::Off(b[5] & 127),
         3 => NoteEv::Sustain(b[5] != 0),
         4 => NoteEv::AllOff,
+        5 => NoteEv::Cc(b[5] & 127, b[6] & 127),
+        6 => NoteEv::Bend((((b[5] as i32 & 127) | ((b[6] as i32 & 127) << 7)) - 8192) as f32 / 8192.0),
         _ => return None,
     };
     Some(Ev { track, ev })
@@ -162,6 +169,7 @@ impl In {
             }
             // only what the partner holds: the track may be playing other notes here
             NoteEv::AllOff => self.release(|t| t == e.track, out),
+            NoteEv::Cc(..) | NoteEv::Bend(_) => out.push(e),
             NoteEv::Release => {}
         }
     }

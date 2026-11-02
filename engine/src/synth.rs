@@ -180,11 +180,24 @@ pub struct Synth {
     /// several at once
     pending: [(u8, u8); VOICES],
     n_pending: usize,
+    /// the controllers: the pitch wheel (semitones, ±2), the mod wheel (vibrato), volume and
+    /// expression (gain), brightness (the filter)
+    bend: f32,
+    modw: f32,
+    vib: f32,
+    vol: f32,
+    expr: f32,
+    bright: f32,
 }
 
 impl Synth {
     pub fn new(sr: f32) -> Self {
-        Synth { voices: [None; VOICES], sr, sustain: false, clock: 0, lfo: 0.0, last_key: -1.0, stack: [0; 16], n_stack: 0, mono: false, pending: [(0, 0); VOICES], n_pending: 0 }
+        Synth { voices: [None; VOICES], sr, sustain: false, clock: 0, lfo: 0.0, last_key: -1.0, stack: [0; 16], n_stack: 0, mono: false, pending: [(0, 0); VOICES], n_pending: 0,
+            bend: 0.0, modw: 0.0, vib: 0.0, vol: 1.0, expr: 1.0, bright: 0.5 }
+    }
+
+    fn reset_controllers(&mut self) {
+        (self.bend, self.modw, self.vol, self.expr, self.bright) = (0.0, 0.0, 1.0, 1.0, 0.5);
     }
 
     fn start(&mut self, key: u8, vel: u8, glide: bool) {
@@ -301,7 +314,15 @@ impl Instrument for Synth {
             NoteEv::AllOff => {
                 self.voices = [None; VOICES];
                 self.n_stack = 0;
+                self.reset_controllers();
             }
+            NoteEv::Bend(b) => self.bend = 2.0 * b.clamp(-1.0, 1.0),
+            NoteEv::Cc(1, v) => self.modw = v as f32 / 127.0,
+            NoteEv::Cc(7, v) => self.vol = (v as f32 / 127.0).powi(2),
+            NoteEv::Cc(11, v) => self.expr = (v as f32 / 127.0).powi(2),
+            NoteEv::Cc(74, v) => self.bright = v as f32 / 127.0,
+            NoteEv::Cc(121, _) => self.reset_controllers(),
+            NoteEv::Cc(..) => {}
         }
     }
 
@@ -384,9 +405,12 @@ impl Instrument for Synth {
         const CHUNK: usize = 16;
         let n = out.len();
         let mut lfo_ph = self.lfo;
+        let (bend, modw, bright, ctl_gain) = (self.bend, self.modw, self.bright, self.vol * self.expr);
+        let mut vib_ph = self.vib;
         for slot in self.voices.iter_mut() {
             let Some(v) = slot else { continue };
             lfo_ph = self.lfo;
+            vib_ph = self.vib;
             let mut s0 = 0;
             while s0 < n {
                 let s1 = (s0 + CHUNK).min(n);
@@ -394,7 +418,7 @@ impl Instrument for Synth {
                 lfo_ph = (lfo_ph + lfo_hz * (s1 - s0) as f32 / sr).fract();
                 // the filter for this stretch: cutoff, its envelope, the key, velocity, the LFO
                 let vel_oct = vel_s * (v.vel - 0.7) * 2.0;
-                let cut = base_cut + env_oct * v.fenv.v + p[KEY_TRACK] * (v.pitch - 60.0) / 12.0 + vel_oct + lf * lfo;
+                let cut = base_cut + env_oct * v.fenv.v + p[KEY_TRACK] * (v.pitch - 60.0) / 12.0 + vel_oct + lf * lfo + (bright - 0.5) * 6.0;
                 let fc = 2f32.powf(cut).clamp(20.0, sr * 0.45);
                 let g = (PI * fc / sr).tan();
                 let a1 = 1.0 / (1.0 + g * (g + k));
@@ -405,7 +429,9 @@ impl Instrument for Synth {
                 // the pitch for this stretch too (glide and vibrato move it)
                 let gc = 1.0 - (1.0 - glide_c).powi((s1 - s0) as i32);
                 v.pitch += (v.target - v.pitch) * gc;
-                let f = 440.0 * 2f32.powf((v.pitch + lp * lfo - 69.0) / 12.0);
+                let vib = (2.0 * PI * vib_ph).sin() * modw * 0.6; // the mod wheel: vibrato
+                vib_ph = (vib_ph + 5.5 * (s1 - s0) as f32 / sr).fract();
+                let f = 440.0 * 2f32.powf((v.pitch + bend + vib + lp * lfo - 69.0) / 12.0);
                 let f2 = f * semi2_r * pair_det;
                 for s in s0..s1 {
                     let (mut l, mut r) = (0f32, 0f32);
@@ -440,7 +466,7 @@ impl Instrument for Synth {
                     v.fenv.tick(fa_step, fd_mul, fs_lvl, fr_mul);
                     let vel_g = 1.0 - vel_s + vel_s * v.vel;
                     let trem = 1.0 - la * 0.5 * (1.0 + lfo);
-                    let gain = amp * vel_g * trem * level;
+                    let gain = amp * vel_g * trem * level * ctl_gain;
                     for (side, (x, dst)) in [l + subx + nz, r + subx + nz].into_iter().zip([&mut out[s], &mut out_r[s]]).enumerate() {
                         let st = &mut v.flt[side];
                         // first stage (with the resonance): trapezoidal state-variable filter
@@ -474,6 +500,8 @@ impl Instrument for Synth {
             }
         }
         self.lfo = (self.lfo + lfo_hz * n as f32 / sr).fract();
+        self.vib = (self.vib + 5.5 * n as f32 / sr).fract();
+        let _ = vib_ph;
         let _ = lfo_ph;
     }
 }
@@ -578,6 +606,34 @@ mod tests {
         s.note(NoteEv::Off(81));
         let (l, _) = run(&mut s, &p, 300);
         assert!((pitch(&l[l.len() - 9600..]) - 440.0).abs() < 10.0);
+    }
+
+    #[test]
+    fn bend_and_controllers_move_the_sound() {
+        let mut p = defaults();
+        p[CUTOFF] = 1.0;
+        p[OSC2] = 0.0;
+        p[DETUNE] = 0.0;
+        let mut s = Synth::new(48000.0);
+        s.note(NoteEv::On(69, 100));
+        let (l, _) = run(&mut s, &p, 100);
+        let loud = peak(&l[4800..]);
+        // full bend up: two semitones (A4 to B4)
+        s.note(NoteEv::Bend(1.0));
+        let (l, _) = run(&mut s, &p, 100);
+        let b4 = 440.0 * 2f32.powf(2.0 / 12.0);
+        assert!((pitch(&l[4800..]) - b4).abs() < 10.0, "{}", pitch(&l[4800..]));
+        s.note(NoteEv::Bend(0.0));
+        // volume at half: about a quarter of the level
+        s.note(NoteEv::Cc(7, 64));
+        let (l, _) = run(&mut s, &p, 100);
+        assert!((pitch(&l[4800..]) - 440.0).abs() < 8.0);
+        let quiet = peak(&l[4800..]);
+        assert!(quiet < loud * 0.4 && quiet > loud * 0.1, "{quiet} vs {loud}");
+        // reset all controllers: back to full
+        s.note(NoteEv::Cc(121, 0));
+        let (l, _) = run(&mut s, &p, 100);
+        assert!((peak(&l[4800..]) - loud).abs() < loud * 0.15);
     }
 
     #[test]

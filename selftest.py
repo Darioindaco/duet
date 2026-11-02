@@ -1891,13 +1891,24 @@ def test_clip_gain():
         assert level(1.0, 2.0) < 0.05 * full
         d.edit([["note", "n1", {"mute": False}]])
         assert level(1.0, 2.0) > 0.8 * full
+        # a controller lane: volume (CC7) at half from beat 2 is about a quarter of the level there
+        # (and the lane's value holds before its first point); then a ramp of the pitch wheel
+        d.edit([["ctl", "k7", {"pattern": "p1", "track": "syn", "cc": 7, "points": [[2.0, 1.0], [2.01, 0.5]]}]])
+        before, after = level(0.5, 0.9), level(1.4, 1.9)
+        assert 0.8 < before / full < 1.2 and 0.15 < after / full < 0.35, (full, before, after)
+        d.edit([["ctl", "k7", {"del": True}], ["ctl", "kb", {"pattern": "p1", "track": "syn", "cc": 128, "points": [[0.0, 0.5], [4.0, 1.0]]}]])
+        moves = d._ctls(lambda b: b / 2)[d.slots["syn"]]
+        assert moves[0] == (0.0, 128, 0.5) and abs(moves[-1][2] - 1.0) < 1e-3 and all(m[1] == 128 for m in moves), moves[:3]
+        assert all(b[2] >= a[2] for a, b in zip(moves, moves[1:])) and 100 < len(moves) < 200, len(moves)
+        d.edit([["ctl", "kb", {"del": True}]])
         # the pattern on its own, from beat 4 of it (the piano roll's ruler)
         d.play_pattern("p1", 4.0)
         e.process(x)
         pos = e.state()["daw_pos"]  # seconds: beat 4 at 120 BPM is 2 s
         assert d.pattern_mode == "p1" and 1.95 < pos < 2.2, pos
         d.stop()
-        print(f"clip gain: ok  (a pattern block at half gain: {half / full:.2f} of the level; a fade in rises; a muted note is silent)")
+        print(f"clip gain: ok  (a pattern block at half gain: {half / full:.2f} of the level; a fade in rises; a muted note is silent; "
+              f"CC7 at half: {after / full:.2f})")
     finally:
         d.close()
         e.close()
@@ -1937,17 +1948,29 @@ def test_midi_files():
         assert kinds["Beat"] == "drums" and kinds["Lead"] == "synth", kinds
         assert abs(v["meta"]["bpm"] - 93.0) < 0.01, v["meta"]["bpm"]
         assert len([c for c in v["clips"] if c.get("pattern") == r["pattern"]]) == 2
+        lanes = {c["cc"]: c["points"] for c in v["ctls"]}
+        assert sorted(lanes) == [1, 128] and lanes[1] == [[0.5, round(64 / 127, 4)]] and lanes[128] == [[1.0, 0.75]], lanes
         out = root / "out.mid"
         x = d.export_midi(str(out))
         assert x.get("ok") and x["notes"] == 12, x
         back = {t["name"]: sorted(n[:3] for n in t["notes"]) for t in midifile.read(out)["tracks"]}
         assert back["Lead"] == sorted(n[:3] for n in lead) and len(back["Beat"]) == 8, back
+        lead_back = [t for t in midifile.read(out)["tracks"] if t["name"] == "Lead"][0]
+        assert lead_back["cc"] == [(0.0, 1, 64)] and abs(lead_back["bend"][0][1] - 0.5) < 0.001, lead_back
         # into an existing pattern's channel (the piano roll)
         lid = [t["id"] for t in v["tracks"] if t["name"] == "Lead"][0]
         before = len([n for n in d.view()["notes"] if n["track"] == lid])
         assert d.import_midi(str(f), r["pattern"], lid).get("ok")
         assert len([n for n in d.view()["notes"] if n["track"] == lid]) == before + 12
-        print("midi files: ok  (written and read back exactly; imported as 2 channels and a pattern, exported again; into a channel)")
+        assert len([c for c in d.view()["ctls"] if c["track"] == lid]) == 4, "the lanes too"
+        # MIDI-learn: the engine keeps where each of the keyboard's controllers is, and the last one moved
+        count0 = e.midi_controllers()[0]
+        e.midi_feed([0xB3, 21, 100])
+        e.midi_feed([0xE0, 0, 0])
+        count, last, vals = e.midi_controllers()
+        assert count == count0 + 2 and last == 128 and abs(vals[21] - 100 / 127) < 1e-6 and vals[128] == 0.0 and vals[22] == -1.0
+        print("midi files: ok  (written and read back exactly; imported as 2 channels and a pattern with CC and pitch-bend lanes, "
+              "exported again; into a channel)")
     finally:
         d.close()
         e.close()

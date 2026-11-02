@@ -153,6 +153,7 @@ async function autoMenu(target, x, y) {
 // right-click on a knob or fader of a song strip ("T<slot>" or "M"): Automate
 function autoOnControl(el, strip, param) {
   if (!el || !(strip === "M" || /^T\d+$/.test(strip))) return el;
+  mlRegister(el, strip, param);
   el.addEventListener("contextmenu", (e) => {
     if (!song.view) return;
     const target = strip === "M" ? "master" : trackBySlot(+strip.slice(1))?.id;
@@ -162,7 +163,9 @@ function autoOnControl(el, strip, param) {
     const p = autoParams(target).find((x) => x[0] === param || (param.startsWith("fx:") && x[0].startsWith(param + ":")));
     if (!p) return;
     const lane = song.view.tracks.find((t) => t.auto && t.auto.target === target && t.auto.param === p[0]);
-    showCtx([[lane ? `Show the automation of ${p[1]}` : `Automate ${p[1]}`, "", () => addAutomation(target, p[0])]], e.clientX, e.clientY);
+    const name = p[1].includes(" · ") ? p[1].split(" · ").pop() : p[1];
+    showCtx([[lane ? `Show the automation of ${p[1]}` : `Automate ${p[1]}`, "", () => addAutomation(target, p[0])],
+      ...mlMenu(target, p[0], `${autoTargetName(target)} · ${name}`)], e.clientX, e.clientY);
   });
   return el;
 }

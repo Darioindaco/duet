@@ -620,6 +620,13 @@ impl AuProc {
     }
 
     /// One stereo block, in place; `mix` blends dry and wet (effects).
+    /// A MIDI message for the next block (an instrument: controllers, the pitch wheel).
+    pub fn midi(&mut self, status: u32, d1: u32, d2: u32) {
+        if self.instrument && self.events.len() < self.events.capacity() {
+            self.events.push((status, d1, d2, 0));
+        }
+    }
+
     /// Automation: a parameter's value (0..1) for the next block. Sent only when it changes.
     pub fn set_param(&mut self, id: u32, v: f32) {
         let Some(i) = self.ranges.iter().position(|r| r.id == id) else { return };

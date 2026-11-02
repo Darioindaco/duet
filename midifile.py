@@ -143,17 +143,17 @@ def write(path: str | Path, tracks: list, bpm: float = 120.0, beats: int = 4, tp
     out = [head, chunk(meta)]
     for tr in tracks:
         ch = int(tr.get("channel", 0)) & 15
-        evs = []  # (tick, order, bytes): note offs before ons at the same tick
+        evs = []  # (tick, order, bytes): note offs and controller moves before ons at the same tick
         for start, ln, key, vel in tr.get("notes", []):
             a = int(round(float(start) * tpq))
             b = max(a + 1, int(round((float(start) + float(ln)) * tpq)))
             evs.append((a, 1, bytes([0x90 | ch, int(key) & 127, max(1, min(127, int(vel)))])))
             evs.append((b, 0, bytes([0x80 | ch, int(key) & 127, 0])))
         for beat, num, val in tr.get("cc", []):
-            evs.append((int(round(float(beat) * tpq)), 1, bytes([0xB0 | ch, int(num) & 127, max(0, min(127, int(val)))])))
+            evs.append((int(round(float(beat) * tpq)), 0, bytes([0xB0 | ch, int(num) & 127, max(0, min(127, int(val)))])))
         for beat, v in tr.get("bend", []):
             raw = max(0, min(16383, int(round(float(v) * 8192)) + 8192))
-            evs.append((int(round(float(beat) * tpq)), 1, bytes([0xE0 | ch, raw & 127, raw >> 7])))
+            evs.append((int(round(float(beat) * tpq)), 0, bytes([0xE0 | ch, raw & 127, raw >> 7])))
         evs.sort(key=lambda e: (e[0], e[1]))
         name = str(tr.get("name") or "")[:60].encode("latin-1", "replace")
         body = bytearray(b"\x00\xFF\x03" + _vlq_bytes(len(name)) + name)

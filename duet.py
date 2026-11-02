@@ -153,6 +153,12 @@ class Api:
         self._rack_changed(target)
         return self._engine.mixer()
 
+    def midi_controllers(self):
+        # the MIDI keyboard's knobs (MIDI-learn): {"count": moves so far, "last": the last one moved,
+        # "values": where each is, 0..1 or -1}
+        count, last, values = self._engine.midi_controllers()
+        return {"count": count, "last": last, "values": values}
+
     def rack_set(self, target, pos, key, value):
         self._engine.rack_set(target, int(pos), key, float(value))
 

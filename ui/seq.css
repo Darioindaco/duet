@@ -55,7 +55,9 @@
 .prlanewrap { position: relative; min-width: 0; min-height: 0; }
 #prCv { position: absolute; left: 0; top: 0; pointer-events: none; }
 .prlanes { position: absolute; inset: 0; overflow: auto; cursor: crosshair; }
-.prvelpad { border-top: 1px solid var(--line); border-right: 1px solid var(--line); background: var(--panel); }
+.prvelpad { border-top: 1px solid var(--line); border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; gap: 3px; padding: 4px; min-width: 0; }
+.prvelpad select { width: 100%; padding: 3px 14px 3px 5px; font-size: 10.5px; border-radius: 6px; background-position: calc(100% - 8px) 52%, calc(100% - 5px) 52%; }
+.prvelpad .lanehint { font-size: 9.5px; color: var(--faint); line-height: 1.15; overflow: hidden; }
 #prVel { display: block; border-top: 1px solid var(--line); cursor: ns-resize; }
 #viewSeq { grid-template-rows: 1fr; }
 .ctools .fxb { white-space: nowrap; }
@@ -80,7 +82,7 @@
 .prhead .cpbtn.on { border-color: var(--me); color: var(--me); background: color-mix(in srgb, var(--me) 14%, var(--panel-2)); }
 
 /* FL-style piano roll: transport, tools, ruler */
-.prwrap { grid-template-rows: 20px 1fr 54px; }
+.prwrap { grid-template-rows: 20px 1fr 64px; }
 .prrulepad { background: #121117; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
 #prRuler { display: block; width: 100%; height: 20px; background: #121117; border-bottom: 1px solid var(--line); cursor: pointer; }
 .prhead { flex-wrap: wrap; row-gap: 6px; }

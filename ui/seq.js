@@ -69,6 +69,8 @@ function seqSetup() {
   pr.addEventListener("contextmenu", (e) => e.preventDefault()); // right button erases (prDown)
   pr.addEventListener("wheel", prWheel, { passive: false });
   $("prVel").addEventListener("pointerdown", velDown);
+  $("prVel").addEventListener("contextmenu", (e) => e.preventDefault());
+  laneInit();
   new ResizeObserver(() => prDraw()).observe($("prWrap"));
   document.addEventListener("keydown", seqKeys);
   quantSetup();
@@ -281,6 +283,7 @@ function patMenu(e) {
       const id = newId("p");
       const ch = [["pattern", id, { name: p.name + " copy", len: patLen(p) }]];
       for (const n of patNotes(p.id)) ch.push(["note", newId("n"), { pattern: id, track: n.track, start: n.start, len: n.len, key: n.key, vel: n.vel }]);
+      for (const k of patCtls(p.id)) ch.push(["ctl", newId("k"), { pattern: id, track: k.track, cc: k.cc, points: k.points }]);
       seq.pat = id;
       songEdit(ch);
     }],
@@ -290,7 +293,7 @@ function patMenu(e) {
       if (!confirm(`Delete "${p.name}"${clips.length ? ` and its ${clips.length} block${clips.length === 1 ? "" : "s"} in the playlist` : ""}?`)) return;
       seq.pat = null;
       songEdit([["pattern", p.id, { del: true }], ...clips.map((c) => ["clip", c.id, { del: true }]),
-        ...patNotes(p.id).map((n) => ["note", n.id, { del: true }])]);
+        ...patNotes(p.id).map((n) => ["note", n.id, { del: true }]), ...patCtls(p.id).map((k) => ["ctl", k.id, { del: true }])]);
     }],
   ], r.left, r.bottom + 4);
 }
@@ -633,7 +636,9 @@ function prDraw() {
 }
 
 function velDraw(notes, t, sx) {
-  const cv = $("prVel"), w = $("prLanes").clientWidth, h = 54;
+  laneOptions();
+  if (laneCC() != null) { ctlDraw(t, sx); return; }
+  const cv = $("prVel"), w = $("prLanes").clientWidth, h = LANE_H;
   const ctx = sizeCanvas(cv, w, h);
   ctx.fillStyle = "#0c0b10";
   ctx.fillRect(0, 0, w, h);
@@ -838,6 +843,7 @@ function prErase(e) {
 function velDown(e) {
   const t = prChannel(), p = curPattern();
   if (!t || !p) return;
+  if (laneCC() != null) { ctlDown(e, t, p); return; }
   const cv = $("prVel"), r = cv.getBoundingClientRect();
   cv.setPointerCapture(e.pointerId);
   const sx = $("prLanes").scrollLeft;

@@ -206,6 +206,7 @@ function pkKnob(o) {
     v = nv; render(); o.onChange(v);
   };
   el.setValue = (nv) => { v = Math.max(0, Math.min(1, nv)); render(); };
+  el.midiSet = (nv) => { o.onGesture?.(); set(nv); };
   const svg = el.querySelector("svg");
   svg.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
@@ -282,6 +283,7 @@ function pkChoice(o) {
   };
   el.addEventListener("wheel", (e) => { e.preventDefault(); pick(Math.max(0, Math.min(opts.length - 1, idx() + Math.sign(e.deltaY)))); }, { passive: false });
   el.setValue = (nv) => { v = nv; render(); };
+  el.midiSet = (x) => pick(Math.round(Math.max(0, Math.min(1, x)) * (opts.length - 1)));
   render();
   return el;
 }
@@ -296,6 +298,7 @@ function pkToggle(o) {
   const render = () => { b.classList.toggle("on", v >= 0.5); b.setAttribute("aria-checked", v >= 0.5); };
   b.onclick = () => { o.onGesture?.(); v = v >= 0.5 ? 0 : 1; render(); o.onChange(v); };
   el.setValue = (nv) => { v = nv; render(); };
+  el.midiSet = (x) => { const nv = x >= 0.5 ? 1 : 0; if (nv !== (v >= 0.5 ? 1 : 0)) { o.onGesture?.(); v = nv; render(); o.onChange(v); } };
   render();
   return el;
 }

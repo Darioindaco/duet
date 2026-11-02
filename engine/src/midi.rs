@@ -88,6 +88,8 @@ pub fn parse(msg: &[u8]) -> Option<NoteEv> {
         (0x90, [k, _, ..]) | (0x80, [k, ..]) => Some(NoteEv::Off(*k & 127)),
         (0xB0, [64, v, ..]) => Some(NoteEv::Sustain(*v >= 64)),
         (0xB0, [120 | 123, ..]) => Some(NoteEv::AllOff),
+        (0xB0, [n, v, ..]) => Some(NoteEv::Cc(*n & 127, *v & 127)),
+        (0xE0, [lsb, msb, ..]) => Some(NoteEv::Bend((((*lsb as i32 & 127) | ((*msb as i32 & 127) << 7)) - 8192) as f32 / 8192.0)),
         _ => None,
     }
 }
@@ -104,8 +106,9 @@ mod tests {
         assert_eq!(parse(&[0xB0, 64, 127]), Some(NoteEv::Sustain(true)));
         assert_eq!(parse(&[0xB0, 64, 0]), Some(NoteEv::Sustain(false)));
         assert_eq!(parse(&[0xB0, 123, 0]), Some(NoteEv::AllOff));
-        assert_eq!(parse(&[0xB0, 7, 100]), None);
-        assert_eq!(parse(&[0xE0, 0, 64]), None);
+        assert_eq!(parse(&[0xB0, 7, 100]), Some(NoteEv::Cc(7, 100)));
+        assert_eq!(parse(&[0xE0, 0, 64]), Some(NoteEv::Bend(0.0)));
+        assert_eq!(parse(&[0xE0, 127, 127]), Some(NoteEv::Bend(8191.0 / 8192.0)));
         assert_eq!(parse(&[]), None);
     }
 }

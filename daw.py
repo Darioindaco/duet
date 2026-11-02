@@ -46,7 +46,7 @@ from pathlib import Path
 
 import midifile
 
-KINDS = ("meta", "track", "clip", "file", "pattern", "note", "marker")
+KINDS = ("meta", "track", "clip", "file", "pattern", "note", "marker", "ctl")
 MAX_TRACKS = 32
 META_DEFAULTS = {"name": "Untitled", "bpm": 120.0, "beats": 4, "loop": False, "loop_start": 0.0, "loop_end": 16.0,
                  "master_rack": [], "tempo": [], "meters": []}
@@ -76,6 +76,10 @@ FIELDS = {
     # len: how long it is to write in; base: how long one round is when a block loops (unset: len)
     "pattern": {"name", "len", "base", "color", "del"},
     "note": {"pattern", "track", "start", "len", "key", "vel", "mute", "del"},
+    # a controller lane in a pattern, for one channel: cc is the MIDI controller (0-127, or 128 for
+    # the pitch wheel), points [[beat, value 0..1], ...] (the wheel: 0.5 is the middle); straight
+    # lines between points, the first and last value before and after them
+    "ctl": {"pattern", "track", "cc", "points", "del"},
     # a marker on the timeline (beat, name, color); a section marker starts a part that lasts until the next one
     "marker": {"beat", "name", "color", "section", "del"},
 }
@@ -92,6 +96,7 @@ FIELD_DEFAULTS = {
     "file": {"del": False},
     "pattern": {"del": False},
     "note": {"vel": 100, "mute": False, "del": False},
+    "ctl": {"points": [], "del": False},
     "marker": {"color": None, "section": False, "del": False},
 }
 # controls you turn rather than click: a run of turns is one undo step
@@ -1521,10 +1526,10 @@ class Daw:
                                num(c.get("speed"), 1.0, 0.05, 20.0), num(c.get("pitch"), 0.0, -48.0, 48.0),
                                bool(c.get("stretch")), bool(c.get("reverse")), tune_moves(c.get("tune")),
                                0.0 if c.get("reverse") else num(c.get("loop"), 0.0, 0.0, 1e6)))
-        notes = self._notes(b2s)
-        if desc != self.sent_desc or notes != self.sent_notes:
-            e.daw_timeline(desc, notes)
-            self.sent_desc, self.sent_notes = desc, notes
+        notes, ctls = self._notes(b2s), self._ctls(b2s)
+        if desc != self.sent_desc or (notes, ctls) != self.sent_notes:
+            e.daw_timeline(desc, notes, ctls)
+            self.sent_desc, self.sent_notes = desc, (notes, ctls)
         m = p.meta()
         loop = (bool(m["loop"]) and not ((self.rec or {}).get("prange") or (self.rec or {}).get("jam")), b2s(float(m["loop_start"])), b2s(float(m["loop_end"])))
         if self.pattern_mode:
@@ -1669,32 +1674,22 @@ class Daw:
         self._unroll(put, self.pattern_mode)
         return out
 
-    def _unroll(self, put, pattern_mode=None):
-        """Call put(note, beat, length in beats) for every note as the song plays it (or the pattern
-        alone): blocks repeat their pattern to fill them, notes are cut at a block's end."""
+    def _rounds(self, pattern_mode=None, by_pat=None):
+        """Each time a pattern plays, as (pattern, channel or None for any, where its beat 0 falls,
+        from, until, round length) in beats: blocks repeat their pattern to fill them (or the
+        pattern alone in pattern mode). Things in a round sound from `from` to `until` and only
+        while their own beat is under the round length."""
         p = self.p
-        by_pat: dict[str, list] = {}
-        for n in p.live("note").values():
-            by_pat.setdefault(n.get("pattern"), []).append(n)
-
-        def emit(n, t, until):
-            dur = min(float(n.get("len", 0.25)), until - t)
-            if dur > 1e-6:
-                put(n, t, dur)
-
         if pattern_mode:
             plen = self._pattern_len(pattern_mode)
-            for n in by_pat.get(pattern_mode, []):
-                t = float(n.get("start", 0))
-                if 0 <= t < plen:
-                    emit(n, t, plen)
+            yield pattern_mode, None, 0.0, 0.0, plen, plen
             return
         pats = p.live("pattern")
         for c in p.live("clip").values():
             pid = c.get("pattern")
-            if pid not in pats or not by_pat.get(pid) or c.get("mute"):
+            if pid not in pats or c.get("mute") or (by_pat is not None and not by_pat.get(pid)):
                 continue
-            plen = self._round(pid, by_pat[pid])
+            plen = self._round(pid, (by_pat or {}).get(pid))
             start, boff = float(c.get("start", 0)), float(c.get("boff", 0))
             end = start + float(c.get("blen") or plen)
             if c.get("once"):
@@ -1702,14 +1697,93 @@ class Daw:
             origin = start - boff  # where beat 0 of the pattern's first round falls
             k = math.floor(boff / plen)
             while origin + k * plen < end:
-                base = origin + k * plen
-                for n in by_pat[pid]:
-                    if n.get("track") != c.get("track"):
-                        continue  # a block plays its own channel's notes (each channel has its own row)
-                    t = base + float(n.get("start", 0))
-                    if start - 1e-9 <= t < end and float(n.get("start", 0)) < plen:
-                        emit(n, t, end)
+                # a block plays its own channel's notes (each channel has its own row)
+                yield pid, c.get("track"), origin + k * plen, start, end, plen
                 k += 1
+
+    def _unroll(self, put, pattern_mode=None):
+        """Call put(note, beat, length in beats) for every note as the song plays it (or the pattern
+        alone): blocks repeat their pattern to fill them, notes are cut at a block's end."""
+        by_pat: dict[str, list] = {}
+        for n in self.p.live("note").values():
+            by_pat.setdefault(n.get("pattern"), []).append(n)
+        for pid, tid, base, lo, hi, plen in self._rounds(pattern_mode, by_pat):
+            for n in by_pat[pid]:
+                if tid is not None and n.get("track") != tid:
+                    continue
+                x = float(n.get("start", 0))
+                t = base + x
+                if lo - 1e-9 <= t < hi and 0 <= x < plen:
+                    dur = min(float(n.get("len", 0.25)), hi - t)
+                    if dur > 1e-6:
+                        put(n, t, dur)
+
+    @staticmethod
+    def ctl_points(lane: dict) -> list:
+        out = []
+        for pt in lane.get("points") or []:
+            try:
+                x, v = float(pt[0]), float(pt[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if math.isfinite(x) and math.isfinite(v):
+                out.append((x, min(1.0, max(0.0, v))))
+        out.sort(key=lambda q: q[0])
+        return out
+
+    @staticmethod
+    def ctl_value(pts: list, x: float) -> float:
+        if x <= pts[0][0]:
+            return pts[0][1]
+        for (x0, v0), (x1, v1) in zip(pts, pts[1:]):
+            if x < x1:
+                return v0 + (v1 - v0) * (x - x0) / max(1e-9, x1 - x0)
+        return pts[-1][1]
+
+    def _unroll_ctls(self, put, pattern_mode=None, step: float = 1 / 32):
+        """Call put(lane, beat, value) for the controller lanes as the song plays them: each round
+        starts with the lane's value there, then a move every `step` beats where it changes."""
+        by_pat: dict[str, list] = {}
+        for lane in self.p.live("ctl").values():
+            pts = self.ctl_points(lane)
+            if pts:
+                by_pat.setdefault(lane.get("pattern"), []).append((lane, pts))
+        if not by_pat:
+            return
+        for pid, tid, base, lo, hi, plen in self._rounds(pattern_mode):
+            for lane, pts in by_pat.get(pid, []):
+                if tid is not None and lane.get("track") != tid:
+                    continue
+                x0, x1 = max(0.0, lo - base), min(plen, hi - base)
+                if x1 <= x0:
+                    continue
+                fine = 1 / 8192 if int(lane.get("cc", 0)) >= 128 else 1 / 127
+                last, x = None, x0
+                # the corners exactly, the slopes in steps
+                marks = sorted({x0, *(q[0] for q in pts if x0 < q[0] < x1)})
+                while x < x1 - 1e-9:
+                    v = self.ctl_value(pts, x)
+                    if last is None or abs(v - last) >= fine * 0.999:
+                        put(lane, base + x, v)
+                        last = v
+                    nxt = x + step
+                    for m in marks:
+                        if x < m < nxt:
+                            nxt = m
+                            break
+                    x = nxt
+
+    def _ctls(self, b2s) -> list:
+        """Every channel's controller moves in seconds: (seconds, number or 128 for the wheel, 0..1)."""
+        out = [[] for _ in range(MAX_TRACKS)]
+
+        def put(lane, t, v):
+            slot = self.slots.get(lane.get("track"))
+            if slot is not None:
+                out[slot].append((b2s(t), max(0, min(128, int(lane.get("cc", 1)))), v))
+
+        self._unroll_ctls(put, self.pattern_mode)
+        return out
 
     def _apply_inst(self, slot: int, old: dict | None, new: dict | None):
         t = f"T{slot}"
@@ -1805,6 +1879,13 @@ class Daw:
         except (OSError, midifile.MidiError) as exc:
             return {"error": f"Couldn't read that MIDI file: {exc}"}
         parts = [t for t in m["tracks"] if t["notes"]]
+        # controller moves on a channel with no notes of its own go with the notes of that channel
+        for t in m["tracks"]:
+            if not t["notes"]:
+                mate = next((q for q in parts if q["channel"] == t["channel"]), None)
+                if mate:
+                    mate["cc"] = mate["cc"] + t["cc"]
+                    mate["bend"] = mate["bend"] + t["bend"]
         if not parts:
             return {"error": "There are no notes in that file."}
         with self.lock:
@@ -1814,6 +1895,38 @@ class Daw:
             length = max(bar, math.ceil(end / bar - 1e-9) * bar)
             note = lambda pid, tid, s, ln, k, v: ["note", new_id("n"), {"pattern": pid, "track": tid, "start": round(s, 5),
                                                                         "len": round(max(1 / 64, ln), 5), "key": int(k) & 127, "vel": max(1, min(127, int(v)))}]
+            def lanes(pid, tid, t):
+                by: dict[int, list] = {}
+                for b, num_, v in t.get("cc", []):
+                    if num_ in (0, 32, 64, 120, 121, 123):  # bank select, sustain and the panic ones aren't lanes
+                        continue
+                    by.setdefault(num_, []).append([round(b, 5), round(v / 127, 4)])
+                for b, v in t.get("bend", []):
+                    by.setdefault(128, []).append([round(b, 5), round((v + 1) / 2, 5)])
+                for num_, pts in by.items():
+                    pts = merge_lane(pts)
+                    if pts:
+                        ch.append(["ctl", new_id("k"), {"pattern": pid, "track": tid, "cc": num_, "points": pts[:4000]}])
+
+            def merge_lane(pts):
+                # a held value is one point (a file sends a move for every tick of a slope; keep the corners)
+                pts.sort(key=lambda q: q[0])
+                out = []
+                for q in pts:
+                    if len(out) >= 2 and out[-1][1] == out[-2][1] == q[1]:
+                        out[-1] = q
+                    elif out and abs(out[-1][0] - q[0]) < 1e-6:
+                        out[-1] = q
+                    else:
+                        out.append(q)
+                # a move is a step: hold the old value up to it
+                stepped = []
+                for q in out:
+                    if stepped and q[1] != stepped[-1][1] and q[0] - stepped[-1][0] > 1 / 16:
+                        stepped.append([round(q[0] - 1 / 128, 5), stepped[-1][1]])
+                    stepped.append(q)
+                return stepped
+
             if pattern and track:
                 pat, tr = p.live("pattern").get(pattern), p.live("track").get(track)
                 if not pat or not tr or not tr.get("inst"):
@@ -1823,6 +1936,7 @@ class Daw:
                     for s, ln, k, v in t["notes"]:
                         ch.append(note(pattern, track, s, ln, k, v))
                         n += 1
+                    lanes(pattern, track, t)
                 if length > self._pattern_len(pattern):
                     ch.append(["pattern", pattern, {"len": float(length)}])
                 self._do(ch)
@@ -1839,6 +1953,7 @@ class Daw:
                 ch.append(["track", tid, {"name": name, "order": order + i, "owner": self.me, "vol": 0.8, "pan": 0.0, "rack": [],
                                           "inst": {"kind": "drums" if drums else "synth"}}])
                 ch.extend(note(pid, tid, s, ln, k, v) for s, ln, k, v in t["notes"])
+                lanes(pid, tid, t)
                 ch.append(["clip", new_id("c"), {"track": tid, "pattern": pid, "start": max(0.0, float(at)), "blen": float(length), "boff": 0.0}])
                 made.append(name)
             # a song with nothing in it yet takes the file's tempo
@@ -1865,6 +1980,14 @@ class Daw:
                     if not n.get("mute"):
                         parts.setdefault(n.get("track"), []).append((t, dur, int(n.get("key", 60)), int(n.get("vel", 100))))
                 self._unroll(put)
+            # controller lanes: (beat, number, 0..1)
+            moves: dict[str, list] = {}
+
+            def put_ctl(lane, t, v):
+                moves.setdefault(lane.get("track"), []).append((t, int(lane.get("cc", 1)), v))
+            self._unroll_ctls(put_ctl, pattern)  # the song, or the pattern alone
+            for tid in moves:
+                parts.setdefault(tid, [])
             out, chan = [], 0
             for tid, notes in parts.items():
                 tr = tracks.get(tid) or {}
@@ -1874,7 +1997,10 @@ class Daw:
                     chan = (chan + 1) % 16
                     if chan == 9:
                         chan = 10
-                out.append({"name": tr.get("name") or "Channel", "channel": c, "notes": sorted(notes)})
+                ms = moves.get(tid, [])
+                out.append({"name": tr.get("name") or "Channel", "channel": c, "notes": sorted(notes),
+                            "cc": [(t, n, round(v * 127)) for t, n, v in ms if n < 128],
+                            "bend": [(t, v * 2 - 1) for t, n, v in ms if n >= 128]})
             bpm, beats = float(p.meta()["bpm"]), int(p.meta()["beats"])
         if not out:
             return {"error": "There are no notes to export."}
@@ -2528,6 +2654,7 @@ class Daw:
                           "livesends": p.local.get("livesends") or {}},
                 "patterns": sorted(({"id": i, **x} for i, x in p.live("pattern").items()), key=lambda x: str(x.get("name", ""))),
                 "notes": [{"id": i, **n} for i, n in p.live("note").items()],
+                "ctls": [{"id": i, **c} for i, c in p.live("ctl").items()],
                 "markers": sorted(({"id": i, **x} for i, x in p.live("marker").items()), key=lambda x: float(x.get("beat") or 0)),
                 "patternMode": self.pattern_mode,
                 "conflict": self.conflict, "shared": self.connected and self.partner_pid == p.pid,
