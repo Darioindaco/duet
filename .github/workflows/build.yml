@@ -11,6 +11,11 @@ on:
   push:
   workflow_dispatch:
 
+# a newer push to the same branch stops the run that's still going for the older one
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
