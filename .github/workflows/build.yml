@@ -5,7 +5,8 @@ name: build
 # tests and the whole self-test, no sound card needed), and the Mac apps are
 # only built for main, or when you ask: Actions → build → Run workflow.
 # Windows likewise ([release]), or on its own with [windows] in the commit message;
-# the Mac apps on their own (no release) with [mac].
+# the Mac apps on their own (no release) with [mac]. The Intel Mac app only with [intel]
+# in the message (or a manual run / version tag): it's the slowest build.
 on:
   push:
   workflow_dispatch:
@@ -57,6 +58,9 @@ jobs:
             rustflags: "-C target-cpu=haswell"
             # no ready-made ONNX Runtime for Intel Macs: built without the stem splitter
             cargo_args: "--no-default-features"
+        exclude:
+          # Intel only when asked for (or for a manual run / a version tag)
+          - arch: ${{ (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[intel]')) && 'none' || 'intel' }}
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
@@ -66,11 +70,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # the engine's compiled dependencies kept between runs (the first build of a day takes longest)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+          key: ${{ matrix.arch }}
       - name: Install
         run: pip install -r requirements.txt pyinstaller maturin
       - name: Build the Rust engine
         run: pip install ./engine
+      # for a release the Linux job already ran these (and the self-test below runs on the Mac):
+      # skipping them here saves a whole second compile
       - name: Engine unit tests
+        if: ${{ !contains(github.event.head_commit.message, '[release]') }}
         working-directory: engine
         run: cargo test --release ${{ matrix.cargo_args }}
       - name: Build the test VST3 plugins (for the host tests in the self-test)
@@ -210,4 +222,4 @@ jobs:
           else tag="build-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"; target="${{ github.event.repository.default_branch }}"; fi
           gh release create "$tag" dist/*.zip --repo "$GITHUB_REPOSITORY" --target "$target" \
             --title "Duet ${tag}" \
-            --notes "Builds of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Mac: Apple Silicon (M1 and newer) Duet-mac-apple-silicon.zip, older Intel Macs Duet-mac-intel.zip; unsigned: the first time, right-click the app -> Open (or run: xattr -cr Duet.app). Windows (if it's there): Duet-windows.zip, unzip and run Duet.exe; SmartScreen warns because it isn't signed: More info -> Run anyway."
+            --notes "Builds of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Mac: Apple Silicon (M1 and newer) Duet-mac-apple-silicon.zip, older Intel Macs Duet-mac-intel.zip (when it was built); unsigned: the first time, right-click the app -> Open (or run: xattr -cr Duet.app). Windows (if it's there): Duet-windows.zip, unzip and run Duet.exe; SmartScreen warns because it isn't signed: More info -> Run anyway."
