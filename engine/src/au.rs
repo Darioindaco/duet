@@ -627,10 +627,10 @@ impl AuProc {
             return;
         }
         self.sent[i] = v;
-        match self.auto.iter_mut().find(|(k, _)| *k == i) {
-            Some((_, x)) => *x = v,
-            None if self.auto.len() < self.auto.capacity() => self.auto.push((i, v)),
-            None => {}
+        if let Some(k) = self.auto.iter().position(|(k, _)| *k == i) {
+            self.auto[k].1 = v;
+        } else if self.auto.len() < self.auto.capacity() {
+            self.auto.push((i, v)); // (room made when it was built: no allocation here)
         }
     }
 
