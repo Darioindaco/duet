@@ -548,3 +548,18 @@ header .phere { flex-shrink: 0; }
 .atbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--muted); padding: 0 2px; }
 .atbar b { color: var(--text); }
 .pk.autotune { width: 600px; }
+/* menus never run off the screen */
+.menu.ctx { max-height: calc(100vh - 16px); overflow-y: auto; }
+/* the effect picker (pkPicker): compact, scrolls, type to search */
+.pkpick { position: fixed; z-index: 60; width: 236px; max-height: min(520px, calc(100vh - 16px)); display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px; box-shadow: 0 14px 40px rgba(0,0,0,0.55); overflow: hidden; }
+.pkq { margin: 6px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line-2); background: rgba(0,0,0,0.3); color: var(--text); font: 12px system-ui, sans-serif; outline: none; }
+.pkq:focus { border-color: var(--me); }
+.pkl2 { overflow-y: auto; padding: 0 4px 5px; }
+.pkgh { padding: 6px 6px 2px; font: 800 9px system-ui, sans-serif; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); }
+.pkgh.none { text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 11px; padding: 8px; }
+.pkit { display: flex; align-items: center; gap: 7px; width: 100%; padding: 3px 6px; border: 0; border-radius: 5px; background: none; color: var(--text); cursor: pointer; text-align: left; font: 12px/1.25 system-ui, sans-serif; }
+.pkit.act { background: var(--line); }
+.pkit i { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.pkit span { white-space: nowrap; }
+.pkit em { margin-left: auto; font-style: normal; font-size: 10px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 6px; }

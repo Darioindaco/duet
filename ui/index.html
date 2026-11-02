@@ -1673,22 +1673,20 @@ async function fxToggle(t, pos) {
 
 // "+" on a strip: an effect, a VST, or a preset for the whole rack
 function addFxMenu(t, x, y) {
-  // by kind, Duet's pro plugins first in each
+  // by kind, Duet's pro plugins first in each; type to search
   const GROUPS = { "EQ and filter": ["eqpro", "eq", "filter"], Dynamics: ["comp", "multi", "limiter", "clipper", "gate", "transient"],
     Vocal: ["autotune", "deess", "doubler"], Color: ["saturate", "drive", "lofi", "nam"], Space: ["reverb", "delay", "width"],
     Movement: ["shaper", "chorus", "tremolo"], Tools: ["utility"] };
-  const items = [];
-  for (const [g, ids] of Object.entries(GROUPS)) {
-    items.push(["— " + g + " —", "", () => {}, true]);
-    for (const id of ids) { const f = FXMETA[id]; if (f) items.push(["   " + f.name, f.sub, () => addFx(t, f.id)]); }
-  }
-  items.push(["VST3 plugin…", "", () => { ui.sel = t; selectStrip(t); openVstBrowser(); }]);
-  if (t !== "M") for (const name of init.presets) items.push(["Preset: " + name, "", async () => {
+  const entries = [];
+  for (const [group, ids] of Object.entries(GROUPS))
+    for (const id of ids) { const f = FXMETA[id]; if (f) entries.push({ group, name: f.name, sub: f.sub, color: f.color, run: () => addFx(t, f.id) }); }
+  entries.push({ group: "Plugins", name: "VST3 plugin…", sub: "from your computer", run: () => { ui.sel = t; selectStrip(t); openVstBrowser(); } });
+  if (t !== "M") for (const name of init.presets) entries.push({ group: "Rack presets", name, sub: "replaces this rack", run: async () => {
     if (stripCfg(t).rack.length && !confirm(`Replace the effects on ${stripName(t)} with the "${name}" preset?`)) return;
     fxCloseStrip(t);
     await rackChanged(await api.rack_preset(t, name));
-  }]);
-  showCtx(items, x, y);
+  } });
+  pkPicker(entries, x, y, "Search effects…");
 }
 
 async function addFx(t, kind) {

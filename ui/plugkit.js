@@ -1512,3 +1512,59 @@ Object.assign(PK_DISPLAY, {
     return wrap;
   },
 });
+
+// ---------- a compact list to pick from, that you can search by typing ----------
+// entries: [{ group, name, sub, run }]; it scrolls when it's taller than the window
+function pkPicker(entries, x, y, placeholder = "Search…") {
+  document.querySelector(".pkpick")?.close();
+  hideCtx?.();
+  const el = document.createElement("div");
+  el.className = "pkpick";
+  el.innerHTML = `<input class="pkq" placeholder="${esc(placeholder)}" spellcheck="false" autocomplete="off"><div class="pkl2"></div>`;
+  const q = el.querySelector(".pkq"), list = el.querySelector(".pkl2");
+  let shown = [], act = 0;
+  const render = () => {
+    const words = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    shown = entries.filter((e) => words.every((w) => `${e.name} ${e.sub || ""} ${e.group || ""}`.toLowerCase().includes(w)));
+    act = Math.min(act, Math.max(0, shown.length - 1));
+    list.replaceChildren();
+    let group = null;
+    shown.forEach((e, i) => {
+      if (e.group !== group) {
+        group = e.group;
+        if (group) { const h = document.createElement("div"); h.className = "pkgh"; h.textContent = group; list.append(h); }
+      }
+      const b = document.createElement("button");
+      b.className = "pkit" + (i === act ? " act" : "");
+      b.innerHTML = `${e.color ? `<i style="background:${e.color}"></i>` : ""}<span>${esc(e.name)}</span>${e.sub ? `<em>${esc(e.sub)}</em>` : ""}`;
+      b.onmousemove = () => { if (act !== i) { act = i; paint(); } };
+      b.onclick = () => choose(i);
+      list.append(b);
+    });
+    if (!shown.length) list.innerHTML = `<div class="pkgh none">Nothing called "${esc(q.value)}"</div>`;
+  };
+  const paint = () => list.querySelectorAll(".pkit").forEach((b, i) => b.classList.toggle("act", i === act));
+  const choose = (i) => { const e = shown[i]; if (!e) return; el.close(); e.run(); };
+  q.addEventListener("input", () => { act = 0; render(); });
+  q.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      act = (act + (e.key === "ArrowDown" ? 1 : -1) + shown.length) % Math.max(1, shown.length);
+      paint();
+      list.querySelectorAll(".pkit")[act]?.scrollIntoView({ block: "nearest" });
+    } else if (e.key === "Enter") { e.preventDefault(); choose(act); }
+    else if (e.key === "Escape") { e.preventDefault(); el.close(); }
+  });
+  const away = (e) => { if (!el.contains(e.target)) el.close(); };
+  el.close = () => { el.remove(); document.removeEventListener("pointerdown", away, true); };
+  document.body.append(el);
+  render();
+  // in the window: below the click if it fits, else above; never taller than the window
+  const r = el.getBoundingClientRect();
+  el.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
+  el.style.top = (y + r.height > innerHeight - 8 ? Math.max(8, innerHeight - r.height - 8) : y) + "px";
+  setTimeout(() => document.addEventListener("pointerdown", away, true));
+  q.focus();
+  return el;
+}
