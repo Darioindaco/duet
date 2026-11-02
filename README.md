@@ -470,8 +470,14 @@ the playlist, right under the track it moves.
 - **Make one:** right-click any knob or fader of a song track or the master
   (in the mixer, an effect's window, an instrument's window) and choose
   *Automate*. Or right-click a track's header, or empty space in the playlist,
-  for everything on that track (volume, pan, every effect knob, the
+  for a searchable list of everything on that track (volume, pan, every effect knob, the
   instrument's knobs). A new lane starts flat, at the value the knob has now.
+- **Plugins (VST3, AU):** their own parameters can have lanes too. In the
+  plugin's window in the mixer (effect or instrument), *Automate…* lists all of
+  them; type to find one (a synth's 400 parameters stay findable). Or move a
+  knob in the plugin's own window and click *Last touched*. The track's
+  *Automate* menu lists them as well. A plugin keeps where a lane left it when
+  the lane is deleted.
 - **Draw it:** click to add a point, drag a point to move it (it snaps to the
   grid; hold Alt to place it freely), Alt-click or right-click to take one away.
   Points are joined by straight lines; before the first and after the last the

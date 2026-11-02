@@ -1699,6 +1699,20 @@ def test_au():
     e2.strip_set("L0", "mon", 1)
     e2.rack_load("L0", snap)
     assert e2.mixer()["local"][0]["rack"][0]["vst"]["path"] == delay
+    # its parameters, and automation: the wet/dry mix all the way dry on the master, so no echo
+    ps = e.plugin_params("L0", 0)
+    wet = [p for p in ps if "wet" in p["name"].lower()]
+    assert len(ps) >= 3 and wet, [p["name"] for p in ps]
+    m = Engine()
+    m.strip_set("L0", "mon", 1)
+    m.rack_add_vst("M", delay, "au", paths[delay]["name"])
+    assert m.daw_automation([("M", f"fx:0:p{wet[0]['id']}", [(0.0, 0.0), (60.0, 0.0)])]) == []
+    m.process(x)
+    out = list(m.process(imp))
+    for _ in range(400):
+        out += m.process(x)
+    assert np.max(np.abs(np.array(out[2000:]))) < 0.01, "automated fully dry: no echo"
+    m.close()
     # the DLS synth as an instrument
     v = Engine()
     v.strip_set("L0", "mon", 1)
@@ -1710,7 +1724,7 @@ def test_au():
     assert max(abs(s) for s in played) > 0.01, "the AU synth plays a note"
     for z in (e, e2, v):
         z.close()
-    print(f"au: ok  ({len(aus)} Audio Units listed; AUDelay echoes, its settings save and restore; the DLS synth plays)")
+    print(f"au: ok  ({len(aus)} Audio Units listed; AUDelay echoes, its settings save and restore, its {len(ps)} parameters automate; the DLS synth plays)")
 
 
 def test_vst():
@@ -1740,13 +1754,26 @@ def test_vst():
     e2.strip_set("L0", "mon", 1)
     e2.rack_load("L0", snap)
     assert np.allclose(e2.process(x), dry_out, atol=1e-6)
+    # its parameters, and automation moving one: the gain to half on the master
+    ps = e.plugin_params("L0", 0)
+    assert [(p["id"], p["name"]) for p in ps] == [(0, "Gain")] and abs(ps[0]["default"] - 1.0) < 1e-6, ps
+    assert e.plugin_touched("L0", 0) is None
+    m = Engine()
+    m.strip_set("L0", "mon", 1)
+    m.rack_add_vst("M", path, classes[0]["cid"], classes[0]["name"])
+    assert m.daw_automation([("M", "fx:0:p0", [(0.0, 0.5), (10.0, 0.5)])]) == []
+    for _ in range(5):
+        auto_out = m.process(x)
+    assert np.allclose(auto_out, np.multiply(dry_out, 0.5), atol=1e-5), np.max(np.abs(np.subtract(auto_out, np.multiply(dry_out, 0.5))))
+    assert m.daw_automation([("M", "fx:0:p7x", [(0.0, 0.5)])]) == ["M fx:0:p7x"]
+    m.close()
     # removing it tears the instance down (off the audio thread)
     e.rack_remove("L0", 0)
     e.process(x)
     assert e.mixer()["local"][0]["rack"] == []
     for z in (e, e2, dry):
         z.close()
-    print("vst: ok  (scan, load with stereo fallback, audio, state save/restore, teardown)")
+    print("vst: ok  (scan, load with stereo fallback, audio, state save/restore, parameters, automation, teardown)")
 
 
 def test_stun():

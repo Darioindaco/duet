@@ -269,7 +269,7 @@ function instPanel(t, inst) {
     open.disabled = !inst.vst?.has_editor;
     open.title = inst.vst?.has_editor ? "The instrument's own controls" : "This instrument has no window of its own";
     open.onclick = async () => { const r = await api.vst_open(t, -1); if (r && r.error) toast(r.error, true); };
-    body.append(open);
+    body.append(open, pluginAutoButtons(t, -1, inst.vst?.name || "The instrument"));
   }
   if (meta.knobs.length) {
     const knobs = document.createElement("div");

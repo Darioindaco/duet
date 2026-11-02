@@ -506,6 +506,8 @@ fn stream(bytes: &[u8]) -> ComWrapper<MemStream> {
 /// queues them for the audio thread.
 struct Handler {
     edits: Mutex<rtrb::Producer<(ParamID, f64)>>,
+    /// the last parameter moved in the plugin's own window (id + 1; 0 = none yet)
+    touched: Arc<AtomicU64>,
 }
 
 impl Class for Handler {
@@ -513,10 +515,12 @@ impl Class for Handler {
 }
 
 impl IComponentHandlerTrait for Handler {
-    unsafe fn beginEdit(&self, _id: ParamID) -> tresult {
+    unsafe fn beginEdit(&self, id: ParamID) -> tresult {
+        self.touched.store(id as u64 + 1, Relaxed);
         kResultOk
     }
     unsafe fn performEdit(&self, id: ParamID, valueNormalized: ParamValue) -> tresult {
+        self.touched.store(id as u64 + 1, Relaxed);
         let _ = self.edits.lock().unwrap().push((id, valueNormalized));
         kResultOk
     }
@@ -690,6 +694,7 @@ pub struct Instance {
     pub latency: u32,
     editor: Mutex<Option<editor::Editor>>,
     pub has_editor: bool,
+    touched: Arc<AtomicU64>,
 }
 
 unsafe impl Send for Instance {}
@@ -755,7 +760,14 @@ pub struct Vst3Proc {
     context: ProcessContext,
     pub id: u64,
     sr: f64,
+    /// automation for the next block, and what was last sent per parameter (no repeats)
+    auto: [(ParamID, f64); MAX_AUTO],
+    n_auto: usize,
+    sent: [(ParamID, f64); MAX_AUTO],
+    n_sent: usize,
 }
+
+const MAX_AUTO: usize = 64;
 
 unsafe impl Send for Vst3Proc {}
 
@@ -860,6 +872,41 @@ impl VstProc {
     }
 }
 
+impl VstProc {
+    /// Automation: a parameter's value (0..1) for the next block.
+    pub fn set_param(&mut self, id: u32, v: f32) {
+        match self {
+            VstProc::Vst3(p) => p.set_param(id, v),
+            #[cfg(target_os = "macos")]
+            VstProc::Au(p) => p.set_param(id, v),
+        }
+    }
+}
+
+/// A running plugin's automatable parameters (VST3 or AU), by its id.
+pub fn plugin_params(id: u64) -> Option<Vec<ParamInfo>> {
+    if let Some(i) = instance(id) {
+        return Some(i.params());
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(i) = crate::au::instance(id) {
+        return Some(i.params());
+    }
+    None
+}
+
+/// The parameter last moved in a running plugin's own window, by its id.
+pub fn plugin_touched(id: u64) -> Option<u32> {
+    if let Some(i) = instance(id) {
+        return i.touched();
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(i) = crate::au::instance(id) {
+        return i.touched();
+    }
+    None
+}
+
 /// A running plugin's state, encoded for saving (VST3 or AU), by its id.
 pub fn plugin_state(id: u64) -> Option<String> {
     if let Some(i) = instance(id) {
@@ -919,6 +966,10 @@ impl Vst3Proc {
             context: unsafe { std::mem::zeroed() },
             id,
             sr,
+            auto: [(0, 0.0); MAX_AUTO],
+            n_auto: 0,
+            sent: [(0, 0.0); MAX_AUTO],
+            n_sent: 0,
         };
         p.in_ptrs = p.in_bufs.iter_mut().map(|b| b.iter_mut().map(|c| c.as_mut_ptr()).collect()).collect();
         p.out_ptrs = p.out_bufs.iter_mut().map(|b| b.iter_mut().map(|c| c.as_mut_ptr()).collect()).collect();
@@ -953,6 +1004,28 @@ impl Vst3Proc {
         });
     }
 
+    /// Automation: a parameter's value (0..1) for the next block. Sent only when it changes.
+    pub fn set_param(&mut self, id: u32, v: f32) {
+        let v = v.clamp(0.0, 1.0) as f64;
+        match self.sent[..self.n_sent].iter_mut().find(|(i, _)| *i == id) {
+            Some((_, last)) if (*last - v).abs() < 1e-6 => return,
+            Some((_, last)) => *last = v,
+            None if self.n_sent < MAX_AUTO => {
+                self.sent[self.n_sent] = (id, v);
+                self.n_sent += 1;
+            }
+            None => {}
+        }
+        match self.auto[..self.n_auto].iter_mut().find(|(i, _)| *i == id) {
+            Some((_, x)) => *x = v,
+            None if self.n_auto < MAX_AUTO => {
+                self.auto[self.n_auto] = (id, v);
+                self.n_auto += 1;
+            }
+            None => {}
+        }
+    }
+
     /// A note for the next process() call (instruments). `offset` is the sample
     /// in the block where it happens.
     pub fn note(&mut self, on: bool, key: u8, vel: u8, offset: usize) {
@@ -979,6 +1052,10 @@ impl Vst3Proc {
             while let Ok((id, v)) = self.edits.pop() {
                 self.changes.set(id, v);
             }
+            for &(id, v) in &self.auto[..self.n_auto] {
+                self.changes.set(id, v);
+            }
+            self.n_auto = 0;
             for (b, chans) in self.in_bufs.iter_mut().enumerate() {
                 let count = chans.len();
                 for (c, ch) in chans.iter_mut().enumerate() {
@@ -1097,7 +1174,8 @@ unsafe fn build(
             b.connect(a.as_ptr());
         }
     }
-    let handler = ComWrapper::new(Handler { edits: Mutex::new(edits) });
+    let touched = Arc::new(AtomicU64::new(0));
+    let handler = ComWrapper::new(Handler { edits: Mutex::new(edits), touched: touched.clone() });
     if let Some(c) = &controller {
         c.setComponentHandler(handler.as_com_ref::<IComponentHandler>().unwrap().as_ptr());
     }
@@ -1186,11 +1264,69 @@ unsafe fn build(
             None => false,
         }
     });
-    let inst = Arc::new(Instance { name, component, processor, controller, _handler: handler, latency, editor: Mutex::new(None), has_editor });
+    let inst = Arc::new(Instance { name, component, processor, controller, _handler: handler, latency, editor: Mutex::new(None), has_editor, touched });
     Ok((inst, in_ch, out_ch))
 }
 
+/// One of a plugin's parameters, as automation sees it: 0..1, whatever the plugin shows.
+#[derive(Clone, Debug)]
+pub struct ParamInfo {
+    pub id: u32,
+    pub name: String,
+    pub default: f32,
+    pub value: f32,
+    /// 0 = continuous, else how many steps (a switch has 1)
+    pub steps: i32,
+}
+
+fn utf16(s: &[u16]) -> String {
+    let n = s.iter().position(|&c| c == 0).unwrap_or(s.len());
+    String::from_utf16_lossy(&s[..n])
+}
+
 impl Instance {
+    /// The parameters that can be automated (not hidden, not read-only). Plugin thread.
+    pub fn params(self: &Arc<Self>) -> Vec<ParamInfo> {
+        let me = Shared(self.clone());
+        on_ui(move || unsafe {
+            let me = me.0;
+            let Some(c) = &me.controller else { return Vec::new() };
+            let n = c.getParameterCount().max(0);
+            let mut out = Vec::new();
+            for i in 0..n {
+                let mut info: ParameterInfo = std::mem::zeroed();
+                if c.getParameterInfo(i, &mut info) != kResultOk {
+                    continue;
+                }
+                const CAN_AUTOMATE: i32 = 1;
+                const READ_ONLY: i32 = 2;
+                const HIDDEN: i32 = 16;
+                const PROGRAM: i32 = 1 << 15;
+                if info.flags & CAN_AUTOMATE == 0 || info.flags & (READ_ONLY | HIDDEN | PROGRAM) != 0 {
+                    continue;
+                }
+                let name = utf16(&info.title);
+                let units = utf16(&info.units);
+                out.push(ParamInfo {
+                    id: info.id,
+                    name: if units.is_empty() || name.contains(&units) { name } else { format!("{name} ({units})") },
+                    default: info.defaultNormalizedValue as f32,
+                    value: c.getParamNormalized(info.id) as f32,
+                    steps: info.stepCount,
+                });
+            }
+            out
+        })
+    }
+
+    /// The parameter moved last in the plugin's own window, if any.
+    pub fn touched(&self) -> Option<u32> {
+        match self.touched.load(Relaxed) {
+            0 => None,
+            v => Some((v - 1) as u32),
+        }
+    }
+
     /// Current state (component + controller), for saving. Plugin thread.
     pub fn state(self: &Arc<Self>) -> Option<State> {
         let me = Shared(self.clone());

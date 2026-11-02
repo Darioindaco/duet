@@ -257,6 +257,8 @@ pub trait Effect: Send {
     fn scope(&self) -> &[f32] {
         &[]
     }
+    /// Automation of a plugin's own parameter (by its id, 0..1). Only plugins have these.
+    fn set_param_id(&mut self, _id: u32, _v: f32) {}
     /// Effects that can follow a sample-rate change in place (keeping their
     /// state) say so; the rest are rebuilt.
     fn set_sample_rate(&mut self, _sr: f32) -> bool {
@@ -270,6 +272,9 @@ pub struct VstEffect {
 }
 
 impl Effect for VstEffect {
+    fn set_param_id(&mut self, id: u32, v: f32) {
+        self.proc.set_param(id, v);
+    }
     fn process(&mut self, p: &Params, l: &mut [f32], r: &mut [f32]) {
         let tempo = f64::from_bits(TEMPO_BITS.load(std::sync::atomic::Ordering::Relaxed));
         self.proc.process(l, r, p[0], tempo);

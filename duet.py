@@ -624,6 +624,20 @@ class Api:
     def midi_target(self, target=None):
         self._engine.midi_target(target or None)
 
+    def plugin_params(self, target, pos):
+        # a VST3/AU's automatable parameters (pos -1: the strip's instrument)
+        try:
+            return self._engine.plugin_params(target, int(pos))
+        except Exception:
+            return []
+
+    def plugin_touched(self, target, pos):
+        # the parameter last moved in the plugin's own window (its id), or None
+        try:
+            return self._engine.plugin_touched(target, int(pos))
+        except Exception:
+            return None
+
     def vst_open(self, target, pos):
         try:
             self._engine.vst_open_editor(target, int(pos))  # pos -1: the strip's instrument

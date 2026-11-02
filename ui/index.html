@@ -1638,6 +1638,7 @@ function pedalEl(t, pos, slot) {
       if (res && res.error) toast(res.error, true);
     };
     row.append(open, knobs);
+    row.after(pluginAutoButtons(t, pos, slot.vst?.name || "The plugin"));
     if (slot.error) row.insertAdjacentHTML("beforebegin", `<div class="mnote bad">${esc(slot.error)}</div>`);
   }
   let curve = null;
@@ -2128,6 +2129,10 @@ function demoApi() {
     rack_set: async (tg, pos, k, v) => { const s = target(tg).rack[pos]; s[k] = k === "on" ? !!v : v; },
     rack_preset: async (tg, name) => { target(tg).rack = PRESET_RACKS[name].map((k) => slot(k)); return copy(); },
     rack_load: async (tg, slots) => { target(tg).rack = slots; },
+    // a made-up synth's parameters, and the one you "moved"
+    plugin_params: async () => ["Cutoff", "Resonance", "Env amount", "Attack", "Decay", "Sustain", "Release", "Osc A level", "Osc B level", "Osc B detune",
+      "Unison", "LFO rate", "LFO depth", "Reverb mix", "Delay mix", "Master volume"].map((name, i) => ({ id: 100 + i, name, default: 0.5, value: 0.3 + (i % 5) / 10, steps: name === "Unison" ? 7 : 0 })),
+    plugin_touched: async () => 100,
     // made-up levels that move like music: a beat at 96, a little lower after a compressor
     // made-up pictures for the plugin windows: a spectrum like a mix, bands that move, a pump in time
     rack_scope: async (tg, pos) => {

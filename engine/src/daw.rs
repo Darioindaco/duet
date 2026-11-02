@@ -110,6 +110,10 @@ pub enum AutoTarget {
     Inst(usize, usize),
     /// the gain of a track's pattern blocks (their gain line and fades), on its instrument
     ClipGain(usize),
+    /// a VST3/AU effect's own parameter: track slot (None = the master rack), rack position, parameter id
+    Plugin(Option<usize>, usize, u32),
+    /// a VST3/AU instrument's own parameter: track slot, parameter id
+    InstPlugin(usize, u32),
 }
 
 /// One automation lane: points (timeline position, value 0..1) sorted by

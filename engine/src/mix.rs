@@ -389,6 +389,23 @@ pub fn apply_automation(tl: &Timeline, pos: i64, tracks: &mut [Strip], master_ra
                     s.clip_gain = 2.0 * v; // 0.5 is unity: up to +6 dB
                 }
             }
+            AutoTarget::Plugin(t, pos, id) => {
+                let rack = match t {
+                    Some(t) => match tracks.get_mut(t) {
+                        Some(s) => &mut s.rack,
+                        None => continue,
+                    },
+                    None => &mut *master_rack,
+                };
+                if let Some(slot) = rack.slots.get_mut(pos) {
+                    slot.fx.set_param_id(id, v);
+                }
+            }
+            AutoTarget::InstPlugin(t, id) => {
+                if let Some(inst) = tracks.get_mut(t).and_then(|s| s.inst.as_mut()) {
+                    inst.inst.set_param_id(id, v);
+                }
+            }
             AutoTarget::Inst(t, k) => {
                 if let Some(inst) = tracks.get_mut(t).and_then(|s| s.inst.as_mut()) {
                     if k < inst.cfg.p.len() {

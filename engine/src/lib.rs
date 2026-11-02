@@ -1162,6 +1162,30 @@ impl Engine {
         py.allow_threads(|| vst::plugin_editor(id, title)).map_err(PyRuntimeError::new_err)
     }
 
+    /// A plugin's parameters that can be automated: [{id, name, default, value, steps}]. `pos` -1 is
+    /// the strip's instrument. Asks the plugin (on its own thread), so it can take a moment.
+    fn plugin_params<'py>(&self, py: Python<'py>, target: &str, pos: i64) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let id = self.plugin_id(target, pos)?;
+        let ps = py.allow_threads(|| vst::plugin_params(id)).ok_or_else(|| PyRuntimeError::new_err("that plugin isn't running"))?;
+        ps.into_iter()
+            .map(|p| {
+                let d = PyDict::new(py);
+                d.set_item("id", p.id)?;
+                d.set_item("name", p.name)?;
+                d.set_item("default", p.default)?;
+                d.set_item("value", p.value)?;
+                d.set_item("steps", p.steps)?;
+                Ok(d)
+            })
+            .collect()
+    }
+
+    /// The parameter you last moved in a plugin's own window (its id), if any.
+    fn plugin_touched(&self, py: Python<'_>, target: &str, pos: i64) -> PyResult<Option<u32>> {
+        let id = self.plugin_id(target, pos)?;
+        Ok(py.allow_threads(|| vst::plugin_touched(id)))
+    }
+
     /// Start/stop/change the metronome as the leader. Returns the epoch (our block
     /// number where beat 0 falls) to share with the partner.
     fn metro_lead(&self, on: bool, bpm: f32, beats: u32) -> i64 {
@@ -1537,11 +1561,18 @@ impl Engine {
                         let key = it.next().unwrap_or("");
                         pos.and_then(|pos| {
                             let cfg = m.rack.get(pos)?;
-                            param_index(cfg.kind, key).map(|k| AutoTarget::Fx(slot, pos, k))
+                            // a plugin's own parameter: p<id>
+                            match key.strip_prefix('p').and_then(|id| id.parse::<u32>().ok()) {
+                                Some(id) if cfg.kind == fx::VST => Some(AutoTarget::Plugin(slot, pos, id)),
+                                _ => param_index(cfg.kind, key).map(|k| AutoTarget::Fx(slot, pos, k)),
+                            }
                         })
                     }
                     (w, Some(i)) if w.starts_with("inst:") => m.inst.as_ref().and_then(|inst| {
-                        instr::PARAMS[inst.kind].iter().position(|p| *p == &w[5..]).map(|k| AutoTarget::Inst(i, k))
+                        match w[5..].strip_prefix('p').and_then(|id| id.parse::<u32>().ok()) {
+                            Some(id) if inst.vst.is_some() => Some(AutoTarget::InstPlugin(i, id)),
+                            _ => instr::PARAMS[inst.kind].iter().position(|p| *p == &w[5..]).map(|k| AutoTarget::Inst(i, k)),
+                        }
                     }),
                     _ => None,
                 };
@@ -1575,6 +1606,8 @@ impl Engine {
                     }
                 }
                 AutoTarget::ClipGain(_) => {} // (set again every block: back to 1 by itself)
+                // a plugin keeps where automation left it (as in other DAWs)
+                AutoTarget::Plugin(..) | AutoTarget::InstPlugin(..) => {}
             }
         }
         Ok(bad)
@@ -2108,6 +2141,15 @@ fn frames_of(a: &daw::AudioData, offset: f64, dur: f64) -> (usize, usize) {
 impl Engine {
     fn loaded_file(&self, key: &str) -> PyResult<Arc<daw::AudioData>> {
         self.inner.daw.lock().unwrap().cache.file(key).ok_or_else(|| PyValueError::new_err(format!("{key} isn't loaded")))
+    }
+
+    /// The running plugin in a rack slot (`pos` >= 0) or the strip's instrument (-1).
+    fn plugin_id(&self, target: &str, pos: i64) -> PyResult<u64> {
+        let t = parse_target(target)?;
+        let mut c = self.inner.ctl.lock().unwrap();
+        let m = mirror(&mut c, t);
+        let v = if pos < 0 { m.inst.as_ref().and_then(|i| i.vst.clone()) } else { m.rack.get(pos as usize).and_then(|s| s.vst.clone()) };
+        v.map(|v| v.id).ok_or_else(|| PyValueError::new_err("not a plugin"))
     }
 
     fn samplerate(&self) -> f32 {

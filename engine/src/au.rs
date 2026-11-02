@@ -9,7 +9,7 @@
 #![allow(non_upper_case_globals, clippy::missing_safety_doc)]
 
 use std::collections::HashMap;
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void, CStr};
 use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -46,6 +46,8 @@ const P_MAX_FRAMES: u32 = 14;
 const P_RENDER_CALLBACK: u32 = 23;
 const P_HOST_CALLBACKS: u32 = 27;
 const P_COCOA_UI: u32 = 31;
+const P_PARAMETER_LIST: u32 = 3;
+const P_PARAMETER_INFO: u32 = 4;
 
 const TS_SAMPLE_TIME_VALID: u32 = 1;
 
@@ -152,6 +154,8 @@ extern "C" {
     fn AudioUnitGetPropertyInfo(unit: AudioUnit, id: u32, scope: u32, elem: u32, size: *mut u32, writable: *mut u8) -> OSStatus;
     fn AudioUnitRender(unit: AudioUnit, flags: *mut u32, ts: *const TimeStamp, bus: u32, frames: u32, data: *mut BufferList) -> OSStatus;
     fn MusicDeviceMIDIEvent(unit: AudioUnit, status: u32, d1: u32, d2: u32, offset: u32) -> OSStatus;
+    fn AudioUnitGetParameter(unit: AudioUnit, id: u32, scope: u32, elem: u32, value: *mut f32) -> OSStatus;
+    fn AudioUnitSetParameter(unit: AudioUnit, id: u32, scope: u32, elem: u32, value: f32, offset: u32) -> OSStatus;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -173,6 +177,99 @@ fn desc_of(path: &str) -> Option<Desc> {
     let mut it = path.strip_prefix("au:").unwrap_or(path).split(':').map(|x| u32::from_str_radix(x, 16));
     let (kind, sub, maker) = (it.next()?.ok()?, it.next()?.ok()?, it.next()?.ok()?);
     Some(Desc { kind, sub, maker, ..Default::default() })
+}
+
+/// AudioUnitParameterInfo
+#[repr(C)]
+struct ParamInfoC {
+    name: [c_char; 52],
+    unit_name: CFStringRef,
+    clump: u32,
+    cf_name: CFStringRef,
+    unit: u32,
+    min: f32,
+    max: f32,
+    default: f32,
+    flags: u32,
+}
+
+const PF_CF_NAME_RELEASE: u32 = 1 << 4;
+const PF_LOG: u32 = 1 << 22;
+const PF_HAS_CF_NAME: u32 = 1 << 27;
+const PF_READABLE: u32 = 1 << 30;
+const PF_WRITABLE: u32 = 1 << 31;
+const UNIT_INDEXED: u32 = 1;
+const UNIT_BOOLEAN: u32 = 2;
+
+/// One AU parameter: where its 0..1 maps to.
+#[derive(Clone, Copy, Debug)]
+struct Range {
+    id: u32,
+    min: f32,
+    max: f32,
+    log: bool,
+}
+
+impl Range {
+    fn to_real(&self, v: f32) -> f32 {
+        let v = v.clamp(0.0, 1.0);
+        if self.log && self.min > 0.0 && self.max > self.min {
+            self.min * (self.max / self.min).powf(v)
+        } else {
+            self.min + (self.max - self.min) * v
+        }
+    }
+    fn to_norm(&self, x: f32) -> f32 {
+        if self.max <= self.min {
+            return 0.0;
+        }
+        if self.log && self.min > 0.0 {
+            ((x.max(self.min) / self.min).ln() / (self.max / self.min).ln()).clamp(0.0, 1.0)
+        } else {
+            ((x - self.min) / (self.max - self.min)).clamp(0.0, 1.0)
+        }
+    }
+}
+
+/// The unit's writable global parameters: their ranges, names and step counts.
+unsafe fn read_params(unit: AudioUnit) -> Vec<(Range, String, f32, i32)> {
+    let mut size = 0u32;
+    if AudioUnitGetPropertyInfo(unit, P_PARAMETER_LIST, SCOPE_GLOBAL, 0, &mut size, ptr::null_mut()) != 0 || size == 0 {
+        return Vec::new();
+    }
+    let mut ids = vec![0u32; size as usize / 4];
+    if AudioUnitGetProperty(unit, P_PARAMETER_LIST, SCOPE_GLOBAL, 0, ids.as_mut_ptr() as *mut c_void, &mut size) != 0 {
+        return Vec::new();
+    }
+    ids.truncate(size as usize / 4);
+    let mut out = Vec::new();
+    for id in ids {
+        let mut info: ParamInfoC = std::mem::zeroed();
+        let mut sz = std::mem::size_of::<ParamInfoC>() as u32;
+        if AudioUnitGetProperty(unit, P_PARAMETER_INFO, SCOPE_GLOBAL, id, &mut info as *mut _ as *mut c_void, &mut sz) != 0 {
+            continue;
+        }
+        let name = if info.flags & PF_HAS_CF_NAME != 0 && !info.cf_name.is_null() {
+            let n = CFString::wrap_under_get_rule(info.cf_name).to_string();
+            if info.flags & PF_CF_NAME_RELEASE != 0 {
+                CFRelease(info.cf_name as CFTypeRef);
+            }
+            n
+        } else {
+            CStr::from_ptr(info.name.as_ptr()).to_string_lossy().into_owned()
+        };
+        if info.flags & PF_WRITABLE == 0 || info.flags & PF_READABLE == 0 || info.max <= info.min {
+            continue;
+        }
+        let r = Range { id, min: info.min, max: info.max, log: info.flags & PF_LOG != 0 };
+        let steps = match info.unit {
+            UNIT_BOOLEAN => 1,
+            UNIT_INDEXED => (info.max - info.min).round() as i32,
+            _ => 0,
+        };
+        out.push((r, name, r.to_norm(info.default), steps));
+    }
+    out
 }
 
 fn cfstring(s: CFStringRef) -> String {
@@ -227,6 +324,8 @@ pub struct Instance {
     pub has_editor: bool,
     unit: usize, // AudioUnit
     window: Mutex<Option<usize>>, // a retained NSWindow*
+    /// the values when its window was last opened, to tell which one you moved
+    snap: Mutex<Vec<(u32, f32)>>,
 }
 
 unsafe impl Send for Instance {}
@@ -256,6 +355,50 @@ pub fn instance(id: u64) -> Option<Arc<Instance>> {
 }
 
 impl Instance {
+    /// The parameters automation can move, with where they are now (0..1).
+    pub fn params(&self) -> Vec<crate::vst::ParamInfo> {
+        let unit = self.unit as AudioUnit;
+        unsafe {
+            read_params(unit)
+                .into_iter()
+                .map(|(r, name, default, steps)| {
+                    let mut v = 0f32;
+                    AudioUnitGetParameter(unit, r.id, SCOPE_GLOBAL, 0, &mut v);
+                    crate::vst::ParamInfo { id: r.id, name, default, value: r.to_norm(v), steps }
+                })
+                .collect()
+        }
+    }
+
+    /// Which parameter moved most since its window was opened (an AU doesn't say on its own).
+    pub fn touched(&self) -> Option<u32> {
+        let unit = self.unit as AudioUnit;
+        let snap = self.snap.lock().unwrap();
+        let mut best: Option<(u32, f32)> = None;
+        for &(id, before) in snap.iter() {
+            let mut v = 0f32;
+            unsafe { AudioUnitGetParameter(unit, id, SCOPE_GLOBAL, 0, &mut v) };
+            let d = (v - before).abs();
+            if d > 1e-5 && best.is_none_or(|(_, b)| d > b) {
+                best = Some((id, d));
+            }
+        }
+        best.map(|(id, _)| id)
+    }
+
+    fn take_snapshot(&self) {
+        let unit = self.unit as AudioUnit;
+        let now = unsafe { read_params(unit) }
+            .into_iter()
+            .map(|(r, ..)| {
+                let mut v = 0f32;
+                unsafe { AudioUnitGetParameter(unit, r.id, SCOPE_GLOBAL, 0, &mut v) };
+                (r.id, v)
+            })
+            .collect();
+        *self.snap.lock().unwrap() = now;
+    }
+
     /// The AU's settings (its ClassInfo, as a binary property list), encoded "au:<base64>".
     pub fn state(&self) -> Option<String> {
         unsafe {
@@ -278,6 +421,7 @@ impl Instance {
 
     /// Show the AU's own window (made the first time).
     pub fn show_editor(self: &Arc<Self>, title: String) -> Result<(), String> {
+        self.take_snapshot();
         let me = Shared(self.clone());
         on_ui(move || unsafe {
             let me = me.0;
@@ -353,6 +497,11 @@ pub struct AuProc {
     ts: TimeStamp,
     instrument: bool,
     events: Vec<(u32, u32, u32, u32)>, // MIDI status, data 1, data 2, offset
+    /// where each parameter's 0..1 goes (read once, for automation)
+    ranges: Vec<Range>,
+    /// automation for the next block: (index into ranges, value), and the last value sent
+    auto: Vec<(usize, f32)>,
+    sent: Vec<f32>,
     pub id: u64,
     sr: f64,
     _host: Box<HostCallbacks>,
@@ -417,7 +566,8 @@ impl AuProc {
             AudioUnitGetProperty(unit, P_LATENCY, SCOPE_GLOBAL, 0, &mut lat as *mut f64 as *mut c_void, &mut size);
             let mut ui_size = 0u32;
             let has_editor = AudioUnitGetPropertyInfo(unit, P_COCOA_UI, SCOPE_GLOBAL, 0, &mut ui_size, ptr::null_mut()) == 0 && ui_size > 0;
-            let inst = Arc::new(Instance { name, latency: (lat.max(0.0) * sr).round() as u32, has_editor, unit: unit as usize, window: Mutex::new(None) });
+            let inst = Arc::new(Instance { name, latency: (lat.max(0.0) * sr).round() as u32, has_editor, unit: unit as usize, window: Mutex::new(None), snap: Mutex::new(Vec::new()) });
+            let ranges: Vec<Range> = read_params(unit).into_iter().map(|(r, ..)| r).collect();
             let id = NEXT_ID.fetch_add(1, Relaxed);
             registry().lock().unwrap().insert(id, Arc::downgrade(&inst));
             Ok(AuProc {
@@ -429,6 +579,9 @@ impl AuProc {
                 ts: TimeStamp { flags: TS_SAMPLE_TIME_VALID, rate_scalar: 1.0, ..Default::default() },
                 instrument,
                 events: Vec::with_capacity(512),
+                sent: vec![f32::NAN; ranges.len()],
+                auto: Vec::with_capacity(ranges.len()),
+                ranges,
                 id,
                 sr,
                 _host: host,
@@ -467,10 +620,29 @@ impl AuProc {
     }
 
     /// One stereo block, in place; `mix` blends dry and wet (effects).
+    /// Automation: a parameter's value (0..1) for the next block. Sent only when it changes.
+    pub fn set_param(&mut self, id: u32, v: f32) {
+        let Some(i) = self.ranges.iter().position(|r| r.id == id) else { return };
+        if (self.sent[i] - v).abs() < 1e-6 {
+            return;
+        }
+        self.sent[i] = v;
+        match self.auto.iter_mut().find(|(k, _)| *k == i) {
+            Some((_, x)) => *x = v,
+            None if self.auto.len() < self.auto.capacity() => self.auto.push((i, v)),
+            None => {}
+        }
+    }
+
     pub fn process(&mut self, l: &mut [f32], r: &mut [f32], mix: f32, _tempo: f64) {
         let n = l.len().min(r.len()).min(MAX_BLOCK);
         let unit = self.inst.unit as AudioUnit;
         unsafe {
+            for &(i, v) in &self.auto {
+                let rg = self.ranges[i];
+                AudioUnitSetParameter(unit, rg.id, SCOPE_GLOBAL, 0, rg.to_real(v), 0);
+            }
+            self.auto.clear();
             if self.instrument {
                 for &(s, a, b, o) in &self.events {
                     MusicDeviceMIDIEvent(unit, s, a, b, o);

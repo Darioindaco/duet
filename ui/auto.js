@@ -20,22 +20,81 @@ function autoParams(target) {
   const v = song.view, out = [];
   if (target === "master") {
     const rack = v.meta.master_rack || [];
-    rack.forEach((slot, i) => fxParams(slot, i, out));
+    rack.forEach((slot, i) => fxParams(slot, i, out, "M"));
     return out;
   }
   const t = [...v.tracks, ...(v.buses || [])].find((x) => x.id === target);
   if (!t || t.auto) return out;
+  const strip = t.slot == null ? null : "T" + t.slot;
   out.push(["vol", "Volume", faderPos(t.vol ?? 0.8)], ["pan", "Pan", ((t.pan ?? 0) + 1) / 2]);
-  (t.rack || []).forEach((slot, i) => fxParams(slot, i, out));
+  (t.rack || []).forEach((slot, i) => fxParams(slot, i, out, strip));
   const meta = t.inst && INST[t.inst.kind];
   if (meta) for (const [key, label] of meta.knobs) out.push([`inst:${key}`, `${meta.name} · ${label}`, t.inst[key] ?? INST_DEFAULTS[t.inst.kind]?.[key] ?? 0.5]);
+  // a plugin instrument's own parameters
+  if (t.inst?.kind === "vst" && strip) for (const p of pluginParams(strip, -1) || []) out.push([`inst:p${p.id}`, `${t.inst.vst?.name || "Instrument"} · ${p.name}`, p.value]);
   return out;
 }
 
-function fxParams(slot, i, out) {
+function fxParams(slot, i, out, strip) {
   const meta = FX.find((f) => f.id === slot.kind);
   if (!meta) return;
   for (const [key, label] of meta.knobs) out.push([`fx:${i}:${slot.kind}:${key}`, `${meta.name} · ${label}`, slot[key] ?? FX_DEFAULTS[slot.kind]?.[key] ?? 0.5]);
+  // a plugin's own parameters (asked once, then remembered)
+  if (slot.kind === "vst" && strip) for (const p of pluginParams(strip, i) || []) out.push([`fx:${i}:vst:p${p.id}`, `${slot.vst?.name || "Plugin"} · ${p.name}`, p.value]);
+}
+
+// --- a plugin's own parameters (VST3, AU) ------------------------------------------------
+
+const plugParamCache = new Map();
+const plugKey = (strip, pos) => {
+  const cfg = typeof stripCfg === "function" ? stripCfg(strip) : null;
+  const v = pos < 0 ? cfg?.inst?.vst : cfg?.rack?.[pos]?.vst;
+  return v ? `${strip}|${pos}|${v.id ?? v.name}` : null;
+};
+// what's known now (and asks for it in the background the first time)
+function pluginParams(strip, pos) {
+  const k = plugKey(strip, pos);
+  if (!k) return null;
+  if (!plugParamCache.has(k)) { plugParamCache.set(k, null); loadPluginParams(strip, pos).then(() => typeof songDraw === "function" && songDraw()); }
+  return plugParamCache.get(k);
+}
+async function loadPluginParams(strip, pos) {
+  const k = plugKey(strip, pos);
+  if (!k || !api.plugin_params) return [];
+  if (plugParamCache.get(k)) return plugParamCache.get(k);
+  let ps = [];
+  try { ps = await api.plugin_params(strip, pos); } catch (e) {}
+  if (!Array.isArray(ps)) ps = [];
+  plugParamCache.set(k, ps);
+  return ps;
+}
+const stripTarget = (strip) => (strip === "M" ? "master" : trackBySlot(+strip.slice(1))?.id);
+
+// the plugin window's automation buttons: pick any parameter (searchable), or the one you last moved
+function pluginAutoButtons(strip, pos, name) {
+  const row = document.createElement("div");
+  row.className = "plugauto";
+  if (!(strip === "M" || /^T\d+$/.test(strip))) return row;
+  row.innerHTML = `<button class="mb pick" title="Make an automation lane for one of the plugin's parameters">Automate…</button>
+    <button class="mb last" title="Make a lane for the knob you moved last in the plugin's own window">Last touched</button>`;
+  const param = (id) => (pos < 0 ? `inst:p${id}` : `fx:${pos}:vst:p${id}`);
+  row.querySelector(".pick").onclick = async (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const ps = await loadPluginParams(strip, pos), target = stripTarget(strip);
+    if (!target) { toast("Put this channel on a song track to automate it."); return; }
+    if (!ps.length) { toast(`${name} has no parameters it lets a host automate.`, true); return; }
+    pkPicker(ps.map((p) => ({ group: name, name: p.name, sub: p.steps === 1 ? "switch" : p.steps > 1 ? `${p.steps + 1} steps` : `${Math.round(p.value * 100)}%`,
+      run: () => addAutomation(target, param(p.id)) })), r.left, r.bottom + 4, `Search ${name}'s ${ps.length} parameters…`);
+  };
+  row.querySelector(".last").onclick = async () => {
+    const target = stripTarget(strip);
+    if (!target) { toast("Put this channel on a song track to automate it."); return; }
+    const id = await api.plugin_touched?.(strip, pos);
+    if (id == null) { toast(`Move a knob in ${name}'s own window first, then click this.`); return; }
+    await loadPluginParams(strip, pos);
+    addAutomation(target, param(id));
+  };
+  return row;
 }
 
 function autoTargetName(target) {
@@ -75,10 +134,20 @@ function scrollToRow(row) {
 }
 
 // a menu of everything on a target that can have a lane
-function autoMenu(target, x, y) {
-  const items = autoParams(target).map(([param, label]) => [`Automate ${label}`, "", () => addAutomation(target, param)]);
-  if (!items.length) items.push(["Nothing to automate here", "", () => {}, true]);
-  showCtx(items, x, y);
+async function autoMenu(target, x, y) {
+  // the plugins on it first say what they have
+  const t = target === "master" ? null : song.view.tracks.find((k) => k.id === target);
+  const strip = target === "master" ? "M" : t?.slot != null ? "T" + t.slot : null;
+  if (strip) {
+    const rack = target === "master" ? song.view.meta.master_rack || [] : t.rack || [];
+    await Promise.all([...rack.map((s, i) => (s.kind === "vst" ? loadPluginParams(strip, i) : null)), t?.inst?.kind === "vst" ? loadPluginParams(strip, -1) : null]);
+  }
+  const ps = autoParams(target);
+  if (!ps.length) { showCtx([["Nothing to automate here", "", () => {}, true]], x, y); return; }
+  pkPicker(ps.map(([param, label]) => {
+    const [group, name] = label.includes(" · ") ? label.split(" · ") : ["Channel", label];
+    return { group, name, run: () => addAutomation(target, param) };
+  }), x, y, "Search what to automate…");
 }
 
 // right-click on a knob or fader of a song strip ("T<slot>" or "M"): Automate

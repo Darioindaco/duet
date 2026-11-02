@@ -107,6 +107,8 @@ pub trait Instrument: Send {
     fn set_sample_rate(&mut self, _sr: f32) -> bool {
         false
     }
+    /// Automation of a plugin instrument's own parameter (by its id, 0..1).
+    fn set_param_id(&mut self, _id: u32, _v: f32) {}
 }
 
 /// An instrument as the audio thread holds it.
@@ -286,6 +288,9 @@ impl VstInst {
 }
 
 impl Instrument for VstInst {
+    fn set_param_id(&mut self, id: u32, v: f32) {
+        self.proc.set_param(id, v);
+    }
     fn note(&mut self, ev: NoteEv) {
         // the pedal is kept here (VST3 has no plain CC events): held notes go off on release
         match ev {
