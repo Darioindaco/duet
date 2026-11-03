@@ -2487,7 +2487,80 @@ def test_collab():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_multicore():
+    """The song's tracks worked on by several cores: the same mix to the sample as on one (an export
+    of 12 synth tracks with effects into two buses in a row), and how much faster a block is."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-mc-"))
+    d = Daw(e, root / "songs", "me")
+    x = [0.0] * N
+    try:
+        d.set_local("click", False)
+        rack = [{"kind": "drive", "on": True}, {"kind": "eqpro", "on": True}, {"kind": "chorus", "on": True}, {"kind": "reverb", "on": True}]
+        ch = [["meta", "meta", {"bpm": 120.0}], ["pattern", "p1", {"name": "All", "len": 8.0}],
+              ["track", "busA", {"name": "Group", "order": 100.0, "owner": "me", "bus": True, "vol": 0.8, "out": "busB",
+                                 "rack": [{"kind": "comp", "on": True}]}],
+              ["track", "busB", {"name": "Sum", "order": 101.0, "owner": "me", "bus": True, "vol": 0.8,
+                                 "rack": [{"kind": "limiter", "on": True}]}]]
+        for k in range(12):
+            tid = f"s{k}"
+            ch.append(["track", tid, {"name": f"Synth {k}", "order": float(k), "owner": "me", "vol": 0.5,
+                                      "inst": {"kind": "synth", "unison": 0.6}, "rack": rack, "out": "busA" if k % 2 else None,
+                                      "sends": {"busB": 0.3} if k % 3 == 0 else {}}])
+            for b in range(8):
+                ch.append(["note", f"n{k}_{b}", {"pattern": "p1", "track": tid, "start": float(b), "len": 0.75,
+                                                 "key": 48 + (k * 5 + b * 3) % 24, "vel": 100}])
+            ch.append(["clip", f"c{k}", {"track": tid, "pattern": "p1", "start": 0.0, "blen": 8.0, "boff": 0.0}])
+        d.edit(ch)
+        wait_for(lambda: d.sent_notes and sum(len(v) for v in d.sent_notes[0]) == 96, what="all the notes in the engine")
+
+        def export(on):
+            workers = e.mix_threads(on)
+            out = root / f"mix-{on}.wav"
+            res = d.export(str(out), None, loop=False)
+            assert res.get("ok"), res
+            t0 = time.monotonic()
+            while (st := e.daw_export_status())["result"] is None:
+                assert time.monotonic() - t0 < 60
+                time.sleep(0.02)
+            assert st["result"]["ok"], st
+            return out.read_bytes(), time.monotonic() - t0, workers
+
+        one, t1, _ = export(False)
+        many, tn, workers = export(True)
+        assert one == many, "several cores: the same file to the byte"
+        # live: how long a block takes while it plays
+        def per_block(on):
+            e.mix_threads(on)
+            d.play(0.0)
+            for _ in range(50):
+                e.process(x)
+            t0 = time.perf_counter()
+            for _ in range(400):
+                e.process(x)
+            dt = (time.perf_counter() - t0) / 400
+            d.stop()
+            return dt * 1e6
+        us1, usn = per_block(False), per_block(True)
+        e.mix_threads(True)
+        print(f"multicore: ok  (the same export to the byte; {workers} helper threads: export {t1:.2f} s -> {tn:.2f} s, "
+              f"a block {us1:.0f} -> {usn:.0f} us of {N / SR * 1e6:.0f})")
+    finally:
+        e.mix_threads(True)
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
+    test_multicore()
     test_collab()
     test_talkback()
     test_ui_names()

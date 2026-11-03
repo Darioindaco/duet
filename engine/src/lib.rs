@@ -17,6 +17,7 @@ mod kit;
 mod plugins;
 mod plugins2;
 mod plugins3;
+mod pool;
 mod livenotes;
 mod analyzer;
 #[cfg(target_os = "macos")]
@@ -510,6 +511,7 @@ impl Engine {
             start: Instant::now(),
         });
         let sink_inner = inner.clone();
+        crate::pool::init(); // (the mixer's helper threads: made now, not on the audio thread)
         let midi = midi::MidiThread::spawn(Arc::new(move |ev| sink_inner.midi_in(ev)));
         Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), midi, local: local_addr, public: Mutex::new(None), stems: Mutex::new(None) })
     }
@@ -1053,6 +1055,13 @@ impl Engine {
             .map(|a| { let x = a.load(Relaxed); if x & 0x8000 != 0 { (x & 127) as f32 / 127.0 } else { -1.0 } })
             .collect();
         (cc >> 16, ((cc >> 8) & 255) as u32, vals)
+    }
+
+    /// Work on the song's tracks on several cores (True, the default) or all on the audio thread.
+    /// The mix is the same either way. Returns how many helper threads there are.
+    fn mix_threads(&self, on: bool) -> usize {
+        crate::pool::ENABLED.store(on, Relaxed);
+        crate::pool::get().workers()
     }
 
     /// Talkback: which input of the interface is the talk mic (None: none). Its sound only ever

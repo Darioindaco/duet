@@ -124,6 +124,10 @@ pub struct Wiring {
     pads: Vec<Option<Delay2>>,
     /// the master rack's delay (the click and recording allow for it)
     pub master_lat: i64,
+    /// `order` by stage (porder[..stage_end[0]] is stage 0, and so on): see render_tracks
+    pub porder: [u8; MAX_TRACKS],
+    pub stage_end: [u8; MAX_TRACKS + 1],
+    pub nstage: usize,
 }
 
 impl Wiring {
@@ -194,6 +198,24 @@ impl Wiring {
                 indeg[b] -= 1;
             }
         }
+        // stages for working on several tracks at once: a track's stage is one past the latest stage
+        // of anything feeding it (or keying it); everything in a stage can be worked on side by side
+        let mut depth = [0u8; MAX_TRACKS];
+        for &i in &order[..n] {
+            for &b in &adj[i as usize] {
+                depth[b] = depth[b].max(depth[i as usize] + 1);
+            }
+        }
+        let mut porder = order;
+        porder[..n].sort_by_key(|&i| depth[i as usize]); // (stable: within a stage, the order above)
+        let mut stage_end = [0u8; MAX_TRACKS + 1];
+        let mut nstage = 0;
+        for k in 0..n {
+            if k + 1 == n || depth[porder[k + 1] as usize] != depth[porder[k] as usize] {
+                stage_end[nstage] = (k + 1) as u8;
+                nstage += 1;
+            }
+        }
         // delay compensation, from the master back: down[i] = delay from track i's
         // output to the master input (the longest of its paths)
         let lat = |i: usize| d.rack_lat[i] as i64;
@@ -225,7 +247,7 @@ impl Wiring {
         }
         let ahead_audio: [i64; MAX_TRACKS] = std::array::from_fn(|i| lat(i) + down[i]);
         let ahead_notes: [i64; MAX_TRACKS] = std::array::from_fn(|i| ahead_audio[i] + d.inst_lat[i] as i64);
-        Box::new(Wiring { order, n, out, sends, ahead_audio, ahead_notes, fed, pads, master_lat: d.master_lat as i64 })
+        Box::new(Wiring { order, n, out, sends, ahead_audio, ahead_notes, fed, pads, master_lat: d.master_lat as i64, porder, stage_end, nstage })
     }
 
     /// A send's level changed (the shape didn't): no rebuild needed.
@@ -431,140 +453,185 @@ pub fn render_tracks(tracks: &mut [Strip], w: &mut Wiring, b: &mut TrackBufs, tl
         }
     }
     let solo = tracks.iter().any(|t| t.s.active && t.s.solo);
-    let mut segs = [(0usize, 0i64, 0usize); 6];
-    for idx in 0..w.n {
-        let i = w.order[idx] as usize;
-        let Some(strip) = tracks.get_mut(i) else { continue };
-        if !strip.s.active {
-            strip.level = 0.0;
-            b.post_l[i][..n].fill(0.0);
-            b.post_r[i][..n].fill(0.0);
-            b.key_l[i][..n].fill(0.0);
-            b.key_r[i][..n].fill(0.0);
-            continue;
-        }
-        let (l, r) = (&mut strip.l[..n], &mut strip.r[..n]);
-        l.fill(0.0);
-        r.fill(0.0);
-        match (play, tl) {
-            (Some(pl), Some(tl)) => {
-                if let Some(inst) = strip.inst.as_mut() {
-                    let m = read_segs(pl, w.ahead_notes[i], &mut segs);
-                    for &(off, p, len) in &segs[..m] {
-                        if p != strip.next_read {
-                            inst.inst.note(NoteEv::Release); // started, jumped, or the loop went round
-                            // A track that reads ahead of the song (to make up for its effects' delay)
-                            // starts reading `ahead` past where play started: what starts in between
-                            // (the first downbeat!) comes now, at the block's start, which is where the
-                            // song's start comes out of its effects. Not when the loop went round: that
-                            // stretch was read before the loop's end.
-                            let ahead = w.ahead_notes[i];
-                            if ahead > 0 {
-                                let lo = match pl.looping {
-                                    Some((ls, le)) if le > ls && p >= ls && p < le => (p - ahead).max(ls),
-                                    _ => p - ahead,
-                                };
-                                for e in tl.notes_in(i, lo, p) {
-                                    inst.inst.note(e.event());
-                                }
-                            }
-                        }
-                        render_inst(tl, i, inst, p, &mut l[off..off + len], &mut r[off..off + len]);
-                        strip.next_read = p + len as i64;
-                        let cg = strip.clip_gain;
-                        if cg != 1.0 {
-                            for k in off..off + len {
-                                l[k] *= cg;
-                                r[k] *= cg;
-                            }
-                        }
-                    }
-                }
-                let m = read_segs(pl, w.ahead_audio[i], &mut segs);
-                for &(off, p, len) in &segs[..m] {
-                    tl.render(i, p, &mut l[off..off + len], &mut r[off..off + len]);
-                }
-            }
-            _ => {
-                strip.next_read = i64::MIN;
-                if let Some(inst) = strip.inst.as_mut() {
-                    // stopped: still playable live, and tails ring out
-                    let InstSlot { cfg, inst } = &mut **inst;
-                    inst.process(&cfg.p, l, r);
-                }
-            }
-        }
-        // what buses were fed
-        for k in 0..n {
-            l[k] += b.in_l[i][k];
-            r[k] += b.in_r[i][k];
-        }
-        let g = strip.s.gain;
-        if g != 1.0 {
-            for k in 0..n {
-                l[k] *= g;
-                r[k] *= g;
-            }
-        }
+    // Stage by stage (tracks first, then the buses they feed, ...): (A) every track of the stage plays
+    // its timeline and instrument and runs its rack, side by side on the cores (crate::pool), then
+    // (B) one after the other, each goes through its fader to its bus or the master. B adds up in the
+    // same order every time, so the mix is the same to the sample on one core or many.
+    let song_time = crate::kit::song_time();
+    let mut from = 0;
+    for st in 0..w.nstage {
+        let to = w.stage_end[st] as usize;
         {
-            let (kl, kr) = (&b.key_l, &b.key_r);
-            let keys = |slot: usize| (slot < MAX_TRACKS).then(|| (&kl[slot][..n], &kr[slot][..n]));
-            strip.rack.process(l, r, &keys);
+            let strips = StripPtr(tracks.as_mut_ptr(), tracks.len());
+            let (bufs, wr): (&TrackBufs, &Wiring) = (&*b, &*w);
+            let items = &wr.porder[from..to];
+            crate::pool::get().run(items.len(), &|k| {
+                let i = items[k] as usize;
+                // each item is a different track: no two jobs touch the same strip
+                let Some(strip) = (unsafe { strips.get(i) }) else { return };
+                crate::kit::set_song_time(song_time); // (a worker thread: where the song is)
+                strip_body(strip, i, wr, bufs, tl, play, n);
+            });
         }
-        b.key_l[i][..n].copy_from_slice(l);
-        b.key_r[i][..n].copy_from_slice(r);
-        strip.meter(n);
-        // fader and pan (a bus is fed by tracks, or by the live strips' sends)
-        let fed = w.fed[i] || b.live_on[i];
-        let audible = !strip.s.mute && (!solo || strip.s.solo || fed);
-        // a track's own sound gets the pan law (-3 dB each side in the middle);
-        // a bus passes on what's already panned: its pan is a balance, unity in the middle
-        let (gl, gr) = if fed { balance(strip.s.pan) } else { pan_gains(strip.s.pan) };
-        let f = strip.s.fader;
-        for k in 0..n {
-            b.post_l[i][k] = strip.l[k] * f * gl;
-            b.post_r[i][k] = strip.r[k] * f * gr;
-        }
-        if !audible {
-            continue; // (a muted track still has its stem)
-        }
-        // to its bus or the master, and its sends; delayed where compensation says so
-        for c in 0..CONNS {
-            let (dest, level) = if c == 0 {
-                (w.out[i].map(|o| o as usize), 1.0)
-            } else {
-                match w.sends[i][c - 1] {
-                    Some((bus, level)) => (Some(bus as usize), level),
-                    None => continue,
-                }
-            };
-            let (src_l, src_r): (&[f32], &[f32]) = match w.pads[i * CONNS + c].as_mut() {
-                Some(pad) => {
-                    b.tmp_l[..n].copy_from_slice(&b.post_l[i][..n]);
-                    b.tmp_r[..n].copy_from_slice(&b.post_r[i][..n]);
-                    pad.run(&mut b.tmp_l[..n], &mut b.tmp_r[..n]);
-                    (&b.tmp_l[..n], &b.tmp_r[..n])
-                }
-                None => (&b.post_l[i][..n], &b.post_r[i][..n]),
-            };
-            let (dl, dr): (&mut [f32], &mut [f32]) = match dest {
-                Some(bus) if bus != i => {
-                    // (a bus is processed after everything feeding it)
-                    let (il, ir) = (&mut b.in_l[bus], &mut b.in_r[bus]);
-                    for k in 0..n {
-                        il[k] += src_l[k] * level;
-                        ir[k] += src_r[k] * level;
-                    }
-                    continue;
-                }
-                _ => (&mut mix_l[..n], &mut mix_r[..n]),
-            };
+        for idx in from..to {
+            let i = w.porder[idx] as usize;
+            let Some(strip) = tracks.get_mut(i) else { continue };
+            if !strip.s.active {
+                strip.level = 0.0;
+                b.post_l[i][..n].fill(0.0);
+                b.post_r[i][..n].fill(0.0);
+                b.key_l[i][..n].fill(0.0);
+                b.key_r[i][..n].fill(0.0);
+                continue;
+            }
+            b.key_l[i][..n].copy_from_slice(&strip.l[..n]);
+            b.key_r[i][..n].copy_from_slice(&strip.r[..n]);
+            // fader and pan (a bus is fed by tracks, or by the live strips' sends)
+            let fed = w.fed[i] || b.live_on[i];
+            let audible = !strip.s.mute && (!solo || strip.s.solo || fed);
+            // a track's own sound gets the pan law (-3 dB each side in the middle);
+            // a bus passes on what's already panned: its pan is a balance, unity in the middle
+            let (gl, gr) = if fed { balance(strip.s.pan) } else { pan_gains(strip.s.pan) };
+            let f = strip.s.fader;
             for k in 0..n {
-                dl[k] += src_l[k] * level;
-                dr[k] += src_r[k] * level;
+                b.post_l[i][k] = strip.l[k] * f * gl;
+                b.post_r[i][k] = strip.r[k] * f * gr;
+            }
+            if !audible {
+                continue; // (a muted track still has its stem)
+            }
+            // to its bus or the master, and its sends; delayed where compensation says so
+            for c in 0..CONNS {
+                let (dest, level) = if c == 0 {
+                    (w.out[i].map(|o| o as usize), 1.0)
+                } else {
+                    match w.sends[i][c - 1] {
+                        Some((bus, level)) => (Some(bus as usize), level),
+                        None => continue,
+                    }
+                };
+                let (src_l, src_r): (&[f32], &[f32]) = match w.pads[i * CONNS + c].as_mut() {
+                    Some(pad) => {
+                        b.tmp_l[..n].copy_from_slice(&b.post_l[i][..n]);
+                        b.tmp_r[..n].copy_from_slice(&b.post_r[i][..n]);
+                        pad.run(&mut b.tmp_l[..n], &mut b.tmp_r[..n]);
+                        (&b.tmp_l[..n], &b.tmp_r[..n])
+                    }
+                    None => (&b.post_l[i][..n], &b.post_r[i][..n]),
+                };
+                let (dl, dr): (&mut [f32], &mut [f32]) = match dest {
+                    Some(bus) if bus != i => {
+                        // (a bus is processed after everything feeding it)
+                        let (il, ir) = (&mut b.in_l[bus], &mut b.in_r[bus]);
+                        for k in 0..n {
+                            il[k] += src_l[k] * level;
+                            ir[k] += src_r[k] * level;
+                        }
+                        continue;
+                    }
+                    _ => (&mut mix_l[..n], &mut mix_r[..n]),
+                };
+                for k in 0..n {
+                    dl[k] += src_l[k] * level;
+                    dr[k] += src_r[k] * level;
+                }
+            }
+        }
+        from = to;
+    }
+}
+
+/// The tracks being worked on at the same time (see render_tracks): a plain pointer, because each
+/// job gets a different one.
+#[derive(Clone, Copy)]
+struct StripPtr(*mut Strip, usize);
+unsafe impl Send for StripPtr {}
+unsafe impl Sync for StripPtr {}
+
+impl StripPtr {
+    /// Safety: no two callers at once may ask for the same i.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get(&self, i: usize) -> Option<&mut Strip> {
+        (i < self.1).then(|| unsafe { &mut *self.0.add(i) })
+    }
+}
+
+/// One track's own work for a block: its timeline (clips, notes into its instrument), what its
+/// buses got, its gain and rack (sidechain keys from earlier stages), its meter. Into strip.l / .r.
+fn strip_body(strip: &mut Strip, i: usize, w: &Wiring, b: &TrackBufs, tl: Option<&Timeline>, play: Option<&Play>, n: usize) {
+    if !strip.s.active {
+        return;
+    }
+    let mut segs = [(0usize, 0i64, 0usize); 6];
+    let (l, r) = (&mut strip.l[..n], &mut strip.r[..n]);
+    l.fill(0.0);
+    r.fill(0.0);
+    match (play, tl) {
+        (Some(pl), Some(tl)) => {
+            if let Some(inst) = strip.inst.as_mut() {
+                let m = read_segs(pl, w.ahead_notes[i], &mut segs);
+                for &(off, p, len) in &segs[..m] {
+                    if p != strip.next_read {
+                        inst.inst.note(NoteEv::Release); // started, jumped, or the loop went round
+                        // A track that reads ahead of the song (to make up for its effects' delay)
+                        // starts reading `ahead` past where play started: what starts in between
+                        // (the first downbeat!) comes now, at the block's start, which is where the
+                        // song's start comes out of its effects. Not when the loop went round: that
+                        // stretch was read before the loop's end.
+                        let ahead = w.ahead_notes[i];
+                        if ahead > 0 {
+                            let lo = match pl.looping {
+                                Some((ls, le)) if le > ls && p >= ls && p < le => (p - ahead).max(ls),
+                                _ => p - ahead,
+                            };
+                            for e in tl.notes_in(i, lo, p) {
+                                inst.inst.note(e.event());
+                            }
+                        }
+                    }
+                    render_inst(tl, i, inst, p, &mut l[off..off + len], &mut r[off..off + len]);
+                    strip.next_read = p + len as i64;
+                    let cg = strip.clip_gain;
+                    if cg != 1.0 {
+                        for k in off..off + len {
+                            l[k] *= cg;
+                            r[k] *= cg;
+                        }
+                    }
+                }
+            }
+            let m = read_segs(pl, w.ahead_audio[i], &mut segs);
+            for &(off, p, len) in &segs[..m] {
+                tl.render(i, p, &mut l[off..off + len], &mut r[off..off + len]);
+            }
+        }
+        _ => {
+            strip.next_read = i64::MIN;
+            if let Some(inst) = strip.inst.as_mut() {
+                // stopped: still playable live, and tails ring out
+                let InstSlot { cfg, inst } = &mut **inst;
+                inst.process(&cfg.p, l, r);
             }
         }
     }
+    // what buses were fed
+    for k in 0..n {
+        l[k] += b.in_l[i][k];
+        r[k] += b.in_r[i][k];
+    }
+    let g = strip.s.gain;
+    if g != 1.0 {
+        for k in 0..n {
+            l[k] *= g;
+            r[k] *= g;
+        }
+    }
+    {
+        let (kl, kr) = (&b.key_l, &b.key_r);
+        let keys = |slot: usize| (slot < MAX_TRACKS).then(|| (&kl[slot][..n], &kr[slot][..n]));
+        strip.rack.process(l, r, &keys);
+    }
+    strip.meter(n);
 }
 
 #[cfg(test)]

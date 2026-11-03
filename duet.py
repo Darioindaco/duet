@@ -61,6 +61,7 @@ class Api:
         self._daw = Daw(engine, data_dir() / "Projects", settings["peer_id"], float(settings.get("rec_offset_ms", 0)))
         from daw import https_context
         self._upd = Updater(build_info(resource("build_info.json")), data_dir() / "updates", https_context())
+        engine.mix_threads(bool(settings.get("mix_threads", True)))
         self._talk_input = settings.get("talk_input")
         if self._talk_input is not None:
             engine.talk_input(int(self._talk_input))
@@ -763,6 +764,16 @@ class Api:
         settings["talk_input"] = sel
         save_settings(settings)
         return {"input": sel}
+
+    def mix_threads(self, on):
+        """The song's tracks on all cores (True) or one; kept for next time."""
+        settings = load_settings()
+        settings["mix_threads"] = bool(on)
+        save_settings(settings)
+        return self._engine.mix_threads(bool(on))
+
+    def mix_threads_get(self):
+        return load_settings().get("mix_threads", True)
 
     def talk(self, on):
         self._engine.talk(bool(on))

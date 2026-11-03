@@ -523,6 +523,8 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
           <div class="field"><label>Buffer <span class="lbl-hint">smaller = less delay, more CPU</span></label>
             <div class="seg" id="blockSeg"><button data-v="64">64</button><button data-v="128">128</button><button data-v="256">256</button><button data-v="512">512</button></div></div>
           <div class="field"><label for="midiDev">MIDI keyboard <span class="lbl-hint">plays the selected instrument</span></label><select id="midiDev"></select></div>
+          <div class="field"><label for="cpuSel">Song tracks <span class="lbl-hint">mixed on</span></label>
+            <select id="cpuSel"><option value="1">All CPU cores (faster)</option><option value="0">One core</option></select></div>
           <div class="hint" id="audioHint"></div>
           <p class="fine">Changes apply right away. Use the same sample rate and buffer as your partner.</p>
           <button class="linkbtn" id="audioBtn">Turn sound off</button>
@@ -1951,6 +1953,8 @@ async function boot(a) {
   updSetup();
   talkSetup();
   collabSetup();
+  api.mix_threads_get?.().then((on) => { if (on != null) $("cpuSel").value = on ? "1" : "0"; });
+  $("cpuSel").onchange = () => api.mix_threads?.($("cpuSel").value === "1");
   toolsSetup();
   masterSetup();
   browserSetup();
@@ -2238,6 +2242,7 @@ function demoApi() {
     inst_param: async () => {}, inst_pad: async () => copy(), inst_pad_open: async () => null, note: async () => {},
     midi_controllers: async () => window.mockMidi || { count: 0, last: 0, values: Array(129).fill(-1) },
     talk_config: async (i) => ({ input: i }), talk: async () => {},
+    mix_threads_get: async () => true, mix_threads: async () => 3,
     midi_inputs: async () => ["Arturia KeyStep 37"], midi_open: async () => ({ ok: true }), midi_target: async () => {},
     nam_library: async () => [{ path: "C:/models/plexi.nam", title: "Plexi 1959", name: "Crunch" }, { path: "C:/models/twin.nam", title: "Twin Reverb", name: "Clean" }],
     nam_open_file: async () => null,
