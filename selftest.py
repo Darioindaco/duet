@@ -2629,7 +2629,63 @@ def test_freeze():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_sandbox():
+    """Plugins in a process of their own: the same sound, parameters, state and automation as inside
+    Duet; when that process dies (killed here, as a crash would), Duet keeps going (the effect lets its
+    sound through) and the next plugin starts a new process."""
+    path = test_plugin_path()
+    if not path:
+        print("sandbox: skipped (build the test plugin: cd engine && cargo build --release --example test_gain)")
+        return
+    from pathlib import Path
+    Engine.plugin_sandbox([sys.executable, str(Path(__file__).with_name("duet.py"))], True)
+    try:
+        cid = Engine.vst_scan(path)[0]["cid"]
+        x = (0.3 * np.random.default_rng(3).standard_normal(N)).astype(np.float32).tolist()
+        dry = Engine()
+        dry.strip_set("L0", "mon", 1)
+        dry_out = dry.process(x)
+        e = Engine()
+        e.strip_set("L0", "mon", 1)
+        t0 = time.monotonic()
+        e.rack_add_vst("L0", path, cid, "Gain")
+        started = time.monotonic() - t0
+        assert e.mixer()["local"][0]["rack"][0]["vst"]["name"].startswith("Gain")
+        for _ in range(5):
+            out = e.process(x)
+        assert np.allclose(out, dry_out, atol=1e-6), "the same sound through the plugin process"
+        ps = e.plugin_params("L0", 0)
+        assert [(p["id"], p["name"]) for p in ps] == [(0, "Gain")], ps
+        assert e.mixer(True)["local"][0]["rack"][0]["vst"]["state"], "its state comes back from over there"
+        # how long a block takes with a plugin over there
+        t0 = time.perf_counter()
+        for _ in range(500):
+            e.process(x)
+        us = (time.perf_counter() - t0) / 500 * 1e6
+        # the plugin process dies: Duet goes on, the effect lets the sound through
+        n0 = Engine.plugin_crashes()
+        assert Engine.plugin_sandbox_kill()
+        wait_for(lambda: Engine.plugin_crashes() > n0, what="the crash noticed")
+        for _ in range(5):
+            out = e.process(x)
+        assert np.allclose(out, dry_out, atol=1e-6), "after the crash: the dry sound, Duet still running"
+        assert e.mixer()["local"][0]["rack"][0].get("crashed"), "the mixer says it crashed"
+        # loading it again: a new plugin process
+        e.rack_remove("L0", 0)
+        e.rack_add_vst("L0", path, cid, "Gain")
+        for _ in range(5):
+            out = e.process(x)
+        assert np.allclose(out, dry_out, atol=1e-6) and not e.mixer()["local"][0]["rack"][0].get("crashed")
+        for z in (e, dry):
+            z.close()
+        print(f"sandbox: ok  (the plugin in its own process: same sound, parameters, state; started in {started * 1000:.0f} ms, "
+              f"a block {us:.0f} us; killed: Duet goes on with the dry sound; loaded again in a new process)")
+    finally:
+        Engine.plugin_sandbox([], False)
+
+
 if __name__ == "__main__":
+    test_sandbox()
     test_freeze()
     test_multicore()
     test_collab()

@@ -10,6 +10,15 @@ threads that never wait for Python or the UI.
 """
 from __future__ import annotations
 
+import sys
+
+if __name__ == "__main__" and sys.argv[1:2] == ["--plugin-host"] and len(sys.argv) == 4:
+    # the plugin process (plugins in a process of their own, see engine/src/sandbox.rs): nothing of
+    # the app is needed, so it starts quickly
+    from duet_engine import Engine as _E
+    _E.plugin_host(sys.argv[2], sys.argv[3])
+    sys.exit(0)
+
 import argparse
 import base64
 import hashlib
@@ -20,7 +29,6 @@ import random
 import shutil
 import socket
 import subprocess
-import sys
 import threading
 import webbrowser
 from pathlib import Path
@@ -797,6 +805,9 @@ def main():
     ap.add_argument("--port", type=int, default=0, help="fixed UDP port (default: the one from last time)")
     ap.add_argument("--debug", action="store_true", help="open the webview dev tools")
     args = ap.parse_args()
+    # plugins in a process of their own (a crash there doesn't take Duet down)
+    # (off by default until it's been tried on Mac and Windows: settings.json "plugin_sandbox": true)
+    Engine.plugin_sandbox(plugin_host_command(), bool(load_settings().get("plugin_sandbox", False)))
     engine = open_engine(args.port)
     engine.start()
     api = Api(engine)
@@ -811,6 +822,13 @@ def main():
     # the camera permission across launches.
     webview.start(debug=args.debug, http_server=True, http_port=pick_port(),
                   private_mode=False, storage_path=str(data_dir() / "webview"))
+
+
+def plugin_host_command() -> list:
+    """How to start Duet as its plugin process (it gets --plugin-host <file> <tag> after this)."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, str(Path(__file__).resolve())]
 
 
 def data_dir() -> Path:

@@ -802,6 +802,8 @@ pub enum VstProc {
     Vst3(Vst3Proc),
     #[cfg(target_os = "macos")]
     Au(crate::au::AuProc),
+    /// in the plugin process (sandbox.rs)
+    Remote(crate::sandbox::RemoteProc),
 }
 
 /// What the mixer shows about a running plugin.
@@ -818,6 +820,15 @@ impl VstProc {
     }
 
     pub fn create_as(path: &str, cid: &str, state: Option<&str>, sr: f64, instrument: bool) -> Result<VstProc, String> {
+        // in a process of its own when that's on: a crash there doesn't take Duet down. If that
+        // process can't even start, here as before; if the plugin itself fails over there, it fails
+        // (here it might have taken Duet with it)
+        if crate::sandbox::available() {
+            match crate::sandbox::get() {
+                Ok(_) => return crate::sandbox::RemoteProc::create(path, cid, state, sr, instrument).map(VstProc::Remote),
+                Err(e) => eprintln!("plugin process: {e}; plugins run inside Duet"),
+            }
+        }
         if path.starts_with("au:") {
             #[cfg(target_os = "macos")]
             return crate::au::AuProc::create(path, state, sr, instrument).map(VstProc::Au);
@@ -832,7 +843,13 @@ impl VstProc {
             VstProc::Vst3(p) => p.id,
             #[cfg(target_os = "macos")]
             VstProc::Au(p) => p.id,
+            VstProc::Remote(p) => p.id,
         }
+    }
+
+    /// In the plugin process, and that went down: quiet until it's loaded again.
+    pub fn crashed(&self) -> bool {
+        matches!(self, VstProc::Remote(p) if p.crashed())
     }
 
     pub fn info(&self) -> PluginInfo {
@@ -846,6 +863,7 @@ impl VstProc {
                 let i = p.instance();
                 PluginInfo { name: i.name.clone(), latency: i.latency, has_editor: i.has_editor }
             }
+            VstProc::Remote(p) => PluginInfo { name: p.info.name.clone(), latency: p.info.latency, has_editor: p.info.has_editor },
         }
     }
 
@@ -854,6 +872,7 @@ impl VstProc {
             VstProc::Vst3(p) => p.set_sample_rate(sr),
             #[cfg(target_os = "macos")]
             VstProc::Au(p) => p.set_sample_rate(sr),
+            VstProc::Remote(p) => p.set_sample_rate(sr),
         }
     }
 
@@ -862,6 +881,7 @@ impl VstProc {
             VstProc::Vst3(p) => p.note(on, key, vel, offset),
             #[cfg(target_os = "macos")]
             VstProc::Au(p) => p.note(on, key, vel, offset),
+            VstProc::Remote(p) => p.note(on, key, vel, offset),
         }
     }
 
@@ -870,6 +890,7 @@ impl VstProc {
             VstProc::Vst3(p) => p.process(l, r, mix, tempo),
             #[cfg(target_os = "macos")]
             VstProc::Au(p) => p.process(l, r, mix, tempo),
+            VstProc::Remote(p) => p.process(l, r, mix, tempo),
         }
     }
 }
@@ -881,6 +902,7 @@ impl VstProc {
             VstProc::Vst3(p) => p.set_param(id, v),
             #[cfg(target_os = "macos")]
             VstProc::Au(p) => p.set_param(id, v),
+            VstProc::Remote(p) => p.set_param(id, v),
         }
     }
     /// A MIDI controller (VST3: the parameter the plugin maps it to, if any; AU: as MIDI).
@@ -893,6 +915,7 @@ impl VstProc {
             }
             #[cfg(target_os = "macos")]
             VstProc::Au(p) => p.midi(0xB0, n as u32 & 127, v as u32 & 127),
+            VstProc::Remote(p) => p.midi_cc(n, v),
         }
     }
     /// The pitch wheel, -1..1.
@@ -908,6 +931,7 @@ impl VstProc {
                 let raw = ((b.clamp(-1.0, 1.0) * 8192.0).round() as i32 + 8192).clamp(0, 16383) as u32;
                 p.midi(0xE0, raw & 127, raw >> 7)
             }
+            VstProc::Remote(p) => p.midi_bend(b),
         }
     }
 }
@@ -917,6 +941,9 @@ const PITCH_BEND: usize = 129;
 
 /// A running plugin's automatable parameters (VST3 or AU), by its id.
 pub fn plugin_params(id: u64) -> Option<Vec<ParamInfo>> {
+    if crate::sandbox::is_remote(id) {
+        return crate::sandbox::plugin_params(id);
+    }
     if let Some(i) = instance(id) {
         return Some(i.params());
     }
@@ -929,6 +956,9 @@ pub fn plugin_params(id: u64) -> Option<Vec<ParamInfo>> {
 
 /// The parameter last moved in a running plugin's own window, by its id.
 pub fn plugin_touched(id: u64) -> Option<u32> {
+    if let Some(t) = crate::sandbox::plugin_touched(id) {
+        return t;
+    }
     if let Some(i) = instance(id) {
         return i.touched();
     }
@@ -941,6 +971,9 @@ pub fn plugin_touched(id: u64) -> Option<u32> {
 
 /// A running plugin's state, encoded for saving (VST3 or AU), by its id.
 pub fn plugin_state(id: u64) -> Option<String> {
+    if let Some(s) = crate::sandbox::plugin_state(id) {
+        return s;
+    }
     if let Some(i) = instance(id) {
         return i.state().map(|s| s.encode());
     }
@@ -953,6 +986,9 @@ pub fn plugin_state(id: u64) -> Option<String> {
 
 /// Show a running plugin's own window, by its id.
 pub fn plugin_editor(id: u64, title: String) -> Result<(), String> {
+    if let Some(r) = crate::sandbox::plugin_editor(id, title.clone()) {
+        return r;
+    }
     if let Some(i) = instance(id) {
         return i.show_editor(title);
     }

@@ -18,6 +18,7 @@ mod plugins;
 mod plugins2;
 mod plugins3;
 mod pool;
+mod sandbox;
 mod livenotes;
 mod analyzer;
 #[cfg(target_os = "macos")]
@@ -1142,6 +1143,33 @@ impl Engine {
         vst::find_plugins(&dirs).into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
     }
 
+    /// Plugins in a process of their own: Duet's command line to start that process with (it gets
+    /// `--plugin-host <file> <tag>` after it), and whether to use it at all.
+    #[staticmethod]
+    #[pyo3(signature = (argv, on=true))]
+    fn plugin_sandbox(argv: Vec<String>, on: bool) {
+        sandbox::set_command(argv);
+        sandbox::ENABLED.store(on, Relaxed);
+    }
+
+    /// The plugin process's main (`--plugin-host <file> <tag>`): runs until Duet goes.
+    #[staticmethod]
+    fn plugin_host(py: Python<'_>, file: String, tag: String) -> PyResult<()> {
+        py.allow_threads(|| sandbox::host_main(file, tag)).map_err(PyRuntimeError::new_err)
+    }
+
+    /// How many times the plugin process went down (crashed or killed) since Duet started.
+    #[staticmethod]
+    fn plugin_crashes() -> u64 {
+        sandbox::CRASHES.load(Relaxed)
+    }
+
+    /// Tests: end the plugin process the way a crash would.
+    #[staticmethod]
+    fn plugin_sandbox_kill() -> bool {
+        sandbox::kill_for_test()
+    }
+
     /// The effect classes inside one .vst3: [{"cid", "name", "vendor", "sub", "instrument"}].
     #[staticmethod]
     fn vst_scan<'py>(py: Python<'py>, path: String) -> PyResult<Vec<Bound<'py, PyDict>>> {
@@ -1371,6 +1399,7 @@ impl Engine {
                     d.set_item("has_editor", v.has_editor)?;
                     e.set_item("vst", d)?;
                     e.set_item("error", slot.error.clone())?;
+                    e.set_item("crashed", sandbox::is_crashed(v.id))?;
                 }
                 Ok(e)
             }).collect::<PyResult<Vec<_>>>()?;
@@ -1399,6 +1428,7 @@ impl Engine {
                         d.set_item("state", v.state.clone())?;
                         d.set_item("has_editor", v.has_editor)?;
                         e.set_item("vst", d)?;
+                        e.set_item("crashed", sandbox::is_crashed(v.id))?;
                     }
                     e.set_item("error", i.error.clone())?;
                     Some(e)

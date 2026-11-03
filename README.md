@@ -481,6 +481,11 @@ hear it, either of you can change it, and the export sounds exactly like it.
   (*Unfreeze*). Its fader, pan, sends and routing still work. *Bounce in place*
   puts that audio on a new track ("Lead (audio)") with the same fader, pan and
   routing, and mutes the original's clips.
+- **Plugins in a process of their own** (experimental, off for now: set
+  `"plugin_sandbox": true` in Duet's settings.json): VST3 and AU plugins run in
+  a separate plugin process. If one crashes, Duet and your session keep going;
+  the plugin goes quiet (an effect lets its sound through) until it's loaded
+  again. No extra latency: each block goes over and back within the block.
 - **All your CPU cores:** the song's tracks are worked on side by side on every
   core (tracks first, then the buses they feed): the mix is the same to the
   sample as on one core, only faster (about 2.5× on four cores). Live jamming
