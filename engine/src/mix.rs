@@ -452,7 +452,22 @@ pub fn render_tracks(tracks: &mut [Strip], w: &mut Wiring, b: &mut TrackBufs, tl
                     let m = read_segs(pl, w.ahead_notes[i], &mut segs);
                     for &(off, p, len) in &segs[..m] {
                         if p != strip.next_read {
-                            inst.inst.note(NoteEv::Release); // the loop went round
+                            inst.inst.note(NoteEv::Release); // started, jumped, or the loop went round
+                            // A track that reads ahead of the song (to make up for its effects' delay)
+                            // starts reading `ahead` past where play started: what starts in between
+                            // (the first downbeat!) comes now, at the block's start, which is where the
+                            // song's start comes out of its effects. Not when the loop went round: that
+                            // stretch was read before the loop's end.
+                            let ahead = w.ahead_notes[i];
+                            if ahead > 0 {
+                                let lo = match pl.looping {
+                                    Some((ls, le)) if le > ls && p >= ls && p < le => (p - ahead).max(ls),
+                                    _ => p - ahead,
+                                };
+                                for e in tl.notes_in(i, lo, p) {
+                                    inst.inst.note(e.event());
+                                }
+                            }
                         }
                         render_inst(tl, i, inst, p, &mut l[off..off + len], &mut r[off..off + len]);
                         strip.next_read = p + len as i64;

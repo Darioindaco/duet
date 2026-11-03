@@ -88,7 +88,7 @@ function seqKeys(e) {
     songEdit(ids.map((id) => ["note", id, { del: true }]));
   } else if (chordKey(e)) { e.preventDefault(); }
   else if (e.key === "Escape") { quantClose(); seq.sel.clear(); prDraw(); }
-  else if (e.key.startsWith("Arrow") && seq.sel.size) { e.preventDefault(); nudgeSel(e); }
+  else if (e.key.startsWith("Arrow") && seq.sel.size) { e.preventDefault(); prNudgeSel(e); }
   else if (!ctrl && !e.altKey && !e.shiftKey && PR_TOOLS.some((x) => x[1].toLowerCase() === k)) {
     e.preventDefault();
     const id = PR_TOOLS.find((x) => x[1].toLowerCase() === k)[0];
@@ -180,7 +180,7 @@ function legato() {
 }
 
 // arrows: up/down a semitone (shift or ctrl: an octave; shift on one note browses chords, chords.js), left/right a grid step (shift: 1/32)
-function nudgeSel(e) {
+function prNudgeSel(e) {
   const ns = patNotes(seq.pat, seq.channel).filter((n) => seq.sel.has(n.id));
   if (!ns.length) return;
   const big = e.shiftKey || e.ctrlKey || e.metaKey;

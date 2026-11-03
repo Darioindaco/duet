@@ -73,7 +73,7 @@ function rollSetup() {
   sc.onchange = () => { store.set("prScaleKey", sc.value); prDraw(); };
   // the ruler: play from here
   const ru = $("prRuler");
-  ru.addEventListener("pointerdown", rulerDown);
+  ru.addEventListener("pointerdown", prRulerDown);
   new ResizeObserver(() => rulerDraw()).observe(ru);
   rollPlayIcon();
 }
@@ -145,7 +145,7 @@ function rulerDraw() {
   }
 }
 
-async function rulerDown(e) {
+async function prRulerDown(e) {
   const p = curPattern();
   if (!p || e.button !== 0) return;
   const r = $("prRuler").getBoundingClientRect(), lanes = $("prLanes");

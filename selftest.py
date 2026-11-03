@@ -1901,7 +1901,15 @@ def test_clip_gain():
         assert moves[0] == (0.0, 128, 0.5) and abs(moves[-1][2] - 1.0) < 1e-3 and all(m[1] == 128 for m in moves), moves[:3]
         assert all(b[2] >= a[2] for a, b in zip(moves, moves[1:])) and 100 < len(moves) < 200, len(moves)
         d.edit([["ctl", "kb", {"del": True}]])
-        # the pattern on its own, from beat 4 of it (the piano roll's ruler)
+        # a track whose effects delay it (the limiter looks ahead) reads ahead of the song: the note
+        # on the very first beat must still play when play starts there (it used to be skipped, so
+        # the first bar went missing on such tracks until the loop came round)
+        d.edit([["note", "n1", {"len": 0.5}],
+                ["track", "syn", {"rack": [{"kind": "limiter", "on": True, "gain": 1.0, "ceiling": 0.0, "release": 0.4}]}]])
+        first = level(0.02, 0.2)
+        assert first > 0.3 * full, (first, full)
+        d.edit([["note", "n1", {"len": 8.0}], ["track", "syn", {"rack": []}]])
+
         d.play_pattern("p1", 4.0)
         e.process(x)
         pos = e.state()["daw_pos"]  # seconds: beat 4 at 120 BPM is 2 s
@@ -2287,7 +2295,29 @@ def test_updater():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_ui_names():
+    """The page's scripts share one global scope: two top-level functions with the same name in
+    different files means the later file's silently replaces the earlier one (that's how the
+    playlist's ruler once ran the piano roll's click code)."""
+    import re
+    from pathlib import Path
+
+    ui = Path(__file__).resolve().parent / "ui"
+    order = re.findall(r'<script src="([\w.]+\.js)"', (ui / "index.html").read_text(encoding="utf-8"))
+    seen, dup = {}, []
+    for f in order + ["index.html"]:
+        text = (ui / f).read_text(encoding="utf-8")
+        for m in re.finditer(r"^(?:async\s+)?function\s+(\w+)|^(?:const|let|class)\s+(\w+)\b", text, re.M):
+            name = m.group(1) or m.group(2)
+            if name in seen and seen[name] != f:
+                dup.append(f"{name}: {seen[name]} and {f}")
+            seen.setdefault(name, f)
+    assert not dup, "the same global name in two scripts: " + "; ".join(dup)
+    print(f"ui names: ok  ({len(seen)} globals in {len(order) + 1} files, none twice)")
+
+
 if __name__ == "__main__":
+    test_ui_names()
     test_updater()
     test_effects_cpu()
     test_two_engines()

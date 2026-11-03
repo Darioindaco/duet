@@ -91,6 +91,17 @@ pub struct NoteAt {
     pub ctl: u8,
 }
 
+impl NoteAt {
+    pub fn event(&self) -> NoteEv {
+        match self.ctl {
+            1 => NoteEv::Cc(self.key, self.vel),
+            2 => NoteEv::Bend((((self.key as i32 & 127) | ((self.vel as i32 & 127) << 7)) - 8192) as f32 / 8192.0),
+            _ if self.on => NoteEv::On(self.key, self.vel),
+            _ => NoteEv::Off(self.key),
+        }
+    }
+}
+
 /// Every track's clips, sorted by start, and the notes its instrument plays,
 /// sorted by position. Index = track slot.
 pub struct Timeline {
@@ -351,12 +362,7 @@ pub fn render_inst(tl: &Timeline, t: usize, inst: &mut InstSlot, pos: i64, l: &m
             inst.inst.process(&inst.cfg.p, &mut l[done..at], &mut r[done..at]);
             done = at;
         }
-        inst.inst.note(match e.ctl {
-            1 => NoteEv::Cc(e.key, e.vel),
-            2 => NoteEv::Bend((((e.key as i32 & 127) | ((e.vel as i32 & 127) << 7)) - 8192) as f32 / 8192.0),
-            _ if e.on => NoteEv::On(e.key, e.vel),
-            _ => NoteEv::Off(e.key),
-        });
+        inst.inst.note(e.event());
     }
     if done < n {
         inst.inst.process(&inst.cfg.p, &mut l[done..], &mut r[done..]);
