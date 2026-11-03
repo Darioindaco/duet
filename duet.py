@@ -58,6 +58,7 @@ class Api:
         self._code_note = ""
         self._audio = False
         self._window = None  # set once the window exists (for file dialogs)
+        self._may_close = False  # closing was asked about (or doesn't need to be)
         self._t3k = Tone3000(data_dir() / "models", lambda: load_settings().get("t3k_key"))
         self._vst = VstLibrary(data_dir() / "vst_cache.json")
         self._names = {}
@@ -344,13 +345,94 @@ class Api:
     def daw_projects(self):
         return self._daw.projects()
 
-    def daw_new(self, name=None):
-        self._daw.new_project(name or "New song")
-        return self._daw.view()
+    def daw_new(self, opts=None):
+        """A new song. opts: its name, or {name, location (None: Duet's Projects folder), bpm, beats,
+        key, track (start with an audio track)}."""
+        o = opts if isinstance(opts, dict) else {"name": opts}
+        r = self._daw.new_project(o.get("name") or "", o.get("location") or None, o.get("bpm"), o.get("beats"),
+                                  o.get("key"), o.get("track", True))
+        return {**r, "view": self._daw.view()}
 
     def daw_open(self, pid):
         self._daw.open_project(pid)
         return self._daw.view()
+
+    def daw_open_folder(self):
+        """Open a song kept in a folder of its own somewhere (asks which folder)."""
+        picked = self._window.create_file_dialog(webview.FileDialog.FOLDER)
+        if not picked:
+            return None
+        r = self._daw.open_folder(picked if isinstance(picked, str) else picked[0])
+        return {**r, "view": self._daw.view()}
+
+    def daw_forget(self, pid):
+        return self._daw.forget_project(str(pid))
+
+    def daw_save(self):
+        return self._daw.save_now()
+
+    def daw_name_free(self, name, but=None):
+        """{taken: a song here has that name already, suggest: a free one like it}"""
+        return {"taken": self._daw.name_taken(str(name), but), "suggest": self._daw.free_name(str(name))}
+
+    def pick_folder(self, start=None):
+        kw = {"directory": str(start)} if start and Path(str(start)).is_dir() else {}
+        picked = self._window.create_file_dialog(webview.FileDialog.FOLDER, **kw)
+        if not picked:
+            return None
+        return picked if isinstance(picked, str) else picked[0]
+
+    # --- preferences (settings.json, next to the songs) ------------------------------
+
+    PREFS = {"confirm_close": True, "song_location": "", "new_bpm": 120.0, "new_beats": 4, "auto_update": True,
+             "mix_threads": True, "plugin_sandbox": False}
+
+    def prefs_get(self):
+        st = load_settings()
+        out = {k: st.get(k, v) for k, v in self.PREFS.items()}
+        out["projects_dir"] = str(data_dir() / "Projects")
+        return out
+
+    def prefs_set(self, key, value):
+        if key not in self.PREFS:
+            return {"error": f"unknown preference {key}"}
+        d = self.PREFS[key]
+        value = bool(value) if isinstance(d, bool) else str(value or "") if isinstance(d, str) else float(value)
+        if key == "new_beats":
+            value = int(min(16, max(1, value)))
+        if key == "new_bpm":
+            value = min(999.0, max(20.0, value))
+        if key == "mix_threads":
+            return {"ok": True, "value": self.mix_threads(value)}
+        st = load_settings()
+        st[key] = value
+        save_settings(st)
+        return {"ok": True, "value": value}
+
+    # --- closing the window: asked first (the page shows the question) ----------------
+
+    def _closing(self):
+        if self._may_close or not load_settings().get("confirm_close", True):
+            return True
+        # (from the window's own thread: the page is asked on another, or the two wait for each other)
+        def ask():
+            try:
+                shown = self._window.evaluate_js("window.askClose ? (askClose(), true) : false")
+            except Exception:
+                shown = False
+            if not shown:  # the page can't ask (it's broken or still loading): close, saved, as before
+                self.app_close(False)
+        threading.Thread(target=ask, daemon=True).start()
+        return False
+
+    def app_close(self, save=False):
+        """The answer to askClose: close (after saving, with save)."""
+        r = self._daw.save_now() if save else {"ok": True}
+        if r.get("error"):
+            return r
+        self._may_close = True
+        threading.Timer(0.05, self._window.destroy).start()
+        return {"ok": True}
 
     def daw_versions(self):
         return self._daw.versions()
@@ -764,6 +846,7 @@ class Api:
         # the song is saved as it closes; the new version starts once this one is gone
         r = self._upd.install()
         if r.get("ok") and self._window:
+            self._may_close = True  # (the song is saved as it closes: no question)
             threading.Timer(0.3, self._window.destroy).start()
         return r
 
@@ -818,6 +901,7 @@ def main():
                                    width=1280, height=900, min_size=(980, 780),
                                    background_color="#0e0d12")
     api._window = window
+    window.events.closing += api._closing
     window.events.closed += api.shutdown
     clear_stale_web_cache()
     # Served from http://127.0.0.1:<fixed port> rather than file://: the camera needs a

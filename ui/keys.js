@@ -41,13 +41,19 @@ const ACTIONS = [
   ["undo", "Undo", "Song", ["Mod+Z"], () => undo()],
   ["redo", "Redo", "Song", ["Mod+Shift+Z", "Mod+Y"], () => redo()],
   ["export", "Export", "Song", ["Mod+E"], () => openExport()],
+  ["save", "Save", "Song", ["Mod+S"], () => saveSong()],
+  ["newSong", "New song…", "Song", ["Mod+N"], () => openNewSong()],
+  ["openSong", "Open a song (recent songs)", "Song", ["Mod+O"], () => toggleSongMenu()],
+  ["prefs", "Preferences", "View", ["Mod+Comma"], () => openPrefs()],
   ["zoomIn", "Zoom in", "View", ["Equal"], () => zoomBy(1.25)],
   ["zoomOut", "Zoom out", "View", ["Minus"], () => zoomBy(0.8)],
   ["zoomSel", "Zoom to the selection", "View", ["Z"], () => zoomToSelection()],
   ["shortcuts", "These shortcuts", "View", ["Mod+Slash"], () => openShortcuts()],
 ];
 // work in every view (the rest only in the playlist)
-const GLOBAL_ACTIONS = new Set(["play", "record", "home", "export", "shortcuts"]);
+const GLOBAL_ACTIONS = new Set(["play", "record", "home", "export", "shortcuts", "save", "newSong", "openSong", "prefs"]);
+// these also in the sequencer (which has its own keys for the rest)
+const SEQ_TOO = new Set(["export", "shortcuts", "save", "newSong", "openSong", "prefs"]);
 
 // the other sets: only what differs from Duet's
 const KEY_PRESETS = {
@@ -99,12 +105,13 @@ function actionFor(combo) {
 // the one keydown handler for the song (the sequencer has its own keys)
 function songKeys(e) {
   if (!$("keysM").hidden) return; // setting a shortcut
-  if (e.target.closest("input, select, textarea") || !$("vstm").hidden || !$("newTrackM").hidden || !$("clipEd").hidden) return;
+  if (e.target.closest("input, select, textarea") || !$("vstm").hidden || !$("newTrackM").hidden || !$("clipEd").hidden
+      || !$("newSongM").hidden || !$("prefsM").hidden || !$("closeM").hidden) return;
   const combo = comboOf(e);
   if (!combo) return;
   const a = actionFor(combo);
   if (!a) return;
-  if (ui.view === "seq" && a[0] !== "export" && a[0] !== "shortcuts") return;
+  if (ui.view === "seq" && !SEQ_TOO.has(a[0])) return;
   if (!GLOBAL_ACTIONS.has(a[0]) && ui.view !== "song") return;
   if (playlistLocked() && a[2] === "Editing") { e.preventDefault(); lockedToast(); return; }
   if (e.target.closest("button")) e.target.blur(); // or Space would press that button too

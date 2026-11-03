@@ -543,7 +543,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 3v9a7 7 0 0 0 14 0V3"/><path d="M5 7h4M15 7h4"/><path d="M9 3v9a3 3 0 0 0 6 0V3"/></svg><span id="snapLbl"></span></button>
               <button class="cbtn" id="zoomOut" title="Zoom out (ctrl + scroll)" aria-label="Zoom out">−</button><button class="cbtn" id="zoomIn" title="Zoom in (ctrl + scroll)" aria-label="Zoom in">+</button></div>
               <div class="crow tools" id="plTools" role="toolbar" aria-label="Playlist tools"></div></div>
-            <div class="rulerwrap"><canvas id="ruler" title="Click: jump here. Drag: mark the loop. Top: markers and sections; middle: tempo and time signature. Right-click to add; double-click to edit."></canvas></div>
+            <div class="rulerwrap"><canvas id="ruler" title="Click or drag: move the playhead and scrub. Right-drag: mark the loop. Top: markers and sections; middle: tempo and time signature. Right-click to add; double-click to edit."></canvas></div>
             <div class="theads"><div class="theads-in" id="theadsIn"></div></div>
             <div class="lanewrap" id="lanewrap">
               <canvas id="lanesCv"></canvas><canvas id="lanesOv"></canvas>
@@ -727,6 +727,60 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
     </div>
   </div>
 </div>
+<div class="modal" id="newSongM" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="nsTitle">
+    <div class="mhead"><b id="nsTitle">New song</b><span>Name, where it's kept, and how it starts</span><button class="x" id="nsX" aria-label="Close">✕</button></div>
+    <div class="mbody">
+      <div class="field"><label for="nsName">Name</label>
+        <input type="text" id="nsName" spellcheck="false" autocomplete="off" maxlength="80">
+        <span class="fine nsmsg" id="nsMsg"></span></div>
+      <div class="field"><label>Location</label>
+        <div class="row nsloc"><span class="nspath" id="nsPath"></span><button class="btn" id="nsBrowse">Choose…</button><button class="btn" id="nsDefault" title="Keep it with Duet's other songs">Default</button></div></div>
+      <div class="nsgrid">
+        <div class="field"><label for="nsBpm">Tempo <span class="lbl-hint">BPM</span></label><input type="number" id="nsBpm" class="cenum" min="20" max="999" step="0.01"></div>
+        <div class="field"><label for="nsBeats">Time signature</label>
+          <select id="nsBeats"><option value="2">2/4</option><option value="3">3/4</option><option value="4">4/4</option><option value="5">5/4</option><option value="6">6/4</option><option value="7">7/4</option></select></div>
+        <div class="field"><label for="nsKey">Key <span class="lbl-hint">optional</span></label>
+          <select id="nsKey"></select></div>
+      </div>
+      <div class="field"><label>Start with</label>
+        <div class="seg" id="nsStart"><button data-v="track">One audio track</button><button data-v="empty">Nothing (empty)</button></div></div>
+      <p class="fine" id="nsShared" hidden>You're connected: your partner switches to the new song too. The one that's open now stays saved.</p>
+      <div class="row nsfoot"><button class="btn" id="nsCancel">Cancel</button><button class="btn primary" id="nsGo">Create</button></div>
+    </div>
+  </div>
+</div>
+<div class="modal" id="prefsM" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="pfTitle">
+    <div class="mhead"><b id="pfTitle">Preferences</b><span>On this computer</span><button class="x" id="pfX" aria-label="Close">✕</button></div>
+    <div class="mbody">
+      <div class="lbl-sm pfsec">Songs</div>
+      <div class="field"><label>New songs are kept in</label>
+        <div class="row nsloc"><span class="nspath" id="pfLoc"></span><button class="btn" id="pfBrowse">Choose…</button><button class="btn" id="pfLocDefault">Default</button></div></div>
+      <div class="nsgrid">
+        <div class="field"><label for="pfBpm">New song tempo <span class="lbl-hint">BPM</span></label><input type="number" id="pfBpm" class="cenum" min="20" max="999" step="0.01"></div>
+        <div class="field"><label for="pfBeats">New song time signature</label>
+          <select id="pfBeats"><option value="2">2/4</option><option value="3">3/4</option><option value="4">4/4</option><option value="5">5/4</option><option value="6">6/4</option><option value="7">7/4</option></select></div>
+      </div>
+      <label class="pfchk"><input type="checkbox" id="pfConfirm"> Ask before closing Duet</label>
+      <p class="fine">Duet also saves every change by itself within a second, and keeps versions to go back to (Song menu → Versions). <b>Save</b> (Ctrl+S) saves right away and marks a version called "Saved".</p>
+      <div class="lbl-sm pfsec">App</div>
+      <label class="pfchk"><input type="checkbox" id="pfUpdate"> Check for updates by itself</label>
+      <label class="pfchk"><input type="checkbox" id="pfThreads"> Mix the song's tracks on all CPU cores</label>
+      <label class="pfchk"><input type="checkbox" id="pfSandbox"> Run plugins in a process of their own <span class="lbl-hint">experimental · after a restart</span></label>
+      <div class="row pflinks"><button class="btn" id="pfSound">Audio &amp; MIDI settings…</button><button class="btn" id="pfKeys">Keyboard shortcuts…</button></div>
+    </div>
+  </div>
+</div>
+<div class="modal" id="closeM" hidden>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="clTitle">
+    <div class="mhead"><b id="clTitle">Close Duet?</b></div>
+    <div class="mbody">
+      <p id="clText"></p>
+      <div class="row nsfoot"><button class="btn" id="clCancel">Cancel</button><button class="btn" id="clClose">Close</button><button class="btn primary" id="clSave">Save and close</button></div>
+    </div>
+  </div>
+</div>
 <div class="modal" id="clipEd" hidden>
   <div class="mbox ce" role="dialog" aria-modal="true" aria-labelledby="ceTitle">
     <div class="locknote" id="ceLock" hidden></div>
@@ -778,6 +832,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 
 <script src="wm.js"></script>
 <script src="daw.js"></script>
+<script src="project.js"></script>
 <script src="auto.js"></script>
 <script src="learn.js"></script>
 <script src="update.js"></script>
@@ -981,13 +1036,26 @@ async function refreshDevices() {
   const listChanged = devKey(inputs) !== devKey(init.inputs) || devKey(outputs) !== devKey(init.outputs)
     || inputs.some((d, i) => d.name !== init.inputs[i]?.name) || outputs.some((d, i) => d.name !== init.outputs[i]?.name);
   const sysMoved = res.systemOutput !== init.systemOutput || res.systemInput !== init.systemInput;
-  const curIn = $("inDev").value, curOut = $("outDev").value;
+  const curIn = $("inDev").value, curOut = $("outDev").value, curName = $("inDev").selectedOptions[0]?.text;
   Object.assign(init, { inputs, outputs, systemInput: res.systemInput, systemOutput: res.systemOutput });
+  // the interface that went away: something was plugged in since, so maybe it's back
+  const lost = ui.lostDev;
+  if (lost && lost.seen) {
+    const now = new Set([...res.inputs, ...res.outputs].map((d) => d.id));
+    const appeared = [...now].some((id) => !lost.seen.has(id));
+    lost.seen = now;
+    if (appeared && ui.audioWanted && !paint.recovering) setTimeout(tryLostDevice, 1500); // (a USB driver needs a moment)
+  }
   if (!listChanged && !sysMoved) return;
   let restart = false;
   if (listChanged) {
     fillDevices(curIn, curOut);
-    // the device we were using is gone (e.g. headphones unplugged): follow the system
+    // the device we were using is gone (e.g. headphones unplugged): follow the system, and go back to
+    // it when it's plugged in again
+    const goneIn = !inputs.some((d) => d.id === curIn), goneOut = !outputs.some((d) => d.id === curOut);
+    if ((goneIn || goneOut) && !ui.lostDev && ui.audioWanted && !(curIn === "SYSTEM|in" && curOut === "SYSTEM|out"))
+      ui.lostDev = { input: curIn, output: curOut, name: curName || "your interface",
+                     seen: new Set([...res.inputs, ...res.outputs].map((d) => d.id)) };
     if (!inputs.some((d) => d.id === curIn)) { $("inDev").value = "SYSTEM|in"; restart = true; }
     if (!outputs.some((d) => d.id === curOut)) { $("outDev").value = "SYSTEM|out"; restart = true; }
   }
@@ -1116,7 +1184,51 @@ function setTab(tab) {
 function openPanel(tab) { setTab(tab); setSidebar(true); }
 
 // ---------- sound: always on, restarts itself when a setting changes ----------
-async function startAudio() {
+async function soundLost() {
+  paint.recovering = true;
+  ui.audio = false;
+  const inId = $("inDev").value, outId = $("outDev").value;
+  if (!(ui.lostDev && inId === "SYSTEM|in" && outId === "SYSTEM|out")) // (the fallback itself failing keeps the first)
+    ui.lostDev = { input: inId, output: outId, name: $("inDev").selectedOptions[0]?.text || "your interface", seen: null };
+  toast(`Lost ${ui.lostDev.name}. Sound goes to the system default until it's back.`);
+  try {
+    await refreshDevices();
+    // (an ASIO driver stays in the list unplugged: always the system default for now)
+    $("inDev").value = "SYSTEM|in"; $("outDev").value = "SYSTEM|out";
+    deviceChanged(false);
+    await startAudio({ fallback: true });
+    try {
+      const r = await api.devices_poll();
+      ui.lostDev && (ui.lostDev.seen = new Set([...r.inputs, ...r.outputs].map((d) => d.id)));
+    } catch {}
+  } finally { setTimeout(() => (paint.recovering = false), 3000); }
+}
+
+// something was plugged in after the interface went away: try it (quietly), else stay on the system default
+async function tryLostDevice() {
+  const lost = ui.lostDev;
+  if (!lost || paint.recovering || !ui.audioWanted) return;
+  const has = (sel, id) => [...sel.options].some((o) => o.value === id);
+  if (!has($("inDev"), lost.input) || !has($("outDev"), lost.output)) return;
+  paint.recovering = true;
+  try {
+    $("inDev").value = lost.input; $("outDev").value = lost.output;
+    deviceChanged(false);
+    if (await startAudio({ quiet: true })) {
+      ui.lostDev = null;
+      toast(`${lost.name} is back.`);
+      if (ui.mixer) renderStrips();
+      return;
+    }
+    $("inDev").value = "SYSTEM|in"; $("outDev").value = "SYSTEM|out";
+    deviceChanged(false);
+    await startAudio({ fallback: true });
+  } finally { setTimeout(() => (paint.recovering = false), 3000); }
+}
+
+// opts.fallback: sound on the system default while the chosen device is away (unplugged): the
+// choice you made stays saved. opts.quiet: a try that may fail (is the device back yet?) says nothing.
+async function startAudio(opts = {}) {
   ui.audioWanted = true;
   $("audioBtn").textContent = "Turn sound off";
   const cfg = { input: $("inDev").value, output: $("outDev").value, samplerate: ui.rate, block: ui.block };
@@ -1125,18 +1237,21 @@ async function startAudio() {
   const res = await api.start_audio(cfg);
   if (!res.ok) {
     ui.audio = false;
+    if (opts.quiet) return false;
     setStatus("soundStatus", "bad", "Sound couldn't start", res.error);
     setHint("audioHint", "Try another interface or sample rate, or close other apps using it. With ASIO, pick the same device for both.", "bad");
     openPanel("sound");
-    return;
+    return false;
   }
   ui.audio = true;
-  store.set("input", cfg.input); store.set("output", cfg.output);
+  if (!opts.fallback && !ui.lostDev) { store.set("input", cfg.input); store.set("output", cfg.output); }
   ui.inChannels = res.inChannels;
   renderStrips();
   const dev = $("inDev").selectedOptions[0]?.text || "";
-  setStatus("soundStatus", "ok", "Sound on", `${dev} · ${res.inChannels} input${res.inChannels === 1 ? "" : "s"} · ${(res.latencyIn + res.latencyOut).toFixed(1)} ms`);
+  setStatus("soundStatus", "ok", "Sound on", `${dev} · ${res.inChannels} input${res.inChannels === 1 ? "" : "s"} · ${(res.latencyIn + res.latencyOut).toFixed(1)} ms`
+    + (ui.lostDev ? ` · back to ${ui.lostDev.name} when it's plugged in again` : ""));
   deviceChanged(false);
+  return true;
 }
 
 async function stopAudio() {
@@ -1819,17 +1934,9 @@ function paint(s) {
     paintMetro();
   }
   if (s.metro) paintBeat(s.metro.beat);
-  // the sound device vanished mid-stream (unplugged): fall back to the system's choice
-  if (s.streamError && ui.audio && !paint.recovering) {
-    paint.recovering = true;
-    ui.audio = false;
-    toast("Lost the sound device. Switching to the system default…");
-    refreshDevices().then(() => {
-      if (!init.inputs.some((d) => d.id === $("inDev").value)) $("inDev").value = "SYSTEM|in";
-      if (!init.outputs.some((d) => d.id === $("outDev").value)) $("outDev").value = "SYSTEM|out";
-      return startAudio();
-    }).finally(() => setTimeout(() => (paint.recovering = false), 3000));
-  }
+  // the sound device vanished mid-stream (unplugged, or its driver stopped): the system default
+  // plays on, and the interface comes back by itself when it's plugged in again
+  if (s.streamError && ui.audio && !paint.recovering) soundLost();
   vOnConnection(s.connected);
   for (const sig of s.signals || []) vReceive(sig);
   if (s.warning) setHint("connHint", s.warning, "warn");
@@ -1898,6 +2005,7 @@ async function boot(a) {
   init = await api.init();
   fillDevices();
   $("inDev").onchange = () => {
+    ui.lostDev = null; // you chose: stop waiting for the one that went away
     // same device for both directions is what ASIO needs, and what most people mean
     const sameOut = init.outputs.find((d) => d.id === $("inDev").value);
     if (sameOut) $("outDev").value = sameOut.id;
@@ -1911,7 +2019,7 @@ async function boot(a) {
   };
   seg($("rateSeg"), ui.rate, (v) => { ui.rate = v; store.set("rate", v); ui.paintBuf && ui.paintBuf(!ui.bufAuto); restartAudio(); });
   seg($("blockSeg"), ui.block, (v) => { ui.block = v; store.set("block", v); ui.paintBuf && ui.paintBuf(!ui.bufAuto); restartAudio(); });
-  $("outDev").onchange = restartAudio;
+  $("outDev").onchange = () => { ui.lostDev = null; restartAudio(); };
   $("audioBtn").onclick = () => (ui.audioWanted ? stopAudio() : startAudio());
   $("connectBtn").onclick = () => connect();
   $("peerCode").value = store.get("peer", "");

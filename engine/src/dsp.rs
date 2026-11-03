@@ -183,6 +183,8 @@ pub struct Shared {
     pub cpu_ns: AtomicU64, // smoothed process() time per block
     pub raw_in_peak: AtomicF32,
     pub in_callbacks: AtomicU64,
+    /// output callbacks so far: if they stop coming the device has gone (ASIO never says so)
+    pub out_callbacks: AtomicU64,
     pub ring_empty: AtomicU64,
     /// the largest input callback (samples), and input dropped for clock drift
     pub in_chunk: AtomicU64,

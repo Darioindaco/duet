@@ -577,6 +577,7 @@ class Daw:
         self.incoming = root / "_incoming"
         self.incoming.mkdir(parents=True, exist_ok=True)
         engine.file_dir(str(self.incoming))
+        self.unsaved = False  # edits since the last Save (Ctrl+S)
         self.p = self._open_last()
         self.version = 1
         # versions: one every few minutes while the song changes
@@ -668,49 +669,110 @@ class Daw:
 
     # --- projects on disk -----------------------------------------------------
 
+    # Songs live in their own folder: under Duet's Projects folder (<root>/<pid>), or anywhere you chose
+    # when you made it (<location>/<name>). songs.json remembers where each one is and when it was last
+    # opened (the Recent list).
+
+    def _songs(self) -> dict:
+        try:
+            d = json.loads((self.root / "songs.json").read_text(encoding="utf-8"))
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _write_songs(self, d: dict):
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            tmp = self.root / "songs.json.tmp"
+            tmp.write_text(json.dumps(d), encoding="utf-8")
+            os.replace(tmp, self.root / "songs.json")
+        except OSError:
+            traceback.print_exc()
+
+    def _folder(self, pid: str) -> Path:
+        """Where song `pid` is kept."""
+        f = self._songs().get(pid, {}).get("folder")
+        return Path(f) if f else self.root / pid
+
     def _open_last(self) -> Project:
         last = None
         try:
             last = (self.root / "last.txt").read_text(encoding="utf-8").strip()
         except OSError:
             pass
-        if last and (self.root / last / "project.json").exists():
+        if last and safe(last) and (self._folder(last) / "project.json").exists():
             try:
-                return Project.load(self.root / last)
+                return Project.load(self._folder(last))
             except (OSError, ValueError, KeyError):
                 traceback.print_exc()
         return self._fresh("My first song")
 
-    def _fresh(self, name: str) -> Project:
+    def _fresh(self, name: str, folder: Path | None = None, meta: dict | None = None, track: bool = True) -> Project:
         pid = new_id("p")
-        p = Project(pid, self.root / pid)
-        p.apply(p.make_op("meta", "meta", {**META_DEFAULTS, "name": name}, self.me))
-        p.apply(p.make_op("track", new_id("t"), {"name": "Track 1", "order": 1.0, "owner": self.me, "src": 0,
-                                                 "arm": False, "vol": 0.8, "pan": 0.0, "rack": []}, self.me))
+        p = Project(pid, folder or self.root / pid)
+        p.apply(p.make_op("meta", "meta", {**META_DEFAULTS, **(meta or {}), "name": name}, self.me))
+        if track:
+            p.apply(p.make_op("track", new_id("t"), {"name": "Track 1", "order": 1.0, "owner": self.me, "src": 0,
+                                                     "arm": False, "vol": 0.8, "pan": 0.0, "rack": []}, self.me))
         p.save()
-        self._remember(pid)
+        self._remember(pid, folder)
         return p
 
-    def _remember(self, pid: str):
+    def _remember(self, pid: str, folder: Path | None = None):
+        """`pid` is the open song now: first in the Recent list (and where it is, if not in Projects)."""
         try:
             self.root.mkdir(parents=True, exist_ok=True)
             (self.root / "last.txt").write_text(pid, encoding="utf-8")
         except OSError:
             pass
+        d = self._songs()
+        e = d.get(pid, {})
+        if folder is not None and Path(folder) != self.root / pid:
+            e["folder"] = str(folder)
+        e["opened"] = time.time()
+        d[pid] = e
+        self._write_songs(d)
 
     def projects(self) -> list[dict]:
+        """Every song here, the most recently opened first."""
+        reg = self._songs()
+        folders = {d.name: d for d in (self.root.iterdir() if self.root.exists() else []) if d.is_dir() and safe(d.name)}
+        for pid, e in reg.items():
+            if e.get("folder") and safe(pid):
+                folders[pid] = Path(e["folder"])
         out = []
-        for d in self.root.iterdir() if self.root.exists() else []:
+        for pid, d in folders.items():
             f = d / "project.json"
             if not f.exists():
                 continue
             try:
-                p = Project.load(d)
+                p = self.p if pid == self.p.pid else Project.load(d)
             except (OSError, ValueError, KeyError):
                 continue
-            out.append({"pid": p.pid, "name": p.meta()["name"], "modified": f.stat().st_mtime,
+            e = reg.get(p.pid, {})
+            modified = f.stat().st_mtime
+            out.append({"pid": p.pid, "name": p.meta()["name"], "modified": modified,
+                        "opened": float(e.get("opened") or 0) or modified,
+                        "folder": str(d), "custom": bool(e.get("folder")),
                         "clips": len(p.live("clip")), "current": p.pid == self.p.pid})
-        return sorted(out, key=lambda x: -x["modified"])
+        return sorted(out, key=lambda x: -x["opened"])
+
+    def name_taken(self, name: str, but: str | None = None) -> bool:
+        """Another song here is called `name` already (not minding case or spaces at the ends)."""
+        n = str(name).strip().casefold()
+        return any(x["name"].strip().casefold() == n for x in self.projects() if x["pid"] != but)
+
+    def free_name(self, base: str) -> str:
+        """`base`, or `base 2`, `base 3`...: the first that no song here has."""
+        taken = {x["name"].strip().casefold() for x in self.projects()}
+        base = str(base).strip() or "New song"
+        if base.casefold() not in taken:
+            return base
+        stem = re.sub(r"\s+\d+$", "", base)
+        n = 2
+        while f"{stem} {n}".casefold() in taken:
+            n += 1
+        return f"{stem} {n}"
 
     def _switch(self, p: Project):
         """Make `p` the open project (the old one is saved)."""
@@ -733,7 +795,8 @@ class Daw:
         self.redos.clear()
         self.partner_here = None
         self.p = p
-        self._remember(p.pid)
+        self.unsaved = False
+        self._remember(p.pid, p.folder)
         self._upgrade_blocks()
         self._changed()
 
@@ -744,17 +807,88 @@ class Daw:
         if more:
             self._do(more, undoable=False)
 
-    def new_project(self, name: str = "New song"):
+    def new_project(self, name: str = "", location: str | None = None, bpm=None, beats=None,
+                    key=None, track: bool = True) -> dict:
+        """A new song, opened (and shared, if connected). location: the folder to keep it in (a folder
+        named after the song is made there); None: Duet's own Projects folder."""
         with self.lock:
-            self._switch(self._fresh(name or "New song"))
+            name = str(name or "").strip()[:80] or self.free_name("New song")
+            if self.name_taken(name):
+                return {"error": f"There's a song called \"{name}\" already. Pick another name."}
+            folder = None
+            if location:
+                folder = Path(location) / file_name(name)
+                try:
+                    if folder.exists() and any(folder.iterdir()):
+                        return {"error": f"There's a folder called \"{folder.name}\" there already, with things in it."}
+                    folder.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    return {"error": f"Can't make a folder there: {e}"}
+            meta = {}
+            if bpm is not None:
+                meta["bpm"] = finite(bpm, 120.0, 20.0, 999.0)
+            if beats is not None:
+                meta["beats"] = int(finite(beats, 4, 1, 16))
+            if key:
+                meta["key"] = str(key)[:20]
+            try:
+                p = self._fresh(name, folder, meta, track=bool(track))
+            except OSError as e:
+                return {"error": f"Couldn't make the song: {e}"}
+            self._switch(p)
             self._share_project()
+            return {"ok": True}
 
     def open_project(self, pid: str):
         with self.lock:
             if pid == self.p.pid or not safe(pid):
                 return
-            self._switch(Project.load(self.root / pid))
+            self._switch(Project.load(self._folder(pid)))
             self._share_project()
+
+    def open_folder(self, folder: str) -> dict:
+        """A song folder (one with a project.json) from anywhere: remembered, and opened."""
+        d = Path(folder)
+        if not (d / "project.json").exists():
+            return {"error": "There's no Duet song in that folder (it has no project.json)."}
+        try:
+            p = Project.load(d)
+        except (OSError, ValueError, KeyError) as e:
+            return {"error": f"Couldn't open it: {e}"}
+        with self.lock:
+            if p.pid == self.p.pid:
+                return {"ok": True}
+            other = self._folder(p.pid)
+            if other.resolve() != d.resolve() and (other / "project.json").exists():
+                return {"error": "That's a copy of a song you have here already: open that one from Recent."}
+            self._remember(p.pid, d)
+            self._switch(p)
+            self._share_project()
+        return {"ok": True}
+
+    def forget_project(self, pid: str) -> dict:
+        """Off the Recent list (a song in a folder of its own; the folder itself stays on disk)."""
+        with self.lock:
+            if pid == self.p.pid:
+                return {"error": "That's the song that's open."}
+            d = self._songs()
+            if pid in d and d[pid].get("folder"):
+                del d[pid]
+                self._write_songs(d)
+            return {"ok": True}
+
+    def save_now(self) -> dict:
+        """Save (Ctrl+S): to disk now, and kept as a version labelled "Saved" to come back to."""
+        with self.lock:
+            try:
+                self.p.save()
+                self.dirty = False
+                self._snapshot(label="Saved")
+            except OSError as e:
+                return {"error": f"Couldn't save: {e}"}
+            self.unsaved = False
+            self._changed()
+            return {"ok": True, "folder": str(self.p.folder)}
 
     def _share_project(self):
         """We changed projects: the partner comes along."""
@@ -841,7 +975,7 @@ class Daw:
                     return {"error": "That isn't a Duet song file."}
                 data = json.loads(z.read("project.json").decode("utf-8"))
                 pid = data.get("pid") if safe(str(data.get("pid", ""))) else None
-                if not pid or (self.root / pid).exists():
+                if not pid or self._folder(pid).exists():
                     pid = new_id("p")
                 data["pid"] = pid
                 folder = self.root / pid
@@ -1143,6 +1277,8 @@ class Daw:
             if local:
                 kind, oid, fields = op
                 self.outbox.setdefault((kind, oid), [kind, oid, {}])[2].update(fields)
+        if changed:
+            self.unsaved = True  # since the last Save (Ctrl+S); autosave still keeps every edit on disk
         if changed or local:
             self._changed()
 
@@ -2512,7 +2648,7 @@ class Daw:
             self._on_reconcile(m)
         elif t == "snap":
             if m.get("adopt") and pid != self.p.pid:
-                folder = self.root / pid
+                folder = self._folder(pid)
                 p = Project.load(folder) if (folder / "project.json").exists() else Project(pid, folder)
                 self._switch(p)
                 self.notices.append(f"Opened your partner's song: {m.get('name') or 'untitled'}")
@@ -2891,7 +3027,7 @@ class Daw:
         self.p.save()
         data = json.loads(json.dumps(self.p.data()))
         pid = new_id("p")
-        name = f"{self.p.meta()['name']} (my version)"[:80]
+        name = self.free_name(f"{self.p.meta()['name']} (my version)"[:80])
         data["pid"] = pid
         try:
             data["objs"]["meta"]["meta"]["name"] = name
@@ -3069,7 +3205,7 @@ class Daw:
                 files[name] = {**f, "here": name in self.loaded, "loading": name in self.loading,
                                "mine": f.get("owner") == self.me}
             return {
-                "pid": p.pid, "meta": p.meta(), "tracks": [t for t in tracks if not t["bus"]],
+                "pid": p.pid, "meta": p.meta(), "unsaved": self.unsaved, "folder": str(p.folder), "tracks": [t for t in tracks if not t["bus"]],
                 "buses": [t for t in tracks if t["bus"]],
                 "clips": [{"id": i, **c} for i, c in p.live("clip").items() if not c.get("tsrc")],
                 "takes": [{"id": i, **c} for i, c in p.live("clip").items() if c.get("tsrc")],

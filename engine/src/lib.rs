@@ -587,7 +587,8 @@ impl Engine {
     #[pyo3(signature = (include_asio=true))]
     #[allow(clippy::type_complexity)]
     fn devices<'py>(&self, py: Python<'py>, include_asio: bool) -> PyResult<(Vec<Bound<'py, PyDict>>, Vec<Bound<'py, PyDict>>, Option<String>, Option<String>, Option<String>, Option<String>)> {
-        let list = py.allow_threads(|| self.audio.list(include_asio));
+        let list = py.allow_threads(|| self.audio.list(include_asio))
+            .ok_or_else(|| PyRuntimeError::new_err("the sound devices didn't answer in time"))?;
         let conv = |d: &audio::DeviceInfo| -> PyResult<Bound<'py, PyDict>> {
             let o = PyDict::new(py);
             o.set_item("id", &d.id)?;

@@ -190,6 +190,47 @@ impl Timeline {
         &ns[a..b]
     }
 
+    /// What track `t`'s instrument should be doing at `at` when play starts there (or jumps, or the
+    /// loop goes round): each controller's last value and the pitch wheel's, then a note-on for every
+    /// note that started before `at` and is still held there (note chasing: start in the middle of a
+    /// long note and you hear it, not just the next one). Notes that end right at `at` aren't
+    /// started again; ones that start at `at` come from notes_in as usual. No allocation (it runs
+    /// in the audio thread).
+    pub fn chase(&self, t: usize, at: i64, mut f: impl FnMut(NoteEv)) {
+        let Some(ns) = self.notes.get(t) else { return };
+        let upto = ns.partition_point(|n| n.pos <= at);
+        let (mut held, mut vel, mut cc) = ([0i16; 128], [0u8; 128], [-1i16; 128]);
+        let mut bend: Option<NoteAt> = None;
+        for e in &ns[..upto] {
+            let k = (e.key & 127) as usize;
+            match e.ctl {
+                0 if e.on => {
+                    if e.pos < at {
+                        held[k] += 1;
+                        vel[k] = e.vel;
+                    }
+                }
+                0 => held[k] = (held[k] - 1).max(0),
+                1 if e.pos < at => cc[k] = e.vel as i16,
+                2 if e.pos < at => bend = Some(*e),
+                _ => {}
+            }
+        }
+        for (k, v) in cc.iter().enumerate() {
+            if *v >= 0 {
+                f(NoteEv::Cc(k as u8, *v as u8));
+            }
+        }
+        if let Some(b) = bend {
+            f(b.event());
+        }
+        for k in 0..128 {
+            if held[k] > 0 {
+                f(NoteEv::On(k as u8, vel[k].max(1)));
+            }
+        }
+    }
+
     /// Add track `t`'s audio for timeline samples pos..pos+l.len() into `l`, `r`
     /// (a mono clip into both).
     pub fn render(&self, t: usize, pos: i64, l: &mut [f32], r: &mut [f32]) {
@@ -1385,6 +1426,25 @@ mod tests {
             clicks.extend(buf.iter().enumerate().filter(|(_, v)| **v > 0.5).map(|(k, _)| b * 128 + k as i64));
         }
         assert_eq!(clicks, vec![0, 300, 1000]);
+    }
+
+    #[test]
+    fn starting_inside_a_note_plays_it() {
+        let mut cache = AudioCache::default();
+        let notes = vec![vec![], vec![
+            NoteDesc { t: 0.0, dur: 1.0, key: 60, vel: 90, ctl: 0 },        // held over 0.5 s
+            NoteDesc { t: 0.0, dur: 0.5, key: 64, vel: 100, ctl: 0 },       // ends right at 0.5 s
+            NoteDesc { t: 0.5, dur: 0.2, key: 67, vel: 100, ctl: 0 },       // starts at 0.5 s (notes_in plays it)
+            NoteDesc { t: 0.1, dur: 0.0, key: 1, vel: 70, ctl: 1 },         // mod wheel
+            NoteDesc { t: 0.2, dur: 0.0, key: 1, vel: 40, ctl: 1 },         // ... moved later
+        ]];
+        let tl = cache.build(&[], &notes, 48000);
+        let mut got = vec![];
+        tl.chase(1, 24000, |e| got.push(e));
+        assert_eq!(got, vec![NoteEv::Cc(1, 40), NoteEv::On(60, 90)]);
+        let mut none = vec![];
+        tl.chase(1, 0, |e| none.push(e));
+        assert!(none.is_empty(), "{none:?}");
     }
 
     #[test]

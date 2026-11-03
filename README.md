@@ -43,8 +43,13 @@ Silicon, and Intel when it was built) and Windows. After that, Duet updates itse
   export to WAV (mix and stems), normalized to −14/−16/−9/−23 LUFS if you like.
 - Playlist tools (pointer, pencil, scissors, glue, eraser, mute, fade), loop
   for patterns and audio, gain lines on every clip, bendable fades.
+- Songs: **Save** (Ctrl+S) on top of autosave, a **New song** window (name, where
+  it's kept, tempo, time signature, key), names that can't clash, **Recently opened**,
+  a question before closing, and **Preferences** (Ctrl+,).
 - Safety: autosave, **versions** to go back to, crash recovery, and `.duet`
-  song files with all their audio.
+  song files with all their audio;
+  an interface that's unplugged mid-song hands over to the system default and takes
+  over again when it's back.
 - Presence: see where your partner is and what they select, follow their view.
 
 ## Install
@@ -408,7 +413,7 @@ and *Undo* takes it back.
 Any clip can be muted: right-click → *Mute clip* (or *Alt+M*). It stays in
 place, greyed out, and is silent for both of you.
 
-Click in the ruler to move the playhead, drag in the ruler to mark a loop.
+Click in the ruler to move the playhead (keep the button down and drag to scrub), right-drag in the ruler to mark a loop.
 *Space* plays and stops, *R* records, *Ctrl + scroll* zooms. *Click* gives you
 a metronome while the song plays (just for you).
 

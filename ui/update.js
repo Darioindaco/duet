@@ -6,8 +6,10 @@
 const upd = { info: null, timer: null, dismissed: null };
 
 function updSetup() {
-  setTimeout(() => updCheck(false), 6000);
-  setInterval(() => updCheck(false), 6 * 3600 * 1000);
+  // (Preferences: "Check for updates by itself" off: only the song menu's Check for updates)
+  const auto = async () => { try { if ((await api.prefs_get()).auto_update === false) return; } catch {} updCheck(false); };
+  setTimeout(auto, 6000);
+  setInterval(auto, 6 * 3600 * 1000);
 }
 
 async function updCheck(asked) {

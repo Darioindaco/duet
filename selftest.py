@@ -169,6 +169,64 @@ def test_daw():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_song_files():
+    """Songs as files: names don't clash, a song kept in a folder you chose, the Recent list (last
+    opened first), opening a song folder, and Save (a version labelled "Saved", nothing unsaved after)."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-songs-"))
+    d = Daw(e, root / "Projects", "me")
+    try:
+        first = d.p.pid
+        assert d.view()["unsaved"] is False
+        r = d.new_project("Demo", bpm=92, beats=3, track=False)
+        assert r.get("ok"), r
+        v = d.view()
+        assert v["meta"]["name"] == "Demo" and v["meta"]["bpm"] == 92 and v["meta"]["beats"] == 3 and not v["tracks"]
+        assert "already" in d.new_project("demo ").get("error", ""), "same name (any case) is refused"
+        assert d.free_name("Demo") == "Demo 2"
+        elsewhere = root / "Elsewhere"
+        elsewhere.mkdir()
+        r = d.new_project("Away", location=str(elsewhere))
+        assert r.get("ok"), r
+        away = d.p.pid
+        assert (elsewhere / "Away" / "project.json").exists() and d.view()["folder"] == str(elsewhere / "Away")
+        # recent: the one opened last comes first, the open one is marked
+        d.open_project(first)
+        names = [x["name"] for x in d.projects()]
+        assert names[0] == "My first song" and "Away" in names and "Demo" in names, names
+        assert [x for x in d.projects() if x["pid"] == away][0]["custom"]
+        # an edit: unsaved until Save, which keeps a version labelled "Saved"
+        d.edit([["meta", "meta", {"bpm": 101}]])
+        assert d.view()["unsaved"] is True
+        assert d.save_now().get("ok")
+        assert d.view()["unsaved"] is False
+        assert any(x.get("label") == "Saved" for x in d.versions())
+        # a fresh Daw (Duet started again) finds the song in its own folder, and opens it
+        d.close()
+        d = Daw(e, root / "Projects", "me")
+        assert d.p.pid == first
+        d.open_project(away)
+        assert d.p.pid == away and d.p.folder == elsewhere / "Away"
+        # forgotten, then found again by opening its folder
+        d.open_project(first)
+        assert d.forget_project(away).get("ok")
+        assert away not in [x["pid"] for x in d.projects()]
+        assert d.open_folder(str(elsewhere / "Away")).get("ok") and d.p.pid == away
+        assert "no Duet song" in d.open_folder(str(elsewhere)).get("error", "")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+    print("song files ok: unique names, chosen locations, recent list, open folder, save")
+
+
 def test_song_edit():
     """Undo/redo of your own edits (a whole take in one step), and the export:
     mix and stems as WAV, the right length, faster than real time."""
@@ -1800,6 +1858,53 @@ def test_stun():
     e.close()
 
 
+def test_note_chase():
+    """Play starting in the middle of a long note: the note sounds right away (chased), not only from
+    the next note on; and before it starts there's silence."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-chase-"))
+    d = Daw(e, root / "songs", "me")
+    try:
+        d.set_local("click", False)
+        d.edit([["meta", "meta", {"bpm": 120.0}],
+                ["track", "syn", {"name": "Synth", "order": 5.0, "owner": "me", "vol": 1.0, "inst": {"kind": "synth"}}],
+                ["pattern", "p1", {"name": "Pad", "len": 8.0}],
+                ["note", "long", {"pattern": "p1", "track": "syn", "start": 0.0, "len": 4.0, "key": 57, "vel": 110}],
+                ["note", "next", {"pattern": "p1", "track": "syn", "start": 6.0, "len": 1.0, "key": 60, "vel": 110}],
+                ["clip", "c1", {"track": "syn", "pattern": "p1", "start": 0.0, "blen": 8.0, "boff": 0.0}]])
+        x = [0.0] * N
+        wait_for(lambda: d.view()["tracks"] and any(t.get("slot") is not None for t in d.view()["tracks"] if t["id"] == "syn"), what="synth")
+        for _ in range(20):
+            e.process(x)
+
+        def loudness(at_s):
+            e.daw_play(at_s)
+            out = []
+            for _ in range(int(0.3 * SR / N)):
+                out += e.process(x)
+            e.daw_stop()
+            for _ in range(int(1.0 * SR / N)):  # let it ring out
+                e.process(x)
+            return max(abs(v) for v in out)
+
+        inside = loudness(1.0)  # beat 2 of a note from beat 0 to 4
+        assert inside > 0.01, f"started inside the note, nothing sounded ({inside})"
+        gap = loudness(2.4)  # beat 4.8: after the long note, before the next
+        assert gap < 1e-3, f"between the notes it should be quiet ({gap})"
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+    print(f"note chase: ok  (play from inside a note: it sounds at once, peak {inside:.3f}; quiet between notes)")
+
+
 def test_channel_blocks():
     """A pattern block on a channel's row plays that channel's notes. Writing a second channel into a
     pattern that's already in the song gives that channel its own block in the same place (one undo
@@ -2727,11 +2832,13 @@ if __name__ == "__main__":
     test_two_engines()
     test_auto_buffer()
     test_daw()
+    test_song_files()
     test_song_edit()
     test_versions()
     test_tempo_map()
     test_takes()
     test_channel_blocks()
+    test_note_chase()
     test_clip_gain()
     test_midi_files()
     test_instruments()

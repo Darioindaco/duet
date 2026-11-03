@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, Data, SampleFormat, SampleRate, StreamConfig};
@@ -78,21 +78,48 @@ impl AudioThread {
                 com_init_sta();
                 // only ever replaced or dropped: dropping a cpal stream stops it
                 let mut streams: Option<(cpal::Stream, cpal::Stream)> = None;
-                for req in rx {
+                // the watchdog: the running streams' Shared, the output callback count last seen, and when
+                // it last moved. cpal's ASIO host never calls the error callback, so an unplugged
+                // interface (a Focusrite pulled out mid-song) only shows as callbacks that stop coming.
+                let mut watch: Option<(Arc<Shared>, u64, Instant)> = None;
+                loop {
+                    let req = match rx.recv_timeout(Duration::from_millis(250)) {
+                        Ok(r) => r,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if let (Some(_), Some((sh, last, at))) = (&streams, &mut watch) {
+                                let n = sh.out_callbacks.load(Relaxed);
+                                if n != *last {
+                                    *last = n;
+                                    *at = Instant::now();
+                                } else if at.elapsed() > STALL && !sh.stream_error.load(Relaxed) {
+                                    eprintln!("audio: no output callbacks for {:?}: the device stopped (unplugged?)", at.elapsed());
+                                    sh.stream_error.store(true, Relaxed);
+                                }
+                            }
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     match req {
                         Req::List(include_asio, reply) => {
                             let _ = reply.send(list_devices(include_asio));
                         }
                         Req::Start(args, reply) => {
                             drop(streams.take()); // stop the old ones first (drop = stop)
+                            watch = None;
+                            let shared = args.shared.clone();
                             let res = build(args).map(|(i, o, ok)| {
                                 streams = Some((i, o));
                                 ok
                             });
+                            if res.is_ok() {
+                                watch = Some((shared.clone(), shared.out_callbacks.load(Relaxed), Instant::now()));
+                            }
                             let _ = reply.send(res);
                         }
                         Req::Stop(reply) => {
                             drop(streams.take());
+                            watch = None;
                             let _ = reply.send(());
                         }
                     }
@@ -102,29 +129,33 @@ impl AudioThread {
         AudioThread { tx: Mutex::new(tx) }
     }
 
-    fn call<T>(&self, make: impl FnOnce(mpsc::Sender<T>) -> Req) -> Option<T> {
+    /// A request to the audio thread, waiting at most `wait` for the answer: a sound card driver
+    /// that hangs (an interface that was just unplugged) must not take whoever asked down with it.
+    fn call<T>(&self, wait: Duration, make: impl FnOnce(mpsc::Sender<T>) -> Req) -> Option<T> {
         let (rtx, rrx) = mpsc::channel();
         self.tx.lock().unwrap().send(make(rtx)).ok()?;
-        rrx.recv().ok()
+        rrx.recv_timeout(wait).ok()
     }
 
     /// All devices. With include_asio=false, skip ASIO (cheap enough to poll,
-    /// and safe while an ASIO stream runs).
-    pub fn list(&self, include_asio: bool) -> DeviceList {
-        self.call(|r| Req::List(include_asio, r)).unwrap_or(DeviceList {
-            inputs: vec![], outputs: vec![], default_input: None, default_output: None,
-            default_input_name: None, default_output_name: None,
-        })
+    /// and safe while an ASIO stream runs). None: the audio thread didn't answer in time.
+    pub fn list(&self, include_asio: bool) -> Option<DeviceList> {
+        self.call(Duration::from_secs(if include_asio { 20 } else { 4 }), |r| Req::List(include_asio, r))
     }
 
     pub fn start(&self, args: StartArgs) -> Result<StartOk, String> {
-        self.call(|r| Req::Start(args, r)).unwrap_or_else(|| Err("audio thread gone".into()))
+        self.call(Duration::from_secs(15), |r| Req::Start(args, r)).unwrap_or_else(|| {
+            Err("The sound device isn't answering (was it unplugged?). Plug it back in or pick another one; if that does nothing, restart Duet.".into())
+        })
     }
 
     pub fn stop(&self) {
-        self.call(Req::Stop);
+        self.call(Duration::from_secs(5), Req::Stop);
     }
 }
+
+/// No output callbacks for this long while streaming: the device has gone.
+const STALL: Duration = Duration::from_millis(2000);
 
 #[cfg(windows)]
 fn com_init_sta() {
@@ -475,6 +506,7 @@ fn build(a: StartArgs) -> Result<(cpal::Stream, cpal::Stream, StartOk), String> 
                 if let Some(d) = ts.playback.duration_since(&ts.callback) {
                     shared_out.lat_out_us.store(d.as_micros() as u64, Relaxed);
                 }
+                shared_out.out_callbacks.fetch_add(1, Relaxed);
                 let frames = data.len() / out_channels;
                 cushion.input_chunk(shared_out.in_chunk.load(Relaxed) as usize);
                 // what this callback reads: whole blocks, enough for its frames

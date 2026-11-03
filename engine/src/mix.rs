@@ -582,14 +582,18 @@ fn strip_body(strip: &mut Strip, i: usize, w: &Wiring, b: &TrackBufs, tl: Option
                         // song's start comes out of its effects. Not when the loop went round: that
                         // stretch was read before the loop's end.
                         let ahead = w.ahead_notes[i];
-                        if ahead > 0 {
-                            let lo = match pl.looping {
+                        let lo = if ahead > 0 {
+                            match pl.looping {
                                 Some((ls, le)) if le > ls && p >= ls && p < le => (p - ahead).max(ls),
                                 _ => p - ahead,
-                            };
-                            for e in tl.notes_in(i, lo, p) {
-                                inst.inst.note(e.event());
                             }
+                        } else {
+                            p
+                        };
+                        // the notes already held there (started in the middle of one): on again now
+                        tl.chase(i, lo, |e| inst.inst.note(e));
+                        for e in tl.notes_in(i, lo, p) {
+                            inst.inst.note(e.event());
                         }
                     }
                     render_inst(tl, i, inst, p, &mut l[off..off + len], &mut r[off..off + len]);

@@ -368,6 +368,7 @@ function songSetup() {
   $("cfMine").onclick = async () => { $("conflict").hidden = true; setSongView(await api.daw_resolve("mine")); };
 
   document.addEventListener("keydown", songKeys);
+  projectSetup();
   api.daw_project().then(setSongView);
   const tick = () => { songFrame(); song.raf = requestAnimationFrame(tick); };
   tick();
@@ -453,9 +454,8 @@ function songPaint(d) {
 function songRender() {
   if (!song.view) return;
   const v = song.view, m = v.meta;
-  $("songName").textContent = m.name;
   $("songShared").classList.toggle("on", v.shared);
-  $("songBtn").title = v.shared ? "This song is open on both sides: you're working on it together" : "Only on this computer for now. Connect to work on it together.";
+  paintSaved();
   if (document.activeElement !== $("songBpm")) $("songBpm").value = Math.round(m.bpm);
   $("songBeats").value = String(m.beats);
   $("tgClick").classList.toggle("on", !!v.local.click);
@@ -1546,7 +1546,7 @@ function lanesDbl(e) {
   const p = lanePoint(e), c = hitClip(p.beat, p.row);
   if (isAuto(song.view.tracks[p.row])) return;
   if (!c) { insertPattern(p); return; }
-  if (c.pattern) { seq.pat = c.pattern; setMainView("seq"); return; }
+  if (c.pattern) { openPatternBlock(c); return; }
   openClipEditor(c.id);
 }
 
@@ -1561,6 +1561,16 @@ function selectFrom(c) {
   songDraw();
 }
 
+// a pattern block opens in the sequencer with the piano roll of the channel it plays (its row);
+// a block on a row that isn't an instrument: the first channel with notes in the pattern
+function openPatternBlock(c) {
+  const chans = channels();
+  const tid = chans.some((t) => t.id === c.track) ? c.track
+    : (chans.find((t) => patNotes(c.pattern, t.id).length) || {}).id;
+  seq.pat = c.pattern;
+  if (tid && tid !== seq.channel) { seq.channel = tid; seq.sel.clear(); seq.prTop = null; syncMidiTarget(); }
+  setMainView("seq");
+}
 function insertPattern(p) {
   const pat = curPattern(), t = song.view.tracks[p.row];
   if (!pat || !t || isAuto(t)) return;
@@ -1678,7 +1688,7 @@ function lanesContext(e) {
     items.push(["Copy", "Ctrl+C", () => copySel()]);
     items.push([n > 1 ? `Delete ${n} clips` : "Delete", "Del", deleteSel]);
     if (c.pattern) {
-      items.push(["Open in the sequencer", "dbl-click", () => { seq.pat = c.pattern; setMainView("seq"); }]);
+      items.push(["Open in the sequencer", "dbl-click", () => openPatternBlock(c)]);
     } else {
       items.push(["Edit clip…", "dbl-click", () => openClipEditor(c.id)]);
       items.push(["Tune the voice…", "", () => openTune(c.id)]);
@@ -1853,6 +1863,8 @@ async function sectionOp(sc, op) {
 function rulerContext(e) {
   e.preventDefault();
   if (!song.view) return;
+  if (song.rulerDrag && song.rulerDrag.right) { song.rulerDrag.ctx = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, preventDefault() {} }; return; }
+  if (song.rulerNoCtx && performance.now() - song.rulerNoCtx < 400) { song.rulerNoCtx = 0; return; } // that was a loop drag
   const p = rulerAt(e), at = Math.max(0, snapBeat(p.beat, snapFor(e))), bar = Math.max(0, snapBeat(p.beat, 0));
   const items = [], h = p.hit;
   if (h && (h.what === "marker" || h.what === "section")) {
@@ -1988,43 +2000,54 @@ function playheadDrag(e, el, beatOf) {
   el.addEventListener("pointermove", move); el.addEventListener("pointerup", up);
 }
 function rulerDown(e) {
-  if (e.button !== 0 || !song.view) return;
+  if ((e.button !== 0 && e.button !== 2) || !song.view) return;
   const rp = rulerAt(e);
-  if ((rp.lane === "bars" || !rp.hit) && nearPlayhead(rp.x)) { playheadDrag(e, song.ruler, (ev) => rulerAt(ev).beat); return; }
-  if (rp.hit && (rp.hit.what === "marker" || rp.hit.what === "tag" ||
-      (rp.hit.what === "section" && Math.abs(rp.x - rp.hit.x0) <= 6)) && rulerDragThing(e, rp)) return;
-  if (rp.hit && rp.hit.what === "section") {  // a click on a section's band selects it (and drags nothing)
-    selectSection(rp.hit.sc); return;
+  if (e.button === 0) {
+    if ((rp.lane === "bars" || !rp.hit) && nearPlayhead(rp.x)) { playheadDrag(e, song.ruler, (ev) => rulerAt(ev).beat); return; }
+    if (rp.hit && (rp.hit.what === "marker" || rp.hit.what === "tag" ||
+        (rp.hit.what === "section" && Math.abs(rp.x - rp.hit.x0) <= 6)) && rulerDragThing(e, rp)) return;
+    if (rp.hit && rp.hit.what === "section") {  // a click on a section's band selects it (and drags nothing)
+      selectSection(rp.hit.sc); return;
+    }
+    if (song.selSection) { song.selSection = null; drawRuler(); }
+    // a click anywhere on the ruler puts the playhead there; keep the button down and drag to scrub
+    const r0 = song.ruler.getBoundingClientRect(), sx0 = $("lanes").scrollLeft;
+    const raw = (ev) => Math.max(0, (ev.clientX - r0.left + sx0) / song.ppb);
+    locateTo(Math.max(0, snapBeat(raw(e), snapFor(e))));
+    drawRuler(); songDraw();
+    playheadDrag(e, song.ruler, raw);
+    return;
   }
-  if (song.selSection) { song.selSection = null; drawRuler(); }
+  // right button: drag to set the loop (a right-click without dragging opens the ruler's menu)
   const cv = song.ruler, r = cv.getBoundingClientRect(), sx = $("lanes").scrollLeft;
   const at = (ev) => Math.max(0, snapBeat((ev.clientX - r.left + sx) / song.ppb, snapFor(ev)));
-  const b0 = at(e);
-  song.rulerDrag = { b0, moved: false };
+  const b0 = at(e), x0 = e.clientX;
+  song.rulerDrag = { b0, moved: false, right: true, ctx: null };
   cv.setPointerCapture(e.pointerId);
   const m = song.view.meta, before = { loop: m.loop, loop_start: m.loop_start, loop_end: m.loop_end };
   let lastEv = e;
   const move = (ev) => {
     lastEv = ev;
+    if (!song.rulerDrag.moved && Math.abs(ev.clientX - x0) < 4) return;
     const b = at(ev);
     if (b === b0 && !song.rulerDrag.moved) return;
     song.rulerDrag.moved = true;
+    hideCtx();
     Object.assign(m, { loop_start: Math.min(b0, b), loop_end: Math.max(b0, b) });
     drawRuler(); songDraw();
   };
   const up = () => {
     cv.removeEventListener("pointermove", move);
     cv.removeEventListener("pointerup", up);
-    const moved = song.rulerDrag.moved;
+    const { moved, ctx } = song.rulerDrag;
     song.rulerDrag = null;
-    if (moved && m.loop_end > m.loop_start) {
-      Object.assign(m, before);
-      songEdit([["meta", "meta", { loop: true, loop_start: Math.min(b0, at(lastEv)), loop_end: Math.max(b0, at(lastEv)) }]]);
-    } else {
-      Object.assign(m, before);
-      locateTo(b0);
-      songDraw();
-    }
+    Object.assign(m, before);
+    if (moved) {
+      song.rulerNoCtx = performance.now(); // (Windows sends the context menu after the button comes up)
+      if (Math.abs(at(lastEv) - b0) > 1e-9)
+        songEdit([["meta", "meta", { loop: true, loop_start: Math.min(b0, at(lastEv)), loop_end: Math.max(b0, at(lastEv)) }]]);
+      else songDraw();
+    } else if (ctx) rulerContext(ctx); // (a Mac sends it when the button goes down: it waited)
   };
   cv.addEventListener("pointermove", move);
   cv.addEventListener("pointerup", up);
@@ -2039,9 +2062,11 @@ async function toggleSongMenu() {
   menu.style.top = r.bottom + 8 + "px";
   const v = song.view;
   menu.innerHTML = `<div class="macts">
-      <button id="mNew"><span>New song</span></button>
+      <button id="mNew"><span>New song…</span><kbd>${comboLabel("Mod+N")}</kbd></button>
+      <button id="mSave"><span>Save</span><kbd>${comboLabel("Mod+S")}</kbd></button>
+      <button id="mOpenFolder"><span>Open a song folder…</span></button>
       <button id="mVersions"><span>Versions…</span></button>
-      <button id="mSaveFile"><span>Save as a file…</span></button>
+      <button id="mSaveFile"><span>Save as a file (with its audio)…</span></button>
       <button id="mOpenFile"><span>Open a song file…</span></button>
       <button id="mExport"><span>Export as WAV…</span><kbd>Ctrl+E</kbd></button>
       <button id="mMidiIn"><span>Import a MIDI file…</span></button>
@@ -2049,17 +2074,19 @@ async function toggleSongMenu() {
       <button id="mKeys"><span>Keyboard shortcuts…</span><kbd>Ctrl+/</kbd></button>
       <button id="mUpdate"><span>Check for updates</span><kbd>${upd.info?.current ? "build " + upd.info.current : ""}</kbd></button>
       <button id="mSound"><span>Audio &amp; MIDI settings</span></button>
+      <button id="mPrefs"><span>Preferences…</span><kbd>${comboLabel("Mod+Comma")}</kbd></button>
       <button id="mConnect"><span>Connect to your partner</span></button>
     </div>
     <label class="lbl-sm" for="songRename">Song name</label>
     <input type="text" id="songRename" spellcheck="false" autocomplete="off">
     <div class="who${v.shared ? " on" : ""}"><i></i>${v.shared ? "Open on both sides: you're working on it together" : "Only on this computer. Connect, and your partner opens it too."}</div>
-    <div class="lbl-sm" style="margin-top:12px">Your songs</div>
+    ${v.folder ? `<div class="fine songwhere" title="${esc(v.folder)}">Kept in ${esc(shortPath(v.folder))}</div>` : ""}
+    <div class="lbl-sm" style="margin-top:12px">Recently opened</div>
     <div class="songs" id="songList"><div class="lbl-sm">Loading…</div></div>`;
   menu.hidden = false;
   const inp = $("songRename");
   inp.value = v.meta.name;
-  inp.onchange = () => inp.value.trim() && songEdit([["meta", "meta", { name: inp.value.trim() }]]);
+  inp.onchange = async () => { if (!(await renameSong(inp.value))) inp.value = song.view.meta.name; };
   inp.onkeydown = (e) => { if (e.key === "Enter") inp.blur(); }; // (a handler that returns false would swallow every key)
   $("mExport").onclick = () => { menu.hidden = true; openExport(); };
   $("mMidiIn").onclick = () => { menu.hidden = true; midiImport(); };
@@ -2083,19 +2110,27 @@ async function toggleSongMenu() {
   $("mKeys").onclick = () => { menu.hidden = true; openShortcuts(); };
   $("mUpdate").onclick = () => { menu.hidden = true; updCheck(true); };
   $("mSound").onclick = () => { menu.hidden = true; openPanel("sound"); };
-  $("mConnect").onclick = () => { menu.hidden = true; openPanel("connect"); };
-  $("mNew").onclick = async () => {
-    if (v.shared && !confirm("Start a new song? Your partner switches to it too (this one stays saved).")) return;
+  $("mPrefs").onclick = () => { menu.hidden = true; openPrefs(); };
+  $("mSave").onclick = () => { menu.hidden = true; saveSong(); };
+  $("mOpenFolder").onclick = async () => {
+    if (v.shared && !confirm("Open another song? Your partner switches to it too (this one stays saved).")) return;
     menu.hidden = true;
-    setSongView(await api.daw_new("New song"));
+    const r = await api.daw_open_folder();
+    if (!r) return;
+    if (r.error) toast(r.error, true);
+    else setSongView(r.view);
   };
+  $("mConnect").onclick = () => { menu.hidden = true; openPanel("connect"); };
+  $("mNew").onclick = () => { menu.hidden = true; openNewSong(); };
   const list = await api.daw_projects();
   $("songList").innerHTML = "";
   for (const p of list) {
     const b = document.createElement("button");
     b.className = "song" + (p.current ? " cur" : "");
     const when = new Date(p.modified * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-    b.innerHTML = `<b>${esc(p.name)}</b><span>${p.clips} clip${p.clips === 1 ? "" : "s"} · ${when}</span>`;
+    const when2 = new Date((p.opened || p.modified) * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    b.title = p.folder || "";
+    b.innerHTML = `<b>${esc(p.name)}</b><span>${p.current ? "Open now" : "Opened " + when2}${p.opened && p.modified - p.opened > 60 ? " · changed " + when : ""} · ${p.clips} clip${p.clips === 1 ? "" : "s"}${p.custom ? " · " + esc(shortPath(p.folder)) : ""}</span>`;
     if (!p.current) b.onclick = async () => {
       if (v.shared && !confirm(`Open "${p.name}"? Your partner switches to it too.`)) return;
       menu.hidden = true;
@@ -2412,7 +2447,11 @@ function demoSong() {
     daw_open_bundle: async () => null,
     daw_projects: async () => [{ pid: "pdemo", name: view.meta.name, modified: Date.now() / 1000, clips: view.clips.length, current: true },
       { pid: "p2", name: "Blues in A", modified: Date.now() / 1000 - 86400, clips: 5, current: false }],
-    daw_new: async () => copy(), daw_open: async () => copy(), daw_resolve: async () => copy(),
+    daw_new: async () => ({ ok: true, view: copy() }), daw_open: async () => copy(), daw_resolve: async () => copy(),
+    daw_save: async () => ({ ok: true }), daw_name_free: async (n) => ({ taken: false, suggest: n }), daw_open_folder: async () => null,
+    daw_forget: async () => ({ ok: true }), pick_folder: async () => null, app_close: async () => ({ ok: true }),
+    prefs_get: async () => ({ confirm_close: true, song_location: "", new_bpm: 120, new_beats: 4, auto_update: true, mix_threads: true, plugin_sandbox: false, projects_dir: "" }),
+    prefs_set: async (k, v) => ({ ok: true, value: v }),
     daw_undo: async () => copy(), daw_redo: async () => copy(),
     daw_export: async (o) => { mockNorm = o.normalize; exportAt = performance.now(); return { ok: true, note: "", files: o.stems ? ["/Users/you/Music/Summer jam (stems)/Summer jam.wav", "a", "b", "c"] : ["/Users/you/Music/Summer jam.wav"] }; },
     daw_export_status: async () => {

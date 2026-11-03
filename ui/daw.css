@@ -614,3 +614,24 @@ header > .spacer { flex-shrink: 1; }
 header #pHere { flex: 0 1 auto; }
 @media (max-width: 1680px) { #metroVol, header .tgrp .zoom { display: none; } header .songbtn { max-width: 92px; } }
 @media (max-width: 1390px) { header.transport { flex-wrap: wrap; row-gap: 6px; } }
+
+/* new song, preferences, closing */
+#newSongM .mbox, #prefsM .mbox { width: min(560px, calc(100vw - 32px)); }
+#closeM .mbox { width: min(460px, calc(100vw - 32px)); }
+.nsloc { gap: 8px; }
+.nspath { flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--bg); font: 12px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nsloc .btn { padding: 8px 12px; font-size: 12.5px; }
+.nsgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+#prefsM .nsgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.nsgrid .cenum { width: 100%; padding: 9px 10px; }
+.nsmsg { min-height: 1.5em; margin: 0; }
+.nsmsg.bad { color: var(--bad, #ff6070); }
+.nsfoot { justify-content: flex-end; margin-top: 14px !important; }
+.nsfoot .btn:disabled { opacity: 0.45; cursor: default; filter: none; }
+.pfsec { margin: 14px 0 8px; text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; }
+.pfsec:first-child { margin-top: 0; }
+.pfchk { display: flex; align-items: center; gap: 9px; font-size: 13px; padding: 5px 0; cursor: pointer; }
+.pfchk input { accent-color: var(--me); width: 15px; height: 15px; }
+.pflinks { margin-top: 12px !important; }
+.menu .songwhere { margin: 6px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 560px) { .nsgrid, #prefsM .nsgrid { grid-template-columns: 1fr; } }
