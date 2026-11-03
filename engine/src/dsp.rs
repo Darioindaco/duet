@@ -160,6 +160,8 @@ pub struct Shared {
     /// talkback: which of my interface's inputs is the talk mic (0 = none, else input + 1),
     /// whether I'm talking now (push-to-talk or latched), how loud my talk and the partner's are
     pub talk_input: AtomicU64,
+    /// working Apart: the partner's live sound stays out of what you hear (their talkback doesn't)
+    pub partner_muted: AtomicBool,
     pub talk_on: AtomicBool,
     pub talk_tx_level: AtomicF32,
     pub talk_rx_level: AtomicF32,
@@ -1033,6 +1035,7 @@ impl Dsp {
                 }
             }
         }
+        let partner_muted = self.shared.partner_muted.load(Relaxed);
         for (i, strip) in self.remote.iter_mut().enumerate().take(self.remote_count) {
             let g = strip.s.gain;
             for k in 0..n {
@@ -1041,7 +1044,7 @@ impl Dsp {
             }
             strip.rack.process(&mut strip.l[..n], &mut strip.r[..n], &no_keys);
             strip.meter(n);
-            if audible(&strip.s) {
+            if audible(&strip.s) && !partner_muted {
                 let (gl, gr) = pan_gains(strip.s.pan);
                 let f = strip.s.fader;
                 for k in 0..n {

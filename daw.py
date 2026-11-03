@@ -484,12 +484,20 @@ class Project:
     def history_dir(self) -> Path:
         return self.folder / "history"
 
-    def snapshot(self, now: float | None = None):
+    def snapshot(self, now: float | None = None, label: str | None = None) -> str:
         """Keeps this state as a version: history/<time>.json. Old ones are thinned out: everything from the
-        last two hours, then one an hour for two days, then one a day for 60 days."""
+        last two hours, then one an hour for two days, then one a day for 60 days. A label says what it was
+        (e.g. the end of a session together, or your version before your partner's came in)."""
         now = now or time.time()
         self.history_dir.mkdir(parents=True, exist_ok=True)
         name = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+        if label:
+            labels = self.labels()
+            labels[name] = str(label)[:80]
+            try:
+                (self.history_dir / "labels.txt").write_text(json.dumps(labels), encoding="utf-8")
+            except OSError:
+                pass
         tmp = self.history_dir / (name + ".tmp")
         tmp.write_text(json.dumps(self.data()), encoding="utf-8")
         os.replace(tmp, self.history_dir / (name + ".json"))
@@ -500,18 +508,26 @@ class Project:
             if bucket is not None and bucket not in seen and len(keep) < 300:
                 seen.add(bucket)
                 keep.append(f)
-            else:
+            elif not (f.stem in self.labels() and age < 5184000):  # (a labelled one stays 60 days)
                 f.unlink(missing_ok=True)
+        return name
+
+    def labels(self) -> dict:
+        try:
+            return json.loads((self.history_dir / "labels.txt").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
 
     def versions(self) -> list[dict]:
-        out = []
+        out, labels = [], self.labels()
         for f in sorted(self.history_dir.glob("*.json"), reverse=True) if self.history_dir.exists() else []:
             try:
                 d = json.loads(f.read_text(encoding="utf-8"))
                 objs = d.get("objs", {})
                 live = lambda k: sum(1 for o in objs.get(k, {}).values() if not o.get("del"))
                 out.append({"id": f.stem, "time": f.stat().st_mtime, "clips": live("clip"), "notes": live("note"),
-                            "tracks": live("track"), "name": objs.get("meta", {}).get("meta", {}).get("name", "")})
+                            "tracks": live("track"), "name": objs.get("meta", {}).get("meta", {}).get("name", ""),
+                            "label": labels.get(f.stem)})
             except (OSError, ValueError):
                 continue
         return out
@@ -570,6 +586,15 @@ class Daw:
         self.partner: str | None = None
         self.partner_pid: str | None = None
         self.conflict: dict | None = None
+        # working Together (play, stop and live sound shared) or Apart (each their own); the newest
+        # choice of either of you counts (mode_t)
+        self.mode, self.mode_t = "together", 0.0
+        # what you're editing (a pattern in the piano roll, a clip in its editor), since when: the
+        # partner can't change it meanwhile, and the other way round
+        self.my_edit: dict | None = None
+        # both of you changed the song apart since you last had it the same: what to do with that
+        self.reconcile: dict | None = None
+        self.sp_saved = 0
         self.notices: list[str] = []
         self.ui_signals: list[str] = []
         # Duet didn't close properly last time (a crash, the power): say what was kept
@@ -737,9 +762,9 @@ class Daw:
 
     # --- versions and song files ------------------------------------------------------
 
-    def _snapshot(self):
+    def _snapshot(self, label: str | None = None):
         try:
-            self.p.snapshot()
+            self.p.snapshot(label=label)
         except OSError:
             traceback.print_exc()
         self.last_snapshot = time.time()
@@ -835,7 +860,10 @@ class Daw:
     def edit(self, changes: list) -> dict:
         """Changes from the UI: [[kind, id, {field: value}]]. A new id makes a new object."""
         with self.lock:
+            changes, blocked = self._blocked(changes)
             self._do(changes)
+            if blocked:
+                self.notices.append("Your partner is editing that right now: it'll be free when they're done.")
             more = self._mirror_changes()
             if more:  # in the same undo step
                 self._do(more)
@@ -1205,7 +1233,7 @@ class Daw:
             self.e.daw_record([(src, key, str(self.p.audio_dir / key)) for src, key in sources.items()], start, until)
         else:
             self.e.daw_play(start, until)
-        if broadcast:
+        if broadcast and self.mode == "together":
             self._send({"t": "tp", "play": True, "rec": rec, "pos": pos, "countin": countin, "jam": jam, "punch": punch})
         self.version += 1
 
@@ -1251,7 +1279,8 @@ class Daw:
         self.cursor = self.play_from  # back to where you started, like FL
         self.e.daw_locate(self._tm().b2s(self.cursor))
         if broadcast:
-            self._send({"t": "tp", "play": False})
+            if self.mode == "together":
+                self._send({"t": "tp", "play": False})
         self.version += 1
 
     def _place_take(self, tid: str, key: str, passes: list, tm: TempoMap) -> list:
@@ -2408,7 +2437,12 @@ class Daw:
         self.partner_here, self.partner_here_n = None, 0.0
         self.mismatches = 0
         self.wanted.clear()
-        self._send({"t": "hello", "peer": self.me, "name": self.p.meta()["name"], "empty": self.p.is_empty()})
+        sp = self._sp()
+        self._send({"t": "hello", "peer": self.me, "name": self.p.meta()["name"], "empty": self.p.is_empty(),
+                    "d": self.p.digest(), "sp": sp and sp.get("clock"), "mine": self._changes_since(sp),
+                    "spt": sp and sp.get("time")})
+        if self.mode_t:
+            self._send({"t": "mode", "mode": self.mode, "mt": self.mode_t})
 
     def _on_msg(self, m: dict):
         t, pid = m.get("t"), m.get("pid")
@@ -2417,8 +2451,11 @@ class Daw:
         if t == "hello":
             self.partner = m.get("peer")
             if pid == self.p.pid:
-                self.partner_pid = pid
                 self.conflict = None
+                if self._reconcile_check(m):
+                    self.version += 1
+                    return  # both changed it apart: ask first (see reconcile)
+                self.partner_pid = pid
                 self._send({"t": "snap", "adopt": False, "ops": self.p.all_ops()})
             elif self.p.is_empty() and (not m.get("empty") or self.p.pid < pid):
                 self._send({"t": "pull"})
@@ -2429,6 +2466,16 @@ class Daw:
             self.version += 1
         elif t == "pull":
             self._share_project()
+        elif t == "mode" and m.get("mode") in ("together", "apart"):
+            mt = finite(m.get("mt"), 0.0, 0, 1e12)
+            if mt > self.mode_t and m["mode"] != self.mode:
+                self._set_mode(m["mode"], mt, send=False)
+                self.notices.append("Your partner switched to " + ("Apart: your own play and sound (the song is still shared)"
+                                                                    if m["mode"] == "apart" else "Together: play and sound shared again"))
+            elif mt > self.mode_t:
+                self.mode_t = mt
+        elif t == "rc" and pid == self.p.pid:
+            self._on_reconcile(m)
         elif t == "snap":
             if m.get("adopt") and pid != self.p.pid:
                 folder = self.root / pid
@@ -2436,6 +2483,8 @@ class Daw:
                 self._switch(p)
                 self.notices.append(f"Opened your partner's song: {m.get('name') or 'untitled'}")
             if pid == self.p.pid:
+                if self.reconcile and not m.get("adopt"):
+                    self._rc_merge()  # the partner merged (their choice came in after their song): so do we
                 self.partner_pid = pid
                 self.conflict = None
                 self.last_snap = time.monotonic()
@@ -2449,7 +2498,7 @@ class Daw:
             path = self.p.audio_dir / name
             if name in self.p.objs["file"] and path.exists():
                 self.e.file_send(name, str(path))
-        elif t == "tp" and pid == self.p.pid:
+        elif t == "tp" and pid == self.p.pid and self.mode == "together":
             if m.get("play"):
                 rtt = self.e.state().get("rtt") or 0.0
                 self._start(float(m.get("pos", 0)), rec=bool(m.get("rec")), countin=bool(m.get("countin")),
@@ -2462,6 +2511,8 @@ class Daw:
                 self.partner_here_n = n
                 self.partner_here = {**clean_here(m), "pos": finite(m.get("pos"), 0.0), "at": time.monotonic()}
         elif t == "sum" and pid == self.p.pid:
+            if m.get("d") == self.p.digest():
+                self._session_point(m["d"])
             if m.get("d") != self.p.digest():
                 self.mismatches += 1
                 if self.mismatches >= 2 and time.monotonic() - self.last_snap > 4:
@@ -2478,8 +2529,13 @@ class Daw:
         the partner to see in your colour. The UI sends it when it changes, and
         every couple of seconds so it doesn't go stale."""
         with self.lock:
+            ed = clean_here(here).get("edit")
+            if not ed:
+                self.my_edit = None
+            elif not (self.my_edit and self.my_edit["kind"] == ed["kind"] and self.my_edit["id"] == ed["id"]):
+                self.my_edit = {"kind": ed["kind"], "id": ed["id"], "since": time.time()}
             if self.connected and self.partner_pid == self.p.pid:
-                self._send({"t": "here", "n": time.time(), **clean_here(here), "pos": self.cursor})
+                self._send({"t": "here", "n": time.time(), **clean_here(here), "pos": self.cursor, "edit": self.my_edit})
 
     def _partner_here(self) -> dict | None:
         h = self.partner_here
@@ -2496,6 +2552,203 @@ class Daw:
                 self._share_project()
             self.conflict = None
             self.version += 1
+
+    # --- Together / Apart -----------------------------------------------------------
+
+    def set_mode(self, mode: str) -> dict:
+        """Together: play, stop and what you play live are shared. Apart: each of you plays and hears
+        your own (the song itself, presence and talkback stay shared). For both of you."""
+        with self.lock:
+            if mode not in ("together", "apart"):
+                return {"error": "Together or Apart."}
+            self._set_mode(mode, max(time.time(), self.mode_t + 1e-3), send=True)
+            return self.view()
+
+    def _set_mode(self, mode: str, t: float, send: bool):
+        self.mode, self.mode_t = mode, t
+        try:
+            self.e.share_live(mode == "together")
+        except AttributeError:
+            pass  # (an engine without it: tests with a stand-in)
+        if send and self.connected:
+            self._send({"t": "mode", "mode": mode, "mt": t})
+        self.version += 1
+
+    # --- edit locks: what one of you is editing, the other can't change meanwhile ---------
+
+    def _locked(self) -> dict:
+        """What the partner holds right now: {"pattern": {ids}, "clip": {ids}}. Opened by both: the one
+        who opened it first holds it (the same moment: the lower id)."""
+        out = {"pattern": set(), "clip": set()}
+        h = self._partner_here()
+        their = h and h.get("edit")
+        if not their:
+            return out
+        mine = self.my_edit
+        if mine and mine["kind"] == their["kind"] and mine["id"] == their["id"]:
+            if (mine["since"], self.me) < (their["since"], str(self.partner)):
+                return out  # mine first
+        out[their["kind"]].add(their["id"])
+        return out
+
+    def _blocked(self, changes: list) -> tuple[list, int]:
+        locks = self._locked()
+        if not (locks["pattern"] or locks["clip"]):
+            return changes, 0
+        keep, n = [], 0
+        for ch in changes:
+            try:
+                kind, oid, f = ch
+            except (TypeError, ValueError):
+                continue
+            pat = None
+            if kind in ("note", "ctl"):
+                pat = (f or {}).get("pattern") or self.p.objs[kind].get(oid, {}).get("pattern")
+            elif kind == "pattern":
+                pat = oid
+            if (pat and pat in locks["pattern"]) or (kind == "clip" and oid in locks["clip"]):
+                n += 1
+                continue
+            keep.append(ch)
+        return keep, n
+
+    # --- sessions: where you last had the song the same, and what changed since ---------
+
+    def _sp(self) -> dict | None:
+        try:
+            return json.loads((self.p.folder / "session.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def _session_point(self, digest: str):
+        """Both sides have the same song right now (their checksum is ours): the ground truth for
+        next time, kept with the song."""
+        if self.p.clock == self.sp_saved:
+            return
+        self.sp_saved = self.p.clock
+        try:
+            self.p.folder.mkdir(parents=True, exist_ok=True)
+            tmp = self.p.folder / "session.json.tmp"
+            tmp.write_text(json.dumps({"clock": self.p.clock, "digest": digest, "time": time.time(), "partner": self.partner}),
+                           encoding="utf-8")
+            os.replace(tmp, self.p.folder / "session.json")  # (whole or not at all)
+        except OSError:
+            traceback.print_exc()
+
+    def _changes_since(self, sp: dict | None) -> int:
+        """How many things (a clip, a note, the tempo...) you changed after the session point."""
+        if not sp:
+            return 0
+        c0, seen = int(sp.get("clock", 0)), set()
+        for kind in KINDS:
+            for oid, st in self.p.stamps[kind].items():
+                if any(int(stamp[0]) > c0 and stamp[1] == self.me for stamp in st.values()):
+                    seen.add((kind, oid))
+        return len(seen)
+
+    def _reconcile_check(self, m: dict) -> bool:
+        """A hello for this song: if both of you changed it since the last time it was the same on
+        both sides, don't just mix the two together: ask (True). One side only: it simply comes in."""
+        sp = self._sp()
+        mine, theirs = self._changes_since(sp), int(finite(m.get("mine"), 0.0, 0, 1e9))
+        if m.get("d") == self.p.digest():
+            return False
+        if sp and m.get("sp") is not None and mine and theirs:
+            self.reconcile = {"mine": mine, "theirs": theirs, "since": sp.get("time"), "name": self.p.meta()["name"]}
+            return True
+        if theirs and not mine:
+            self.notices.append(f"Your partner changed {theirs} thing{'s' if theirs != 1 else ''} in this song since you last "
+                                f"worked on it together: they're in now.")
+        return False
+
+    def reconcile_choice(self, choice: str) -> dict:
+        """Both of you changed the song apart. merge: everything of both (where you both changed the same
+        thing, the later change); mine: my version for both; theirs: theirs for both; copy: mine kept as
+        a song of its own, theirs here. Whatever is replaced is kept as a version first."""
+        with self.lock:
+            if not self.reconcile or not self.connected:
+                return {"error": "There's nothing to choose (any more)."}
+            if choice == "merge":
+                self._send({"t": "rc", "c": "merge"})
+                self._rc_merge()
+            elif choice == "mine":
+                self._rc_give()
+            elif choice == "theirs":
+                self._send({"t": "rc", "c": "give"})
+            elif choice == "copy":
+                name = self._fork_copy()
+                self.notices.append(f"Your version is kept as \"{name}\" (in your songs).")
+                self._send({"t": "rc", "c": "give"})
+            else:
+                return {"error": "Unknown choice."}
+            return self.view()
+
+    def _rc_merge(self):
+        self.p.save()
+        self._snapshot(label="Before merging with your partner's changes")
+        self.reconcile = None
+        self.partner_pid = self.p.pid
+        self._send({"t": "snap", "adopt": False, "ops": self.p.all_ops()})
+        self.version += 1
+
+    def _rc_give(self):
+        """My version, for both of us."""
+        self.reconcile = None
+        self.partner_pid = self.p.pid
+        self._send({"t": "rc", "c": "take", "ops": self.p.all_ops()})
+        self.version += 1
+
+    def _on_reconcile(self, m: dict):
+        c = m.get("c")
+        if c == "merge" and self.reconcile:
+            self.notices.append("Your partner chose to merge: both of your changes are in.")
+            self._rc_merge()
+        elif c == "give":
+            self.notices.append("Your partner chose your version: it's the song for both of you now.")
+            self._rc_give()
+        elif c == "take" and isinstance(m.get("ops"), list):
+            self.p.save()
+            self._snapshot(label="Your version, before your partner's came in")
+            self._replace(m["ops"])
+            self.reconcile = None
+            self.partner_pid = self.p.pid
+            self.notices.append("Your partner's version is in. Yours is kept: Song menu → Versions.")
+            self.version += 1
+
+    def _replace(self, ops: list):
+        """The song becomes exactly `ops` (the partner's version): what only I had goes."""
+        p = self.p
+        for kind in KINDS:
+            p.objs[kind] = {}
+            p.stamps[kind] = {}
+        self._apply(ops, local=False)
+        self.undos.clear()
+        self.redos.clear()
+        p.save()
+        self._push()
+
+    def _fork_copy(self) -> str:
+        """This song as it is here, as a song of its own (new id, its audio along): '<name> (my version)'."""
+        self.p.save()
+        data = json.loads(json.dumps(self.p.data()))
+        pid = new_id("p")
+        name = f"{self.p.meta()['name']} (my version)"[:80]
+        data["pid"] = pid
+        try:
+            data["objs"]["meta"]["meta"]["name"] = name
+        except (KeyError, TypeError):
+            pass
+        folder = self.root / pid
+        folder.mkdir(parents=True, exist_ok=True)
+        if self.p.audio_dir.exists():
+            def link(src, dst):
+                try:
+                    os.link(src, dst)  # no second copy of the audio on disk, if the disk allows
+                except OSError:
+                    shutil.copy2(src, dst)
+            shutil.copytree(self.p.audio_dir, folder / self.p.audio_dir.name, copy_function=link, dirs_exist_ok=True)
+        (folder / "project.json").write_text(json.dumps(data), encoding="utf-8")
+        return name
 
     # --- background: signals, files, saving -----------------------------------------
 
@@ -2516,9 +2769,18 @@ class Daw:
                 self.connected = True
                 self._on_connect()
             elif not conn and self.connected:
+                was_shared = self.partner_pid == self.p.pid
                 self.connected = False
                 self.partner_pid = None
+                self.reconcile = None
                 self.version += 1
+                if was_shared:
+                    # the end of a session together: kept as a version, to go back to
+                    try:
+                        self.p.save()
+                    except OSError:
+                        traceback.print_exc()
+                    self._snapshot(label="End of a session together")
         for raw in e.drain_signals():
             try:
                 msg = json.loads(raw)
@@ -2532,7 +2794,7 @@ class Daw:
                     self.ui_signals.append(raw)
         with self.lock:
             now = time.monotonic()
-            if conn and self.partner_pid != self.p.pid and not self.conflict and now - self.last_hello > 5:
+            if conn and self.partner_pid != self.p.pid and not self.conflict and not self.reconcile and now - self.last_hello > 5:
                 self._on_connect()  # not in the same song yet: say hello again
             if self.outbox and now - self.last_flush >= 0.08:
                 self._flush()
@@ -2540,7 +2802,7 @@ class Daw:
             if self.stem_job and now - self.last_stems > 0.25:
                 self.last_stems = now
                 self._stems_poll()
-            if conn and self.partner_pid == self.p.pid and now - self.last_sum > 5:
+            if conn and self.partner_pid == self.p.pid and now - self.last_sum > 2:  # (also keeps the session point fresh)
                 self.last_sum = now
                 self._send({"t": "sum", "d": self.p.digest()})
             if self.dirty and now - self.changed_at > 1.0:
@@ -2661,6 +2923,8 @@ class Daw:
                 "markers": sorted(({"id": i, **x} for i, x in p.live("marker").items()), key=lambda x: float(x.get("beat") or 0)),
                 "patternMode": self.pattern_mode,
                 "conflict": self.conflict, "shared": self.connected and self.partner_pid == p.pid,
+                "mode": self.mode, "reconcile": self.reconcile,
+                "locks": {k: sorted(v) for k, v in self._locked().items()},
                 "undo": bool(self.undos), "redo": bool(self.redos),
             }
 
@@ -2743,6 +3007,10 @@ def clean_here(x) -> dict:
     roll = x.get("roll")
     if isinstance(roll, dict) and finite(roll.get("beat"), lo=-1e3, hi=1e6) is not None:
         out["roll"] = {"beat": float(roll["beat"]), "key": finite(roll.get("key"), 60.0, 0, 127)}
+    ed = x.get("edit")
+    out["edit"] = None
+    if isinstance(ed, dict) and ed.get("kind") in ("pattern", "clip") and safe(ed.get("id")):
+        out["edit"] = {"kind": ed["kind"], "id": ed["id"], "since": finite(ed.get("since"), 0.0, 0, 1e12)}
     return out
 
 

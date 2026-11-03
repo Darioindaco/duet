@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import re
 import sys
+import json
 import time
 
 import numpy as np
@@ -2374,7 +2375,120 @@ def test_talkback():
         b.close()
 
 
+def test_collab():
+    """Together / Apart, edit locks, and coming back together after working apart."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    a, b, _ = connect_pair()
+    root = Path(tempfile.mkdtemp(prefix="duet-collab-"))
+    da, db = Daw(a, root / "A", "alice"), Daw(b, root / "B", "bob")
+    x = [0.0] * N
+    try:
+        wait_for(lambda: da.view()["shared"] and db.view()["shared"], what="one shared song")
+        da.edit([["track", "syn", {"name": "Synth", "order": 1.0, "owner": "alice", "vol": 0.8, "inst": {"kind": "synth"}}],
+                 ["pattern", "p1", {"name": "Lead", "len": 4.0}],
+                 ["note", "n1", {"pattern": "p1", "track": "syn", "start": 0.0, "len": 1.0, "key": 60, "vel": 100}]])
+        wait_for(lambda: len(db.view()["notes"]) == 1, what="the note on bob's side")
+
+        # Apart: alice's play stays hers; bob gets the mode too
+        assert da.set_mode("apart")["mode"] == "apart"
+        wait_for(lambda: db.view()["mode"] == "apart", what="bob apart too")
+        da.play(0.0)
+        for _ in range(20):
+            a.process(x); b.process(x)
+        time.sleep(0.3)
+        assert a.state()["daw_playing"] and not b.state()["daw_playing"], "apart: bob doesn't play along"
+        da.stop()
+        db.set_mode("together")
+        wait_for(lambda: da.view()["mode"] == "together", what="together again")
+        da.play(0.0)
+        wait_for(lambda: b.state()["daw_playing"], what="together: bob plays along")
+        da.stop()
+        wait_for(lambda: not b.state()["daw_playing"], what="bob stops too")
+
+        # edit lock: bob has the pattern open in the piano roll: alice can't change its notes meanwhile
+        db.set_presence({"view": "seq", "pattern": "p1", "edit": {"kind": "pattern", "id": "p1"}})
+        wait_for(lambda: "p1" in da.view()["locks"]["pattern"], what="alice sees bob's lock")
+        da.edit([["note", "n1", {"key": 62}]])
+        assert da.view()["notes"][0]["key"] == 60, "locked: alice's edit doesn't go in"
+        db.edit([["note", "n1", {"key": 64}]])  # (bob, who holds it, can)
+        wait_for(lambda: da.view()["notes"][0]["key"] == 64, what="bob's edit on alice's side")
+        db.set_presence({"view": "song", "edit": None})
+        wait_for(lambda: not da.view()["locks"]["pattern"], what="the lock gone")
+        da.edit([["note", "n1", {"key": 65}]])
+        wait_for(lambda: db.view()["notes"][0]["key"] == 65, what="free again")
+
+        # a session point: the song is the same on both sides (their checksums meet)
+        def fresh_sp():
+            wait_for(lambda: all((d.p.folder / "session.json").exists()
+                                 and json.loads((d.p.folder / "session.json").read_text())["clock"] == d.p.clock for d in (da, db)),
+                     timeout=15, what="an up-to-date session point on both sides")
+        fresh_sp()
+
+        # working apart offline, then together again: hello with what each changed since
+        def offline():
+            for d in (da, db):
+                with d.lock:
+                    d.partner_pid = None
+                    d._send_saved, d._send = d._send, (lambda msg: None)
+        def online():
+            for d in (da, db):
+                with d.lock:
+                    d._send = d._send_saved
+            for d in (da, db):
+                with d.lock:
+                    d._on_connect()
+        def wait_same():
+            wait_for(lambda: da.view()["shared"] and db.view()["shared"] and da.p.digest() == db.p.digest(), timeout=12,
+                     what="the same song on both sides", detail=lambda: (da.reconcile, db.reconcile))
+
+        # only bob changed it: it simply comes in (with a word about it)
+        offline()
+        db.edit([["pattern", "p1", {"name": "Lead (bob)"}]])
+        online()
+        wait_same()
+        assert da.view()["patterns"][0]["name"] == "Lead (bob)" and not da.reconcile
+        fresh_sp()
+
+        # both changed it: both are asked; bob says merge
+        offline()
+        da.edit([["note", "n1", {"key": 67}]])
+        db.edit([["pattern", "p1", {"name": "Lead 2"}]])
+        online()
+        wait_for(lambda: da.view()["reconcile"] and db.view()["reconcile"], what="both asked")
+        assert da.view()["reconcile"]["mine"] == 1 and da.view()["reconcile"]["theirs"] == 1
+        assert db.reconcile_choice("merge").get("reconcile") is None
+        wait_same()
+        assert da.view()["notes"][0]["key"] == 67 and da.view()["patterns"][0]["name"] == "Lead 2", "merged: both changes"
+        fresh_sp()
+
+        # both changed it again: alice takes bob's version; hers is kept as a labelled version
+        offline()
+        da.edit([["note", "n1", {"key": 48}]])
+        db.edit([["pattern", "p1", {"len": 8.0}]])
+        online()
+        wait_for(lambda: da.view()["reconcile"] and db.view()["reconcile"], what="both asked again")
+        da.reconcile_choice("theirs")
+        wait_same()
+        v = da.view()
+        assert v["notes"][0]["key"] == 67 and v["patterns"][0]["len"] == 8.0, "bob's version on both sides"
+        assert any(x.get("label") and "before your partner" in x["label"] for x in da.versions()), "alice's version kept"
+        print("collab: ok  (apart: play not shared; a lock while the partner edits; offline changes come in, "
+              "both changed: asked, merged or one version for both, the other kept)")
+    finally:
+        da.close()
+        db.close()
+        a.close()
+        b.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
+    test_collab()
     test_talkback()
     test_ui_names()
     test_updater()

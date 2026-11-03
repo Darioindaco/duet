@@ -44,6 +44,7 @@ function hereState() {
     sel: [...song.sel].slice(0, 64), notes: [...seq.sel].slice(0, 64), ptr: p,
     scroll: { beat: r2(lanes.scrollLeft / song.ppb), row: r2(rowAt(lanes.scrollTop).row) },
     roll: { beat: r2(pr.scrollLeft / seq.ppb), key: prKeyAt(pr.scrollTop + pr.clientHeight / 2) },
+    edit: collabEdit(),
   };
 }
 

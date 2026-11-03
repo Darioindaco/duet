@@ -120,6 +120,7 @@ function twBuild() {
       <button class="twbtn twassist" title="Put every note that's off into the key (or the selected ones)">✦ Snap to key</button>
       <button class="twbtn twreset" title="Undo every move on the selected notes (or all)">Reset</button>
     </div>
+    <div class="locknote" id="twLock" hidden></div>
     <div class="twmain"><canvas class="twcv"></canvas></div>
     <div class="twinfo"></div>
     <div class="twgrip" title="Drag to resize"></div>`;

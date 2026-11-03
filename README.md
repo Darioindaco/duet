@@ -634,6 +634,35 @@ over their shoulder:
   channel and spot in the song, as they move. It stops as soon as you click or
   scroll yourself.
 
+**Together or Apart** (the two-rings button in your partner's pill, top right):
+- **Together**: play, stop and record go for both of you, and what either of you
+  plays live, the other hears. For showing each other things, and for jamming.
+- **Apart**: each of you has your own play, stop, position and sound: you can
+  each work on a different part of the song at the same time. The song itself
+  stays shared (every edit still goes across, you still see each other's
+  pointer), and talkback still works. Your partner's live sound is off while
+  you're apart. Either of you can switch, and it switches for both.
+
+**Edit locks:** the pattern open in your piano roll (or channel rack), or the
+clip in your clip editor or Tune window, is yours while you work on it. Your
+partner sees "🔒 Your partner is editing this pattern" and can watch, but not
+change it, and the other way round. You both open the same one: whoever opened
+it first has it. A minute and a half without touching anything, and it's free.
+
+**Coming back together:** every time your two songs are the same (Duet checks
+every few seconds while you're connected), that moment is kept as the session
+point, and when the connection ends a version is kept ("End of a session
+together"). When you connect again, Duet looks at what each of you changed
+since that point:
+- **Nobody** changed anything: you just go on.
+- **One** of you did: those changes come in, with a note saying how many.
+- **Both** of you did: you're both asked what to do, and either of you can
+  answer: *Merge both* (everything of both; where you both changed the same
+  thing, the later change wins), *Use my version*, *Use my partner's version*,
+  or *Keep mine as a copy* (yours becomes a song of its own, "… (my version)",
+  and you go on in your partner's). Whatever is replaced is kept first: Song
+  menu → *Versions* (labelled).
+
 **Talkback:** talk to each other without it ending up in the music. Right-click
 **Talk** (the speech bubble at the top) and pick the input your talk mic is on.
 Then hold *Talk*, or hold the **`** key (left of 1), and your partner hears you;
@@ -824,6 +853,8 @@ to it through lock-free queues and atomics.
 | `ui/presence.js` | Seeing each other work: the partner's pointer, selection, view and live notes; Follow |
 | `library.py` | The sample library: folders, bins, search, import |
 | `ui/auto.js` | Automation lanes in the playlist: drawing them, *Automate* on knobs and faders |
+| `ui/collab.js` | Working together: Together / Apart, edit locks, the choice after you both changed the song apart |
+| `ui/talk.js` | Talkback: push-to-talk to your partner on a mic of its own |
 | `ui/learn.js` | MIDI-learn: linking the keyboard's knobs and faders to controls |
 | `updater.py`, `ui/update.js` | Updating itself from the newest release: finding it, downloading, swapping the app (Mac) or running the installer (Windows) |
 | `installer/duet.iss` | The Windows installer (Inno Setup): for the current user, Start menu, uninstaller; silent for updates |

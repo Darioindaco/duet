@@ -153,6 +153,8 @@ struct Inner {
     /// the last controller the MIDI keyboard moved (for MIDI-learn): a count of moves << 16 |
     /// number (128: the pitch wheel) << 8 | value 0..127; 0 before the first
     midi_cc: std::sync::atomic::AtomicU64,
+    /// notes played live on song tracks go to the partner (off while working Apart)
+    share_live: AtomicBool,
     /// where each controller (and at 128 the wheel) was last put: 0x8000 | value 0..127, 0 never moved
     midi_vals: Box<[std::sync::atomic::AtomicU16]>,
     daw: Mutex<DawCtl>,
@@ -211,7 +213,7 @@ impl Inner {
         // played on a song track: the partner hears it on theirs
         if let Target::Track(i) = t {
             let track = self.track_keys.lock().unwrap()[i];
-            if track != 0 && self.peer().is_some() {
+            if track != 0 && self.peer().is_some() && self.share_live.load(Relaxed) {
                 if let Some(p) = self.live_out.lock().unwrap().push(livenotes::Ev { track, ev }) {
                     self.send(p, None);
                 }
@@ -220,7 +222,7 @@ impl Inner {
     }
     /// The partner's live notes onto the tracks they belong to here.
     fn play_live(&self, evs: &[livenotes::Ev]) {
-        if evs.is_empty() {
+        if evs.is_empty() || !self.share_live.load(Relaxed) {
             return;
         }
         let keys = *self.track_keys.lock().unwrap();
@@ -499,6 +501,7 @@ impl Engine {
             track_keys: Mutex::new([0; MAX_TRACKS]),
             midi_target: std::sync::atomic::AtomicU64::new(u64::MAX),
             midi_cc: std::sync::atomic::AtomicU64::new(0),
+            share_live: AtomicBool::new(true),
             midi_vals: (0..129).map(|_| std::sync::atomic::AtomicU16::new(0)).collect(),
             daw: Mutex::new(DawCtl { cache: AudioCache::default(), desc: vec![], notes: vec![], autos: vec![], stretching: false, stretch_now: None, rec: None, export: None }),
             noterec: Mutex::new(noterec_rx),
@@ -1057,6 +1060,13 @@ impl Engine {
     #[pyo3(signature = (input=None))]
     fn talk_input(&self, input: Option<usize>) {
         self.inner.shared.talk_input.store(input.map_or(0, |i| i as u64 + 1), Relaxed);
+    }
+
+    /// Working together (true: what you play live goes to the partner and theirs comes to you) or
+    /// Apart (false: each hears only their own; talkback still goes through).
+    fn share_live(&self, on: bool) {
+        self.inner.share_live.store(on, Relaxed);
+        self.inner.shared.partner_muted.store(!on, Relaxed);
     }
 
     /// Talking now (push-to-talk held, or latched on)?

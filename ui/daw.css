@@ -612,5 +612,5 @@ header > .spacer { flex-shrink: 1; }
 .twtools select.twkey { height: 26px; padding: 0 22px 0 8px; line-height: normal; }
 /* the partner pill gives way when the top bar runs out of room (its text first) */
 header #pHere { flex: 0 1 auto; }
-@media (max-width: 1640px) { #metroVol, header .tgrp .zoom { display: none; } header .songbtn { max-width: 92px; } }
-@media (max-width: 1340px) { header.transport { flex-wrap: wrap; row-gap: 6px; } }
+@media (max-width: 1680px) { #metroVol, header .tgrp .zoom { display: none; } header .songbtn { max-width: 92px; } }
+@media (max-width: 1390px) { header.transport { flex-wrap: wrap; row-gap: 6px; } }

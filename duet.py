@@ -252,6 +252,12 @@ class Api:
 
     # --- the song: playlist, transport, recording (daw.py) --------------------
 
+    def daw_mode(self, mode):
+        return self._daw.set_mode(str(mode))
+
+    def daw_reconcile(self, choice):
+        return self._daw.reconcile_choice(str(choice))
+
     def daw_project(self):
         return self._daw.view()
 

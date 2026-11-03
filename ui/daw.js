@@ -250,6 +250,7 @@ function setSongView(v) {
   songRender();
   seqRender();
   paintConflict();
+  collabPaint();
   twSongChanged();
 }
 
@@ -2015,7 +2016,7 @@ async function openVersions() {
     const row = document.createElement("div");
     row.className = "verrow";
     row.innerHTML = `<b>${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</b>
-      <span>${esc(ver.name || "Untitled")} · ${ver.tracks} track${ver.tracks === 1 ? "" : "s"} · ${ver.clips} clip${ver.clips === 1 ? "" : "s"}${ver.notes ? ` · ${ver.notes} notes` : ""}</span>
+      <span>${ver.label ? `<i class="verlabel">${esc(ver.label)}</i> · ` : ""}${esc(ver.name || "Untitled")} · ${ver.tracks} track${ver.tracks === 1 ? "" : "s"} · ${ver.clips} clip${ver.clips === 1 ? "" : "s"}${ver.notes ? ` · ${ver.notes} notes` : ""}</span>
       <button class="btn">Restore</button>`;
     row.querySelector("button").onclick = async () => {
       if (!confirm(`Put the song back as it was at ${t.toLocaleString()}? (Undo takes it back.)`)) return;
@@ -2149,7 +2150,8 @@ function demoSong() {
     ctls: [{ id: "k1", pattern: "pb", track: "t5", cc: 74, points: [[0, 0.3], [4, 0.85], [6, 0.5], [8, 0.3]] }],
     markers: [{ id: "m1", beat: 0, name: "Intro", section: true }, { id: "m2", beat: 16, name: "Verse", section: true },
       { id: "m3", beat: 24, name: "drop the bass", section: false }],
-    patternMode: null,
+    patternMode: null, mode: "together", locks: { pattern: [], clip: [] },
+    reconcile: location.search.includes("reconcile") ? { mine: 4, theirs: 2, since: Date.now() / 1000 - 86400, name: "Summer jam" } : null,
     files, me, partner, local: { click: true, countin: true, punch: false }, conflict: null, shared: true, undo: true, redo: false,
   };
   let v = 1, playing = false, recording = false, recFrom = null, pos = 0, t0 = 0, exportAt = 0, mockNorm = null;
@@ -2172,6 +2174,8 @@ function demoSong() {
       }
       v++; return copy();
     },
+    daw_mode: async (m) => { view.mode = m; v++; return copy(); },
+    daw_reconcile: async (c) => { view.reconcile = null; v++; return copy(); },
     daw_comp: async (group, take, a, b) => {
       // (like daw.py's Comp, in beats; good enough for the demo)
       const cut = (c, x, y) => {
