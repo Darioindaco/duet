@@ -473,6 +473,19 @@ hear it, either of you can change it, and the export sounds exactly like it.
   title says how much (*1.5 ms delay, compensated*). Recording allows for it
   too. What you play live can't be read early: a slow plugin on your own input
   delays it by its latency, as in any DAW.
+- **Freeze / Bounce in place** (right-click a track's header): *Freeze* turns
+  the track into its audio (after its effects, before its fader) in a few
+  seconds, and plays that instead of its instrument and effects: light on the
+  computer, and your partner doesn't need its plugins. The track's FX button
+  shows ❄; its notes, clips and effects stay as they are until you click it
+  (*Unfreeze*). Its fader, pan, sends and routing still work. *Bounce in place*
+  puts that audio on a new track ("Lead (audio)") with the same fader, pan and
+  routing, and mutes the original's clips.
+- **All your CPU cores:** the song's tracks are worked on side by side on every
+  core (tracks first, then the buses they feed): the mix is the same to the
+  sample as on one core, only faster (about 2.5× on four cores). Live jamming
+  doesn't go through it, so its latency stays the same. Sound settings → *Song
+  tracks mixed on* switches it to one core, if you ever want to.
 
 Songs are saved by themselves, a second after every change (written aside and
 synced first, so a crash or a power cut can't leave half a file; the save before

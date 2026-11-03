@@ -467,7 +467,7 @@ function renderHeads() {
       box.append(el);
       return;
     }
-    el.oncontextmenu = (e) => { if (e.target.closest("input, select")) return; e.preventDefault(); autoMenu(t.id, e.clientX, e.clientY); };
+    el.oncontextmenu = (e) => { if (e.target.closest("input, select")) return; e.preventDefault(); trackMenu(t, e.clientX, e.clientY); };
 
     const btns = document.createElement("div");
     btns.className = "tbtns";
@@ -519,6 +519,14 @@ function renderHeads() {
     fx.textContent = (t.rack || []).length ? `FX ${t.rack.length}` : "FX";
     fx.title = "Effects on this track (both of you hear them)";
     fx.onclick = () => openTrackFx(t);
+    const rendering = song.view.rendering && song.view.rendering.track === t.id;
+    if (t.frozen || rendering) {
+      // frozen: it plays its audio; its effects and instrument are in it (Unfreeze to change them)
+      fx.className = "fxb frozen";
+      fx.textContent = rendering ? "…" : "❄";
+      fx.title = rendering ? "Rendering…" : "Frozen: it plays as audio (light on the computer). Click: Unfreeze";
+      fx.onclick = () => !rendering && trackFreeze(t, "unfreeze");
+    }
     row2.append(src, vol, fx);
     el.append(name, btns, row2);
     el.insertAdjacentHTML("beforeend", `<div class="lv"><i></i></div>`);
@@ -694,6 +702,26 @@ function newEmptyTrack(name) {
   song.selTrack = id;
   requestAnimationFrame(() => ($("lanes").scrollTop = 1e6));
   return id;
+}
+
+// right-click on a track's header
+function trackMenu(t, x, y) {
+  const r = song.view.rendering, busy = !!r;
+  const items = [];
+  if (!t.bus && !t.auto) {
+    if (t.frozen) items.push(["Unfreeze (play it live again)", "", () => trackFreeze(t, "unfreeze")]);
+    else items.push(["Freeze (play it as audio: light on the computer)", "", () => trackFreeze(t, "freeze"), busy]);
+    items.push(["Bounce in place (to a new audio track)", "", () => trackFreeze(t, "bounce"), busy || !!t.frozen]);
+  }
+  items.push([`Automate ${t.name || "this track"}…`, "", () => autoMenu(t.id, x, y)]);
+  showCtx(items, x, y);
+}
+
+async function trackFreeze(t, mode) {
+  const res = await api.daw_freeze(t.id, mode);
+  if (res && res.error) { toast(res.error, true); return; }
+  if (res) setSongView(res);
+  if (mode !== "unfreeze") toast(mode === "freeze" ? `Freezing ${t.name}…` : `Bouncing ${t.name}…`);
 }
 
 function deleteTrack(t) {
@@ -2175,6 +2203,7 @@ function demoSong() {
       v++; return copy();
     },
     daw_mode: async (m) => { view.mode = m; v++; return copy(); },
+    daw_freeze: async (tid, mode) => { const t = view.tracks.find((k) => k.id === tid); if (t) t.frozen = mode === "freeze" ? { file: "x", start: 0, len: 4 } : null; v++; return copy(); },
     daw_reconcile: async (c) => { view.reconcile = null; v++; return copy(); },
     daw_comp: async (group, take, a, b) => {
       // (like daw.py's Comp, in beats; good enough for the demo)

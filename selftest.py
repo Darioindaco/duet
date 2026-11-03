@@ -2559,7 +2559,78 @@ def test_multicore():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_freeze():
+    """Freeze: a synth track with a reverb becomes its audio (sounding the same, its instrument and
+    effects out of the engine, its notes locked); unfreeze brings it back. Bounce: the audio on a new
+    track, the original's blocks muted."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-freeze-"))
+    d = Daw(e, root / "songs", "me")
+    x = [0.0] * N
+    try:
+        d.set_local("click", False)
+        d.edit([["meta", "meta", {"bpm": 120.0}],
+                ["track", "syn", {"name": "Lead", "order": 1.0, "owner": "me", "vol": 0.8, "inst": {"kind": "synth"},
+                                  "rack": [{"kind": "reverb", "on": True}]}],
+                ["pattern", "p1", {"name": "Riff", "len": 4.0}],
+                ["note", "n1", {"pattern": "p1", "track": "syn", "start": 0.0, "len": 2.0, "key": 57, "vel": 100}],
+                ["note", "n2", {"pattern": "p1", "track": "syn", "start": 2.0, "len": 1.0, "key": 64, "vel": 100}],
+                ["clip", "c1", {"track": "syn", "pattern": "p1", "start": 0.0, "blen": 4.0, "boff": 0.0}]])
+
+        def render():
+            d.play(0.0)
+            out = []
+            for _ in range(int(2.0 * SR / N)):
+                out += e.process(x)
+            d.stop()
+            for _ in range(int(3.0 * SR / N)):  # let the reverb die away
+                e.process(x)
+            return np.array(out)
+        live = render()
+        assert "error" not in d.freeze("syn", "freeze")
+        trk = lambda tid: next(t for t in d.view()["tracks"] if t["id"] == tid)
+        n_tracks = len(d.view()["tracks"])
+        wait_for(lambda: d.view()["rendering"] is None and trk("syn").get("frozen"), timeout=30, what="frozen")
+        fz = trk("syn")["frozen"]
+        assert fz["file"] in d.view()["files"] and fz["file"] in d.loaded, fz
+        assert e.mixer()["tracks"][d.slots["syn"]].get("inst") is None and not e.mixer()["tracks"][d.slots["syn"]]["rack"], \
+            "frozen: no instrument or effects running"
+        frozen = render()
+        n = min(len(live), len(frozen))
+        rms = lambda y: float(np.sqrt(np.mean(y * y)))
+        diff = rms(live[:n] - frozen[:n]) / rms(live[:n])
+        assert diff < 0.05, f"frozen sounds like live: off by {diff:.3f}"
+        # its notes are locked while frozen
+        d.edit([["note", "n1", {"key": 60}]])
+        assert [k["key"] for k in d.view()["notes"] if k["id"] == "n1"] == [57]
+        d.freeze("syn", "unfreeze")
+        assert not trk("syn").get("frozen") and e.mixer()["tracks"][d.slots["syn"]].get("inst")
+        # bounce: a new audio track, the blocks of the original muted
+        assert "error" not in d.freeze("syn", "bounce")
+        wait_for(lambda: d.view()["rendering"] is None and len(d.view()["tracks"]) == n_tracks + 1, timeout=30, what="bounced")
+        v = d.view()
+        new = [t for t in v["tracks"] if t["name"] == "Lead (audio)"][0]
+        assert new["name"] == "Lead (audio)" and any(c["track"] == new["id"] and c.get("file") for c in v["clips"])
+        assert all(c.get("mute") for c in v["clips"] if c["track"] == "syn")
+        bounced = render()
+        assert rms(live[:n] - bounced[:n]) / rms(live[:n]) < 0.05, "the bounce sounds the same"
+        print(f"freeze: ok  (frozen: within {diff * 100:.1f}% of live, no instrument or effects running, notes locked; "
+              f"unfreeze; bounce to a new track, the original muted)")
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
+    test_freeze()
     test_multicore()
     test_collab()
     test_talkback()

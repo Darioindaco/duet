@@ -61,7 +61,7 @@ FIELDS = {
     # "master", "param": "vol" | "pan" | "fx:<pos>:<kind>:<knob>" | "inst:<knob>"}),
     # its points [[beat, value 0..1], ...]
     "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "inst", "seq", "bus", "out", "sends",
-              "auto", "points", "del"},
+              "auto", "points", "frozen", "del"},
     # speed (2 = twice as fast), pitch (semitones), stretch (keep the pitch
     # when the speed changes; off = tape), reverse (the clip's stretch of the
     # file backwards). offset is in seconds of the file, len on the timeline.
@@ -89,7 +89,7 @@ FIELDS = {
 FIELD_DEFAULTS = {
     "meta": META_DEFAULTS,
     "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None,
-              "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "del": False},
+              "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "frozen": None, "del": False},
     "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "speed": 1.0, "pitch": 0.0,
              "stretch": False, "reverse": False, "mute": False, "tune": None, "group": None, "take": None,
              "tsrc": False, "once": False, "loop": None, "del": False},
@@ -595,6 +595,8 @@ class Daw:
         # both of you changed the song apart since you last had it the same: what to do with that
         self.reconcile: dict | None = None
         self.sp_saved = 0
+        # a track being frozen or bounced right now: {"track", "mode"}
+        self.rendering: dict | None = None
         self.notices: list[str] = []
         self.ui_signals: list[str] = []
         # Duet didn't close properly last time (a crash, the power): say what was kept
@@ -1078,8 +1080,8 @@ class Daw:
         calls: put the new rack in the project (and so on the partner's side)."""
         with self.lock:
             tid = next((t for t, s in self.slots.items() if s == slot), None)
-            if tid is None:
-                return
+            if tid is None or self._is_frozen(tid):
+                return  # (a frozen track's effects are in its audio)
             rack = self._song_rack(self.e.mixer()["tracks"][slot]["rack"])
             self.sent_rack[slot] = self._engine_rack(rack)
             self._do([["track", tid, {"rack": rack}]])
@@ -1495,11 +1497,12 @@ class Daw:
                 if self.sent_strip.get((slot, k)) != v:
                     e.strip_set(f"T{slot}", k, v)
                     self.sent_strip[(slot, k)] = v
-            rack = self._engine_rack(t.get("rack") or [])
+            frozen = isinstance(t.get("frozen"), dict)  # (a frozen track: just its audio, no effects or instrument)
+            rack = self._engine_rack([] if frozen else (t.get("rack") or []))
             if self.sent_rack.get(slot) != rack:
                 self._apply_rack(f"T{slot}", self.sent_rack.get(slot) or [], rack)
                 self.sent_rack[slot] = rack
-            inst = self._engine_inst(t.get("inst"))
+            inst = self._engine_inst(None if frozen else t.get("inst"))
             if self.sent_inst.get(slot) != inst:
                 self._apply_inst(slot, self.sent_inst.get(slot), inst)
                 self.sent_inst[slot] = inst
@@ -1544,9 +1547,18 @@ class Daw:
         if self.pattern_mode and self.pattern_mode not in p.live("pattern"):
             self.pattern_mode = None
         desc = [[] for _ in range(MAX_TRACKS)]
-        for c in ([] if self.pattern_mode else p.live("clip").values()):
+        frozen_tracks = {tid: t["frozen"] for tid, t in p.live("track").items() if isinstance(t.get("frozen"), dict)}
+        clips = [] if self.pattern_mode else list(p.live("clip").values())
+        for tid, fz in frozen_tracks.items():
+            # a frozen track plays its audio, from where its first clip started (in pattern mode: nothing)
+            if not self.pattern_mode and safe(fz.get("file")):
+                clips.append({"track": tid, "file": fz["file"], "start": float(fz.get("start", 0)), "offset": 0.0,
+                              "len": float(fz.get("len", 0)), "gain": 1.0, "_frozen": True})
+        for c in clips:
             if c.get("tsrc"):
                 continue  # a take kept to comp from: silent
+            if c.get("track") in frozen_tracks and not c.get("_frozen"):
+                continue  # (its clips are in the frozen audio)
             slot = self.slots.get(c.get("track"))
             key = c.get("file")
             if slot is None or key not in self.loaded:
@@ -1696,9 +1708,11 @@ class Daw:
         are (repeating to fill a clip), or the open pattern alone in pattern mode."""
         out = [[] for _ in range(MAX_TRACKS)]
 
+        frozen = {tid for tid, t in self.p.live("track").items() if isinstance(t.get("frozen"), dict)}
+
         def put(n, t, dur):
             slot = self.slots.get(n.get("track"))
-            if slot is None or n.get("mute"):  # a muted note stays in the pattern, silent
+            if slot is None or n.get("mute") or n.get("track") in frozen:  # (muted; a frozen track plays its audio)
                 return
             s0 = b2s(t)
             out[slot].append((s0, b2s(t + dur) - s0, int(n.get("key", 60)) & 127, max(1, min(127, int(n.get("vel", 100))))))
@@ -1811,7 +1825,7 @@ class Daw:
 
         def put(lane, t, v):
             slot = self.slots.get(lane.get("track"))
-            if slot is not None:
+            if slot is not None and not self._is_frozen(lane.get("track")):
                 out[slot].append((b2s(t), max(0, min(128, int(lane.get("cc", 1)))), v))
 
         self._unroll_ctls(put, self.pattern_mode)
@@ -2553,6 +2567,130 @@ class Daw:
             self.conflict = None
             self.version += 1
 
+    # --- freeze and bounce in place ----------------------------------------------------
+
+    def _frozen_files(self) -> set:
+        return {(t.get("frozen") or {}).get("file") for t in self.p.live("track").values() if isinstance(t.get("frozen"), dict)}
+
+    def _not_frozen(self, changes: list) -> list:
+        """A frozen track's notes, lanes, clips, instrument and effects stay as they are (they're in its
+        audio): unfreeze first. Its fader, pan, name and routing can change."""
+        frozen = {tid for tid, t in self.p.live("track").items() if isinstance(t.get("frozen"), dict)}
+        if not frozen:
+            return changes
+        keep, n = [], 0
+        for ch in changes:
+            try:
+                kind, oid, f = ch
+            except (TypeError, ValueError):
+                continue
+            f = f or {}
+            tid = f.get("track") or (self.p.objs[kind].get(oid, {}).get("track") if kind in ("note", "ctl", "clip") else None)
+            if kind in ("note", "ctl", "clip") and tid in frozen and not (kind == "clip" and set(f) <= {"mute"}):
+                n += 1
+                continue
+            if kind == "track" and oid in frozen and set(f) & {"rack", "inst"}:
+                n += 1
+                continue
+            keep.append(ch)
+        if n:
+            self.notices.append("That track is frozen: Unfreeze it to change its notes, clips or effects.")
+        return keep
+
+    def _is_frozen(self, tid) -> bool:
+        return isinstance(self.p.live("track").get(tid, {}).get("frozen"), dict)
+
+    FREEZE_TAIL = 3.0  # seconds after the last clip (reverb and delay tails)
+
+    def freeze(self, track: str, mode: str = "freeze") -> dict:
+        """freeze: the track as audio (after its effects, before its fader), played instead of its
+        instrument and effects (light on the computer; your partner doesn't need its plugins). unfreeze
+        brings it back. bounce: that audio on a new track instead, the original's clips muted."""
+        with self.lock:
+            t = self.p.live("track").get(track)
+            if mode == "unfreeze":
+                if t and t.get("frozen"):
+                    self._do([["track", track, {"frozen": None}]])
+                return self.view()
+            if mode not in ("freeze", "bounce"):
+                return {"error": "freeze, bounce or unfreeze"}
+            if not t or t.get("bus") or t.get("auto"):
+                return {"error": "Only a track with clips or patterns on it can be frozen or bounced."}
+            if t.get("frozen"):
+                return {"error": "Unfreeze it first."}
+            if self.rendering:
+                return {"error": "Another track is being rendered right now."}
+            if self.pattern_mode or self.rec:
+                return {"error": "Stop first (a pattern playing on its own or a recording)."}
+            slot = self.slots.get(track)
+            clips = [c for c in self.p.live("clip").values() if c.get("track") == track and not c.get("tsrc") and not c.get("mute")]
+            if slot is None or not clips:
+                return {"error": "There's nothing on this track to render."}
+            tm = self._tm()
+            def end_of(c):
+                return float(c["start"]) + (float(c.get("blen") or self._pattern_len(c["pattern"])) if c.get("pattern")
+                                            else tm.s2b(tm.b2s(float(c["start"])) + float(c.get("len", 0))) - float(c["start"]))
+            a = min(float(c.get("start", 0)) for c in clips)
+            b = max(end_of(c) for c in clips)
+            sa, sb = tm.b2s(a), tm.b2s(b) + self.FREEZE_TAIL
+            self.p.audio_dir.mkdir(parents=True, exist_ok=True)
+            out = self.p.folder / f".render-{new_id('r')}.wav"
+            try:
+                self.e.daw_export(None, [(slot, str(out))], sa, sb, None, True)
+            except Exception as exc:
+                return {"error": f"Couldn't render it: {exc}"}
+            self.rendering = {"track": track, "mode": mode, "start": a, "len": sb - sa, "path": str(out), "pid": self.p.pid}
+            self.version += 1
+        threading.Thread(target=self._render_wait, name="duet-freeze", daemon=True).start()
+        return self.view()
+
+    def _render_wait(self):
+        r = self.rendering
+        while True:
+            st = self.e.daw_export_status()
+            if st.get("result") is not None:
+                break
+            time.sleep(0.05)
+        res, out = st["result"], Path(r["path"])
+        try:
+            if not res.get("ok"):
+                raise RuntimeError(res.get("error") or "the render didn't work")
+            if self.p.pid != r["pid"]:
+                raise RuntimeError("the song changed meanwhile")
+            key = self.import_sample(str(out))
+        except Exception as exc:
+            with self.lock:
+                self.rendering = None
+                self.notices.append(f"Couldn't {r['mode']} the track: {exc}")
+                self.version += 1
+            out.unlink(missing_ok=True)
+            return
+        out.unlink(missing_ok=True)
+        with self.lock:
+            self.rendering = None
+            t = self.p.live("track").get(r["track"])
+            if not t:
+                return
+            name = t.get("name") or "Track"
+            self._do([["file", key, {"name": f"{name} ({'frozen' if r['mode'] == 'freeze' else 'bounced'})"[:80]}]], undoable=False)
+            if r["mode"] == "freeze":
+                self._do([["track", r["track"], {"frozen": {"file": key, "start": r["start"], "len": r["len"]}}]])
+                self.notices.append(f"{name} is frozen: it plays as audio now (Unfreeze to change it again).")
+            else:
+                tid = new_id("t")
+                tracks = self.p.live("track")
+                order = float(t.get("order", 0)) + 0.5
+                ch = [["track", tid, {"name": f"{name} (audio)"[:40], "order": order, "owner": self.me, "src": -1, "arm": False,
+                                      "vol": t.get("vol", 0.8), "pan": t.get("pan", 0.0), "rack": [], "out": t.get("out"),
+                                      "sends": t.get("sends") or {}}],
+                      ["clip", new_id("c"), {"track": tid, "file": key, "start": r["start"], "offset": 0.0, "len": r["len"],
+                                             "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}]]
+                ch += [["clip", cid, {"mute": True}] for cid, c in self.p.live("clip").items()
+                       if c.get("track") == r["track"] and not c.get("tsrc") and not c.get("mute")]
+                self._do(ch)
+                self.notices.append(f"{name} is bounced to a new audio track; its own clips are muted.")
+            self.version += 1
+
     # --- Together / Apart -----------------------------------------------------------
 
     def set_mode(self, mode: str) -> dict:
@@ -2592,6 +2730,7 @@ class Daw:
         return out
 
     def _blocked(self, changes: list) -> tuple[list, int]:
+        changes = self._not_frozen(changes)
         locks = self._locked()
         if not (locks["pattern"] or locks["clip"]):
             return changes, 0
@@ -2827,7 +2966,7 @@ class Daw:
         if now - self.last_files < 0.5:
             return
         self.last_files = now
-        needed = {c.get("file") for c in self.p.live("clip").values()} | self._inst_files()
+        needed = {c.get("file") for c in self.p.live("clip").values()} | self._inst_files() | self._frozen_files()
         for name in sorted(n for n in needed if safe(n)):
             path = self.p.audio_dir / name
             if not path.exists() and (self.incoming / name).exists():
@@ -2924,6 +3063,7 @@ class Daw:
                 "patternMode": self.pattern_mode,
                 "conflict": self.conflict, "shared": self.connected and self.partner_pid == p.pid,
                 "mode": self.mode, "reconcile": self.reconcile,
+                "rendering": self.rendering and {k: self.rendering[k] for k in ("track", "mode")},
                 "locks": {k: sorted(v) for k, v in self._locked().items()},
                 "undo": bool(self.undos), "redo": bool(self.redos),
             }

@@ -888,6 +888,8 @@ pub struct TrackMix {
     pub inst: Option<InstCfg>,
     /// also write this track on its own (after its fader and pan)
     pub stem: Option<PathBuf>,
+    /// the stem from before the fader (after the rack): what freezing a track keeps
+    pub pre: bool,
 }
 
 /// Render timeline samples start..end to stereo 24-bit WAV files: the mix
@@ -940,6 +942,7 @@ pub fn render_ex(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, 
     };
     let mut strips: Vec<Strip> = (0..MAX_TRACKS).map(|_| Strip::new(StripSettings::track())).collect();
     let mut stems: Vec<Option<Wav>> = (0..MAX_TRACKS).map(|_| None).collect();
+    let mut pre = [false; MAX_TRACKS];
     for t in tracks {
         let Some(strip) = strips.get_mut(t.slot) else { continue };
         strip.s = t.s;
@@ -956,6 +959,7 @@ pub fn render_ex(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, 
         };
         if let Some(p) = &t.stem {
             stems[t.slot] = Some(create(p)?);
+            pre[t.slot] = t.pre;
         }
     }
     let mut master_rack = build_rack(master_rack, "the master", &mut warnings);
@@ -980,10 +984,14 @@ pub fn render_ex(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, 
     // on past the end by the master rack's delay
     let preroll = (0..MAX_TRACKS).map(|i| wiring.ahead_notes[i].max(wiring.ahead_audio[i])).max().unwrap_or(0).max(0);
     let m_lat = wiring.master_lat.max(0);
+    // a stem is early by its buses' delay (wiring.down): what leaves its fader at x is the song at
+    // x + down, so it goes into the file there (the preroll covers the start)
+    let down: [i64; MAX_TRACKS] = std::array::from_fn(|i| if stems[i].is_some() { wiring.down[i].max(0) } else { 0 });
+    let tail = m_lat;
     let (mut l, mut r) = (vec![0f32; BLOCK], vec![0f32; BLOCK]);
     let mut x = start - preroll;
-    while x < end + m_lat {
-        let n = (end + m_lat - x).min(BLOCK as i64) as usize;
+    while x < end + tail {
+        let n = (end + tail - x).min(BLOCK as i64) as usize;
         l[..n].fill(0.0);
         r[..n].fill(0.0);
         let play = Play { segs: [(0, x, n), (0, 0, 0)], nseg: 1, looping: None };
@@ -995,14 +1003,15 @@ pub fn render_ex(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, 
         }
         apply_automation(tl, x, &mut strips, &mut master_rack);
         render_tracks(&mut strips, &mut wiring, &mut bufs, Some(tl), Some(&play), n, &mut l[..n], &mut r[..n]);
-        // stems: the tracks as they leave their faders (no master rack: no delay)
+        // stems: the tracks as they leave their faders (no master rack: no delay), or before them
         for (slot, w) in stems.iter_mut().enumerate() {
             let Some(w) = w.as_mut() else { continue };
+            let (sl, sr_) = if pre[slot] { (&bufs.key_l[slot], &bufs.key_r[slot]) } else { (&bufs.post_l[slot], &bufs.post_r[slot]) };
             for k in 0..n {
-                let at = x + k as i64;
+                let at = x + k as i64 + down[slot];
                 if at >= start && at < end {
-                    put(w, bufs.post_l[slot][k])?;
-                    put(w, bufs.post_r[slot][k])?;
+                    put(w, sl[k])?;
+                    put(w, sr_[k])?;
                 }
             }
         }
@@ -1010,7 +1019,7 @@ pub fn render_ex(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, 
         let mut m = 0;
         for k in 0..n {
             let at = x + k as i64 - m_lat; // what comes out of the master rack now
-            if at >= start && at < end {
+            if at >= start && at < end && mix.is_some() {
                 ml[m] = l[k] * master;
                 mr[m] = r[k] * master;
                 m += 1;
@@ -1276,8 +1285,8 @@ mod tests {
         tl.tracks[3].push(clip(0, 0, 4800, &data));
         let s = |pan: f32, mute: bool| StripSettings { active: true, pan, mute, ..StripSettings::track() };
         let tracks = vec![
-            TrackMix { slot: 0, s: s(-1.0, false), rack: vec![], inst: None, stem: Some(dir.join("a.wav")) },
-            TrackMix { slot: 3, s: s(0.0, true), rack: vec![SlotCfg::new(5)], inst: None, stem: Some(dir.join("b.wav")) },
+            TrackMix { slot: 0, s: s(-1.0, false), rack: vec![], inst: None, stem: Some(dir.join("a.wav")), pre: false },
+            TrackMix { slot: 3, s: s(0.0, true), rack: vec![SlotCfg::new(5)], inst: None, stem: Some(dir.join("b.wav")), pre: false },
         ];
         let done = AtomicU64::new(0);
         let warn = render(&tl, tracks, Wiring::plain(), vec![], 1.0, 48000, 0, 8000, Some(dir.join("mix.wav")), &done).unwrap();
@@ -1316,9 +1325,9 @@ mod tests {
         let mut lim = SlotCfg::new(crate::fx::LIMITER);
         lim.p[1] = 1.0;
         let tracks = vec![
-            TrackMix { slot: 0, s, rack: vec![], inst: None, stem: None },
-            TrackMix { slot: 1, s, rack: vec![], inst: None, stem: None },
-            TrackMix { slot: 5, s, rack: vec![lim.clone()], inst: None, stem: None },
+            TrackMix { slot: 0, s, rack: vec![], inst: None, stem: None, pre: false },
+            TrackMix { slot: 1, s, rack: vec![], inst: None, stem: None, pre: false },
+            TrackMix { slot: 5, s, rack: vec![lim.clone()], inst: None, stem: None, pre: false },
         ];
         let mut routes = vec![crate::mix::Route::default(); MAX_TRACKS];
         routes[1] = Route { out: Some(5), sends: vec![] };

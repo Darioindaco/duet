@@ -126,6 +126,9 @@ pub struct Wiring {
     pub master_lat: i64,
     /// `order` by stage (porder[..stage_end[0]] is stage 0, and so on): see render_tracks
     pub porder: [u8; MAX_TRACKS],
+    /// how much later than its own output a track's sound reaches the master (its buses' delays):
+    /// a track is that much early as it leaves its fader (exports line its stem up by it)
+    pub down: [i64; MAX_TRACKS],
     pub stage_end: [u8; MAX_TRACKS + 1],
     pub nstage: usize,
 }
@@ -247,7 +250,7 @@ impl Wiring {
         }
         let ahead_audio: [i64; MAX_TRACKS] = std::array::from_fn(|i| lat(i) + down[i]);
         let ahead_notes: [i64; MAX_TRACKS] = std::array::from_fn(|i| ahead_audio[i] + d.inst_lat[i] as i64);
-        Box::new(Wiring { order, n, out, sends, ahead_audio, ahead_notes, fed, pads, master_lat: d.master_lat as i64, porder, stage_end, nstage })
+        Box::new(Wiring { order, n, out, sends, ahead_audio, ahead_notes, fed, pads, master_lat: d.master_lat as i64, porder, stage_end, nstage, down })
     }
 
     /// A send's level changed (the shape didn't): no rebuild needed.
@@ -278,8 +281,8 @@ fn reaches(adj: &[Vec<usize>], from: usize, to: usize) -> bool {
 pub struct TrackBufs {
     in_l: Vec<Vec<f32>>,
     in_r: Vec<Vec<f32>>,
-    key_l: Vec<Vec<f32>>,
-    key_r: Vec<Vec<f32>>,
+    pub key_l: Vec<Vec<f32>>,
+    pub key_r: Vec<Vec<f32>>,
     pub post_l: Vec<Vec<f32>>,
     pub post_r: Vec<Vec<f32>>,
     tmp_l: Vec<f32>,

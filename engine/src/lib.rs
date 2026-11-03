@@ -1928,9 +1928,9 @@ impl Engine {
     /// the mix to `mix` (if given) and stems = [(track slot, path)]. Uses the
     /// song tracks' current faders, pans, mute/solo and effects.
     /// normalize: a loudness (LUFS) to turn the mix to, true peak at most -1 dBTP.
-    #[pyo3(signature = (mix, stems, start, end, normalize=None))]
+    #[pyo3(signature = (mix, stems, start, end, normalize=None, pre_fader=false))]
     fn daw_export(&self, mix: Option<String>, stems: Vec<(usize, String)>, start: f64, end: f64,
-                  normalize: Option<f64>) -> PyResult<()> {
+                  normalize: Option<f64>, pre_fader: bool) -> PyResult<()> {
         let sr = self.samplerate() as u32;
         self.reroute();
         let (tracks, master, master_rack, wiring, clock) = {
@@ -1946,6 +1946,7 @@ impl Engine {
                     rack: m.rack.clone(),
                     inst: m.inst.clone(),
                     stem: stems.iter().find(|(s, _)| *s == slot).map(|(_, p)| p.into()),
+                    pre: pre_fader,
                 })
                 .collect();
             let k = c.wired.clone().expect("rerouted above");

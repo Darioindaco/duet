@@ -253,6 +253,9 @@ class Api:
 
     # --- the song: playlist, transport, recording (daw.py) --------------------
 
+    def daw_freeze(self, track, mode):
+        return self._daw.freeze(str(track), str(mode))
+
     def daw_mode(self, mode):
         return self._daw.set_mode(str(mode))
 
