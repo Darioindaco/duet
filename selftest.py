@@ -208,6 +208,15 @@ def test_song_files():
         assert d.save_now().get("ok")
         assert d.view()["unsaved"] is False
         assert any(x.get("label") == "Saved" for x in d.versions())
+        # a fader drag: levels only (no whole song in the answer), one undo step, nothing else let through
+        tid = d.view()["tracks"][0]["id"]
+        for g in (0.5, 0.6, 0.7):
+            r = d.levels([["track", tid, {"vol": g, "name": "sneaky"}], ["clip", "nope", {"gain": 2.0}]])
+            assert r["v"] > r["v0"] and not r["blocked"], r
+        t = d.view()["tracks"][0]
+        assert t["vol"] == 0.7 and t["name"] != "sneaky", t
+        d.undo()
+        assert d.view()["tracks"][0]["vol"] == 0.8, "one undo takes the whole drag back"
         # a fresh Daw (Duet started again) finds the song in its own folder, and opens it
         d.close()
         d = Daw(e, root / "Projects", "me")

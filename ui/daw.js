@@ -230,6 +230,23 @@ async function songEdit(changes) {
   try { v = await api.daw_edit(changes); } finally { song.unacked--; }
   if (seq === song.editSeq) setSongView(v);
 }
+// a track's volume and pan are the song's too: moved by the partner (or an undo, or the track's own
+// slider in the playlist), the mixer's faders follow. True if one moved; with redraw, they're redrawn
+// (renderStrips waits while you're dragging one yourself: it would be rebuilt under the mouse).
+function syncStripLevels(v, redraw = true) {
+  if (!v || !ui.mixer?.tracks || song.mixDrag) return false; // (dragging: after, from dragEnded)
+  let moved = false;
+  for (const t of [...v.tracks, ...(v.buses || [])]) {
+    const s = t.slot != null && ui.mixer.tracks[t.slot];
+    if (!s) continue;
+    const vol = t.vol ?? 0.8, pan = t.pan ?? 0;
+    if (Math.abs((s.fader ?? 0.8) - vol) > 1e-4 || Math.abs((s.pan ?? 0) - pan) > 1e-4) {
+      s.fader = vol; s.pan = pan; moved = true;
+    }
+  }
+  if (moved && redraw) { renderStrips(); if (ui.sel[0] === "T") renderRack(); }
+  return moved;
+}
 function setSongView(v) {
   if (!v) return;
   const before = song.view;
@@ -248,19 +265,7 @@ function setSongView(v) {
     ...(FXMETA[x.kind]?.knobs || []).map(([k]) => Math.round((x[k] ?? 0) * 1000))]));
   const racksMoved = ui.mixer?.tracks && ([...v.tracks, ...(v.buses || [])].some((t) => t.slot != null && rs(t.rack) !== rs(ui.mixer.tracks[t.slot].rack))
     || rs(v.meta.master_rack) !== rs(ui.mixer.master_strip?.rack));
-  // a track's volume and pan are the song's too: moved by the partner (or an undo), the faders follow
-  // (not while you're moving one yourself: it would be rebuilt under the mouse)
-  let levelsMoved = false;
-  if (ui.mixer?.tracks && !song.mixDrag) {
-    for (const t of [...v.tracks, ...(v.buses || [])]) {
-      const s = t.slot != null && ui.mixer.tracks[t.slot];
-      if (!s) continue;
-      const vol = t.vol ?? 0.8, pan = t.pan ?? 0;
-      if (Math.abs((s.fader ?? 0.8) - vol) > 1e-4 || Math.abs((s.pan ?? 0) - pan) > 1e-4) {
-        s.fader = vol; s.pan = pan; levelsMoved = true;
-      }
-    }
-  }
+  const levelsMoved = syncStripLevels(v, false);
   if (levelsMoved && !racksMoved && before && sig === song.trackSig) { renderStrips(); if (ui.sel[0] === "T") renderRack(); }
   if (!before || sig !== song.trackSig || racksMoved) {
     song.trackSig = sig;
@@ -585,7 +590,7 @@ function hslider(value, onChange, title) {
     const r = el.getBoundingClientRect();
     set((e.clientX - r.left) / r.width);
     const move = (ev) => set((ev.clientX - r.left) / r.width);
-    const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); song.headBusy = false; if (song.pendingHeads) renderHeads(); };
+    const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); song.headBusy = false; flushEdits(); if (song.pendingHeads) renderHeads(); };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
   });
@@ -604,12 +609,40 @@ function throttledEdit(kind, id, fields) {
   const k = kind + "\n" + id;
   pendingEdits[k] = { ...(pendingEdits[k] || {}), ...fields };
   if (throttledEdit.t) return;
-  throttledEdit.t = setTimeout(() => {
-    throttledEdit.t = null;
-    const ch = Object.entries(pendingEdits).map(([key, f]) => [...key.split("\n"), f]);
-    for (const key of Object.keys(pendingEdits)) delete pendingEdits[key];
-    songEdit(ch);
-  }, 66);
+  throttledEdit.t = setTimeout(flushEdits, 66);
+}
+// send what's waiting now (a drag let go: its last value shouldn't wait)
+function flushEdits() {
+  clearTimeout(throttledEdit.t);
+  throttledEdit.t = null;
+  const ch = Object.entries(pendingEdits).map(([key, f]) => [...key.split("\n"), f]);
+  for (const key of Object.keys(pendingEdits)) delete pendingEdits[key];
+  if (!ch.length) return;
+  if (ch.every(([kind, , f]) => kind === "track" && Object.keys(f).every((x) => LEVEL_FIELDS.has(x)))) songLevels(ch);
+  else songEdit(ch);
+}
+// a track's volume, pan or sends while a fader or knob moves: applied here, sent, and not answered
+// with the whole song (re-reading and redrawing everything 15 times a second made drags stutter)
+const LEVEL_FIELDS = new Set(["vol", "pan", "sends"]);
+async function songLevels(changes) {
+  applyLocal(changes);
+  syncStripLevels(song.view);
+  if (!song.mixDrag) songRender();
+  else song.renderAfterDrag = true;
+  const seq = ++song.editSeq;
+  song.unacked++;
+  let r;
+  try { r = await api.daw_levels(changes); } finally { song.unacked--; }
+  // nothing else changed in between: the song here is the song there, no need to read it again
+  if (r && seq === song.editSeq && r.v0 === song.v) song.v = r.v;
+}
+// a drag (fader, knob) let go: what waited for it
+function dragEnded() {
+  song.mixDrag = false;
+  flushEdits();
+  if (syncStripLevels(song.view, false)) ui.stripsAfterDrag = true;
+  if (song.renderAfterDrag) { song.renderAfterDrag = false; songRender(); }
+  if (ui.stripsAfterDrag) { ui.stripsAfterDrag = false; renderStrips(); if (ui.sel[0] === "T") renderRack(); }
 }
 const songEditThrottled = (tid, fields) => throttledEdit("track", tid, fields);
 
@@ -2448,7 +2481,10 @@ function demoSong() {
     daw_projects: async () => [{ pid: "pdemo", name: view.meta.name, modified: Date.now() / 1000, clips: view.clips.length, current: true },
       { pid: "p2", name: "Blues in A", modified: Date.now() / 1000 - 86400, clips: 5, current: false }],
     daw_new: async () => ({ ok: true, view: copy() }), daw_open: async () => copy(), daw_resolve: async () => copy(),
-    daw_save: async () => ({ ok: true }), daw_name_free: async (n) => ({ taken: false, suggest: n }), daw_open_folder: async () => null,
+    daw_save: async () => ({ ok: true }), daw_levels: async (changes) => {
+      for (const [, id, f] of changes) { const t = [...view.tracks, ...view.buses].find((x) => x.id === id); if (t) Object.assign(t, f); }
+      return { v0: v, v: ++v };
+    }, daw_name_free: async (n) => ({ taken: false, suggest: n }), daw_open_folder: async () => null,
     daw_forget: async () => ({ ok: true }), pick_folder: async () => null, app_close: async () => ({ ok: true }),
     prefs_get: async () => ({ confirm_close: true, song_location: "", new_bpm: 120, new_beats: 4, auto_update: true, mix_threads: true, plugin_sandbox: false, projects_dir: "" }),
     prefs_set: async (k, v) => ({ ok: true, value: v }),

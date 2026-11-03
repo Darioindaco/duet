@@ -1010,6 +1010,23 @@ class Daw:
                                        "keys": sorted(set(a["keys"]) | set(b["keys"])), "t": b["t"]})
             return self.view()
 
+    LEVELS = {"vol", "pan", "sends"}
+
+    def levels(self, changes: list) -> dict:
+        """A fader or pan knob being moved: track volume, pan and sends only, applied like any edit (undo,
+        the partner), but answered with just the versions before and after instead of the whole song
+        (the UI has it already), so a drag stays smooth in a big song."""
+        with self.lock:
+            ok = [[k, i, {f: v for f, v in fs.items() if f in self.LEVELS}] for k, i, fs in changes
+                  if k == "track" and isinstance(fs, dict) and i in self.p.live("track")]
+            ok = [c for c in ok if c[2]]
+            v0 = self.version
+            changes, blocked = self._blocked(ok)
+            self._do(changes)
+            if blocked:
+                self.notices.append("Your partner is editing that right now: it'll be free when they're done.")
+            return {"v0": v0, "v": self.version, "blocked": bool(blocked)}
+
     def _mirror_changes(self) -> list:
         """Each channel plays its notes from blocks on its own row. A channel with notes in a pattern
         that's in the song on another channel's row gets a block of its own in the same place. The

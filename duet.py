@@ -277,6 +277,9 @@ class Api:
     def daw_edit(self, changes):
         return self._daw.edit(list(changes))
 
+    def daw_levels(self, changes):
+        return self._daw.levels(list(changes))
+
     def daw_comp(self, group, take, a, b):
         return self._daw.comp(str(group), int(take), float(a), float(b))
 

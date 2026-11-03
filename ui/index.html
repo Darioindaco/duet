@@ -961,9 +961,13 @@ function knob({ label, value, def = value, min = 0, max = 1, fmt = pct, color = 
       set(v + (lastY - ev.clientY) * speed * (max - min));
       lastY = ev.clientY;
     };
-    const up = () => { svg.removeEventListener("pointermove", move); svg.removeEventListener("pointerup", up); };
+    song.mixDrag = true; // (nothing redraws the knob away from under the mouse meanwhile)
+    const up = () => {
+      svg.removeEventListener("pointermove", move); svg.removeEventListener("lostpointercapture", up);
+      dragEnded();
+    };
     svg.addEventListener("pointermove", move);
-    svg.addEventListener("pointerup", up);
+    svg.addEventListener("lostpointercapture", up);
   });
   svg.addEventListener("dblclick", () => set(def));
   el.addEventListener("wheel", (e) => { e.preventDefault(); set(v - Math.sign(e.deltaY) * 0.02 * (max - min)); }, { passive: false });
@@ -1370,9 +1374,12 @@ function fader({ value, onChange }) {
     const h = el.getBoundingClientRect().height - 22;
     const move = (ev) => { set(pos + (lastY - ev.clientY) / h * (ev.shiftKey ? 0.25 : 1)); lastY = ev.clientY; };
     song.mixDrag = true;
-    const up = () => { song.mixDrag = false; el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); };
+    const up = () => {
+      el.removeEventListener("pointermove", move); el.removeEventListener("lostpointercapture", up);
+      dragEnded();
+    };
     el.addEventListener("pointermove", move);
-    el.addEventListener("pointerup", up);
+    el.addEventListener("lostpointercapture", up); // (after pointerup, and when the pointer is taken away)
   });
   el.addEventListener("dblclick", (e) => { e.stopPropagation(); set(faderPos(1)); });
   el.addEventListener("wheel", (e) => { e.preventDefault(); set(pos - Math.sign(e.deltaY) * 0.02); }, { passive: false });
@@ -1520,6 +1527,8 @@ function stripEl(t) {
 }
 
 function renderStrips() {
+  // not under a fader or knob you're dragging: that waits until you let go (dragEnded)
+  if (song.mixDrag) { ui.stripsAfterDrag = true; return; }
   const box = $("strips");
   const sx = box.scrollLeft, sy = box.scrollTop;
   requestAnimationFrame(() => { box.scrollLeft = sx; box.scrollTop = sy; drawCables(); });
