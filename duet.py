@@ -30,6 +30,7 @@ from daw import Daw, file_name
 from library import Library
 from duet_engine import Engine
 from t3k import Tone3000
+from updater import Updater, build_info
 from vstlib import VstLibrary, scan_main
 
 
@@ -57,6 +58,8 @@ class Api:
             save_settings(settings)
         self._lib = Library(data_dir() / "Library", Engine)
         self._daw = Daw(engine, data_dir() / "Projects", settings["peer_id"], float(settings.get("rec_offset_ms", 0)))
+        from daw import https_context
+        self._upd = Updater(build_info(resource("build_info.json")), data_dir() / "updates", https_context())
         threading.Thread(target=self._discover, daemon=True).start()
 
     def _discover(self):
@@ -711,6 +714,24 @@ class Api:
 
     def send_signal(self, text):
         self._engine.send_signal(text)
+
+    # --- updating itself (updater.py) ---------------------------------------------
+
+    def update_check(self):
+        return self._upd.check()
+
+    def update_download(self):
+        return self._upd.download()
+
+    def update_status(self):
+        return self._upd.status()
+
+    def update_install(self):
+        # the song is saved as it closes; the new version starts once this one is gone
+        r = self._upd.install()
+        if r.get("ok") and self._window:
+            threading.Timer(0.3, self._window.destroy).start()
+        return r
 
     def shutdown(self):
         self.save_mixer()  # plugin windows may have changed settings since the last save

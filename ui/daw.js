@@ -1846,6 +1846,7 @@ async function toggleSongMenu() {
       <button id="mMidiIn"><span>Import a MIDI file…</span></button>
       <button id="mMidiOut"><span>Export the notes as MIDI…</span></button>
       <button id="mKeys"><span>Keyboard shortcuts…</span><kbd>Ctrl+/</kbd></button>
+      <button id="mUpdate"><span>Check for updates</span><kbd>${upd.info?.current ? "build " + upd.info.current : ""}</kbd></button>
       <button id="mSound"><span>Audio &amp; MIDI settings</span></button>
       <button id="mConnect"><span>Connect to your partner</span></button>
     </div>
@@ -1879,6 +1880,7 @@ async function toggleSongMenu() {
     else setSongView(r.view);
   };
   $("mKeys").onclick = () => { menu.hidden = true; openShortcuts(); };
+  $("mUpdate").onclick = () => { menu.hidden = true; updCheck(true); };
   $("mSound").onclick = () => { menu.hidden = true; openPanel("sound"); };
   $("mConnect").onclick = () => { menu.hidden = true; openPanel("connect"); };
   $("mNew").onclick = async () => {
@@ -2148,6 +2150,11 @@ function demoSong() {
     stems_cancel: async () => {},
     // (the demo makes up its answers: a steady beat at 96, hits every half second)
     tune_audition: async () => ({ ok: true }), tune_audition_stop: async () => {},
+    update_check: async () => (location.search.includes("update")
+      ? { supported: true, current: 102, available: true, latest: 110, size: 22e6 } : { supported: true, current: 102, available: false }),
+    update_download: async () => { window.mockUpd = Date.now(); return { ok: true }; },
+    update_status: async () => { const k = Math.min(1, (Date.now() - (window.mockUpd || 0)) / 2500); return { state: k >= 1 ? "ready" : "downloading", done: k * 22e6, total: 22e6 }; },
+    update_install: async () => ({ error: "Not in the demo." }),
     midi_import: async () => ({ error: "Not in the demo." }), midi_export: async () => ({ error: "Not in the demo." }),
     daw_analyze: async (id, what) => {
       const c = view.clips.find((k) => k.id === id);

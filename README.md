@@ -6,8 +6,8 @@ server, no account, no subscription — fast enough to jam in real time, and the
 song you build is shared live on both computers, like a shared document.
 
 **Download:** the newest build is on the
-[Releases page](https://github.com/Darioindaco/duet/releases) — Mac (Apple
-Silicon and Intel) and Windows.
+[Releases page](https://github.com/Darioindaco/duet/releases/latest) — Mac (Apple
+Silicon, and Intel when it was built) and Windows. After that, Duet updates itself.
 
 ## What's in it
 
@@ -49,8 +49,9 @@ Silicon and Intel) and Windows.
 
 ## Install
 
-**Windows:** unzip `Duet-windows.zip` and run `Duet.exe`. SmartScreen will warn because it isn't signed:
-*More info → Run anyway*. Allow it through the firewall when asked.
+**Windows:** run `Duet-setup.exe`. It installs Duet for you only (no admin rights
+needed) with a Start menu shortcut, and starts it. SmartScreen will warn because
+it isn't signed: *More info → Run anyway*. Allow it through the firewall when asked.
 
 **Mac:** unzip `Duet-mac-apple-silicon.zip` (M1/M2/M3/M4 Macs) or
 `Duet-mac-intel.zip` (older Intel Macs; Apple menu → About This Mac tells you
@@ -63,6 +64,14 @@ the first launch needs one extra step:
 
 Then allow **Microphone** and **incoming network connections** when asked. If you
 denied the microphone: System Settings → Privacy & Security → Microphone → Duet on.
+
+**Updates:** a little after it starts (and every few hours) Duet looks for a newer
+build. When there is one, a card in the corner says so: *Update* downloads it in
+the background, *Restart now* closes Duet (your song is saved), puts the new
+version in place and opens it again. Song menu → *Check for updates* looks right
+away and shows which build you have. An update doesn't need the extra first-launch
+steps above (macOS and Windows only ask about apps downloaded in a browser). On a
+Mac, Duet has to be in a folder it can write to, such as Applications.
 
 ## Using it
 
@@ -804,10 +813,12 @@ to it through lock-free queues and atomics.
 | `library.py` | The sample library: folders, bins, search, import |
 | `ui/auto.js` | Automation lanes in the playlist: drawing them, *Automate* on knobs and faders |
 | `ui/learn.js` | MIDI-learn: linking the keyboard's knobs and faders to controls |
+| `updater.py`, `ui/update.js` | Updating itself from the newest release: finding it, downloading, swapping the app (Mac) or running the installer (Windows) |
+| `installer/duet.iss` | The Windows installer (Inno Setup): for the current user, Start menu, uninstaller; silent for updates |
 | `midifile.py` | Standard MIDI files: reading and writing notes, controllers and pitch bends |
 | `ui/browser.js` | The browser on the left: folders, bins, preview, drag sounds into the song |
 | `ui/mixer.js` | Buses, FL-style routing (arrows, cables, sends, live strips' sends too), effect windows, the sidechain picker, the EQ's curve |
-| `.github/workflows/build.yml` | Every push: engine tests + self-test on Linux. The Mac apps (built, tested, smoke-tested) for main, or on request: Actions → build → Run workflow |
+| `.github/workflows/build.yml` | Every push: engine tests + self-test on Linux. With `[release]` in the commit message: the Apple Silicon app and the Windows installer (built, tested, smoke-tested) as a release, which Duet updates itself to; `[mac]` / `[windows]` build without a release, and the Intel Mac app comes along when asked for (see the top of the file) |
 
 Live audio is uncompressed 16-bit mono, 48 kHz: about 800 kbit/s each way.
 Recorded takes are 24-bit WAV; they go to the partner after recording at up to

@@ -86,6 +86,10 @@ jobs:
         run: cargo build --release ${{ matrix.cargo_args }} --example test_gain --example test_synth
       - name: Self-test
         run: python selftest.py
+      - name: Build number (for the updater)
+        run: |
+          printf '{"run": %s, "sha": "%s", "ref": "%s"}\n' "${{ github.run_number }}" "${GITHUB_SHA::7}" "$GITHUB_REF_NAME" > build_info.json
+          cat build_info.json
       - name: Build Duet.app
         run: pyinstaller --noconfirm duet.spec
       - name: Smoke test (app must start and stay up)
@@ -143,23 +147,32 @@ jobs:
             && echo "DUET_STEM_MODEL=$PWD/htdemucs.onnx" >> "$GITHUB_ENV" || echo "no model release yet"
       - name: Self-test
         run: python selftest.py
-      - name: Build Duet.exe
+      - name: Build number (for the updater)
+        run: |
+          printf '{"run": %s, "sha": "%s", "ref": "%s"}\n' "${{ github.run_number }}" "${GITHUB_SHA::7}" "$GITHUB_REF_NAME" > build_info.json
+          cat build_info.json
+      - name: Build Duet (a folder with Duet.exe)
         run: pyinstaller --noconfirm duet.spec
       - name: Smoke test (app must start and stay up)
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath dist\Duet.exe -PassThru
+          $p = Start-Process -FilePath dist\Duet\Duet.exe -PassThru
           Start-Sleep -Seconds 20
           if ($p.HasExited) { Write-Error "app exited early (code $($p.ExitCode))"; exit 1 }
           Write-Host "app is running"
           Stop-Process -Id $p.Id -Force
-      - name: Zip
+      - name: The installer (Duet-setup.exe)
         shell: pwsh
-        run: Compress-Archive -Path dist\Duet.exe -DestinationPath Duet-windows.zip
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc /Qp /DAppVersion=0.3.${{ github.run_number }} /DSourceDir=..\dist\Duet /DOutDir=..\dist installer\duet.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Item dist\Duet-setup.exe
       - uses: actions/upload-artifact@v4
         with:
           name: Duet-windows
-          path: Duet-windows.zip
+          path: dist/Duet-setup.exe
 
   # the stem splitter's model (Demucs htdemucs as ONNX), made once from Meta's
   # published weights and kept as a release of its own: a commit with [models]
@@ -193,10 +206,11 @@ jobs:
 
   # a manual run (Actions -> build -> Run workflow), a version tag (v1.2.3) or a
   # commit with [release] in its message also publishes the apps as a release, on the Releases page
-  # (the Mac apps are a must; Windows goes in when its build made it)
+  # (whatever was built goes in: a Mac job that never got a runner doesn't hold Windows back, or the
+  # other way round; the updater takes the newest release that has its own download)
   release:
     if: >-
-      !cancelled() && needs.test.result == 'success' && needs.mac.result == 'success' &&
+      !cancelled() && needs.test.result == 'success' && (needs.mac.result == 'success' || needs.windows.result == 'success') &&
       (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[release]'))
     needs: [test, mac, windows]
     runs-on: ubuntu-latest
@@ -218,6 +232,6 @@ jobs:
           # the default branch instead (the notes still say which commit the apps came from).
           if [ "$GITHUB_REF_TYPE" = tag ]; then tag="$GITHUB_REF_NAME"
           else tag="build-$(date -u +%Y%m%d)-${GITHUB_RUN_NUMBER}"; fi
-          notes="Builds of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Mac: Apple Silicon (M1 and newer) Duet-mac-apple-silicon.zip, older Intel Macs Duet-mac-intel.zip (when it was built); unsigned: the first time, right-click the app -> Open (or run: xattr -cr Duet.app). Windows (if it's there): Duet-windows.zip, unzip and run Duet.exe; SmartScreen warns because it isn't signed: More info -> Run anyway. Always the newest: https://github.com/${GITHUB_REPOSITORY}/releases/latest"
-          publish() { gh release create "$tag" dist/*.zip --repo "$GITHUB_REPOSITORY" --target "$1" --latest --title "Duet ${tag}" --notes "$notes"; }
+          notes="Builds of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7} (build ${GITHUB_RUN_NUMBER}). Mac: Apple Silicon (M1 and newer) Duet-mac-apple-silicon.zip, older Intel Macs Duet-mac-intel.zip (when it was built); put Duet.app in Applications; unsigned: the first time, right-click the app -> Open (or run: xattr -cr Duet.app). Windows: Duet-setup.exe installs it (no admin rights needed); SmartScreen warns because it isn't signed: More info -> Run anyway. After that, Duet updates itself. Always the newest: https://github.com/${GITHUB_REPOSITORY}/releases/latest"
+          publish() { gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$1" --latest --title "Duet ${tag}" --notes "$notes"; }
           publish "$GITHUB_SHA" || { [ "$GITHUB_REF_TYPE" != tag ] && publish "${{ github.event.repository.default_branch }}"; }

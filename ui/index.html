@@ -374,6 +374,19 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%) translateY(20px); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 16px; opacity: 0; transition: 0.25s; pointer-events: none; max-width: 560px; font-size: 13px; }
 .toast.show { opacity: 1; transform: translateX(-50%); }
 .toast.bad { border-color: var(--bad); }
+.updcard { position: fixed; right: 18px; bottom: 74px; z-index: 900; width: 300px; padding: 12px 14px; border-radius: 14px;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--line-2); box-shadow: 0 16px 50px rgba(0,0,0,0.55); font-size: 12.5px; }
+.updcard[hidden] { display: none; }
+.updtop { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.updtop b { font-size: 13px; }
+.updtxt { color: var(--muted); line-height: 1.4; }
+.updbar { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.08); margin-top: 10px; overflow: hidden; }
+.updbar[hidden] { display: none; }
+.updbar i { display: block; height: 100%; width: 0; background: var(--me); transition: width 0.25s; }
+.updbtns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+.updbtns .mb { padding: 6px 12px; font-size: 12px; }
+.updbtns .mb.primary { background: var(--me); color: #0e0d12; border-color: transparent; }
+.updbtns .mb:disabled { opacity: 0.6; cursor: default; }
 </style>
 <link rel="stylesheet" href="daw.css">
 <link rel="stylesheet" href="instr.css">
@@ -728,6 +741,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="daw.js"></script>
 <script src="auto.js"></script>
 <script src="learn.js"></script>
+<script src="update.js"></script>
 <script src="clipedit.js"></script>
 <script src="tune.js"></script>
 <script src="tunewin.js"></script>
@@ -1895,6 +1909,7 @@ async function boot(a) {
   instSetup();
   seqSetup();
   mlSetup();
+  updSetup();
   toolsSetup();
   masterSetup();
   browserSetup();

@@ -2242,7 +2242,53 @@ def test_versions():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_updater():
+    """The updater picks the newest release with this computer's download (one without it is
+    skipped), never an older or the same build, downloads it whole, and a copy from source never
+    updates itself."""
+    import io
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    import updater
+
+    def rel(run, names, draft=False):
+        return {"tag_name": f"build-20261103-{run}", "draft": draft, "prerelease": False, "html_url": f"page{run}",
+                "assets": [{"name": n, "browser_download_url": f"https://x/{run}/{n}", "size": 5000} for n in names]}
+    mac, intel, win = "Duet-mac-apple-silicon.zip", "Duet-mac-intel.zip", "Duet-setup.exe"
+    rels = [rel(112, [mac], draft=True), rel(111, [mac, win]), rel(110, [mac, intel, win]), rel(90, [intel]),
+            {"tag_name": "models-htdemucs-1", "assets": [{"name": "htdemucs.onnx"}]}]
+    assert updater.newest(rels, mac)["run"] == 111 and updater.newest(rels, intel)["run"] == 110
+    assert updater.newest(rels, "nothing.zip") is None and updater.run_of("v1.2") is None
+    root = Path(tempfile.mkdtemp(prefix="duet-upd-"))
+    try:
+        orig = updater.asset_name, updater.Updater.supported
+        updater.asset_name = lambda: mac
+        updater.Updater.supported = lambda self: None if self.current() is not None else "from source"
+        u = updater.Updater({"run": 105}, root)
+        r = u.check(fetch=lambda: rels)
+        assert r["available"] and r["latest"] == 111 and r["size"] == 5000, r
+        assert not updater.Updater({"run": 111}, root).check(fetch=lambda: rels)["available"], "the same build isn't an update"
+        assert not updater.Updater(None, root).check(fetch=lambda: rels)["supported"], "from source: no updates"
+        # the download, in pieces, into the updates folder; a short one is an error
+        class Resp(io.BytesIO):
+            headers = {"Content-Length": "5000"}
+            def __enter__(self): return self
+            def __exit__(self, *a): self.close()
+        u._download(dict(u.found), opener=lambda req, **k: Resp(b"x" * 5000))
+        st = u.status()
+        assert st["state"] == "ready" and u.file.read_bytes() == b"x" * 5000 and u.file.name == f"111-{mac}", (st, u.file)
+        u._download({**u.found, "run": 112}, opener=lambda req, **k: Resp(b"x" * 10))
+        assert u.status()["state"] == "error" and not list(root.glob("*.part")), u.status()
+        print("updater: ok  (newest release with this computer's download, not older or the same, downloaded whole)")
+    finally:
+        updater.asset_name, updater.Updater.supported = orig
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
+    test_updater()
     test_effects_cpu()
     test_two_engines()
     test_auto_buffer()
