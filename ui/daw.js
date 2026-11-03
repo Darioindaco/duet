@@ -50,7 +50,7 @@ const song = {
   // tracks whose takes are open under them (this computer only)
   takesOpen: (() => { try { return new Set(JSON.parse(localStorage.getItem("duet.takesOpen") || "[]")); } catch (e) { return new Set(); } })(),
   view: null, v: -1, st: null, stAt: 0, fetching: false,
-  peaks: {}, peakReq: {},
+  peaks: {}, peakReq: {}, fine: {}, fineReq: {},
   sel: new Set(), selTrack: null,
   ppb: 22, snap: -1,         // pixels per beat, snap (beats; 0 = bar, -1 = off, -2 = smart)
   drag: null, rulerDrag: null, headBusy: false, pendingHeads: false,
@@ -159,6 +159,31 @@ function decodePeaks(b64) {
   const bin = atob(b64), out = new Int8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = (bin.charCodeAt(i) << 24) >> 24;
   return out;
+}
+// The waveform zoomed in past the overview (finer than 512 frames a pixel): the stretch of the
+// file on screen, at this zoom's resolution, asked of the engine and kept per file until the zoom
+// changes or the view moves past it (with room either side, so scrolling doesn't ask every frame).
+function waveFine(c, file, per, px0, px1, tAt) {
+  const sr = file.sr || 48000, have = song.fine[c.file], busy = song.fineReq[c.file];
+  const a = clipSrcAt(c, tAt(px0)) * sr, b = clipSrcAt(c, tAt(Math.max(px0, px1 - 1))) * sr;
+  const lo = Math.min(a, b), hi = Math.max(a, b);
+  const same = (f) => f && Math.abs(f.per - per) / per < 0.02;
+  const fits = same(have) && lo >= have.start && hi <= have.start + have.per * have.n;
+  if (!fits && !busy && api.daw_wave) {
+    const margin = Math.max(hi - lo, 2000), start = Math.max(0, lo - margin);
+    const n = Math.min(20000, Math.ceil((hi - lo + 2 * margin) / per));
+    const req = song.fineReq[c.file] = { per, start, n };
+    api.daw_wave(c.file, start, per, n).then((b64) => {
+      delete song.fineReq[c.file];
+      if (!b64) return;
+      const bin = atob(b64), u = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+      song.fine[c.file] = { ...req, data: new Int16Array(u.buffer) };
+      songDraw();
+    }).catch(() => { delete song.fineReq[c.file]; });
+  }
+  // the last one keeps drawing while the next is on its way (same zoom only)
+  return same(have) ? have : null;
 }
 // the same peaks at ever coarser steps (512, 1024, 2048... frames each), so a
 // long file zoomed out draws from a few thousand values instead of millions
@@ -344,7 +369,8 @@ function zoomBy(f, anchorX) {
   const lanes = $("lanes");
   const ax = anchorX ?? lanes.clientWidth / 2;
   const beatAt = (lanes.scrollLeft + ax) / song.ppb;
-  song.ppb = Math.max(2, Math.min(240, song.ppb * f));
+  // far enough in to see single samples (a few frames a pixel)
+  song.ppb = Math.max(2, Math.min(12000, song.ppb * f));
   store.set("songZoom", song.ppb);
   songRender();
   lanes.scrollLeft = beatAt * song.ppb - ax;
@@ -812,27 +838,40 @@ function drawClip(ctx, c, x, y, w, h, track) {
       const sr = file.sr || 48000, secPerPx = 60 / bpmAt(c.start) / song.ppb, s0 = b2s(c.start);
       // seconds into the clip at this pixel (a looped clip: into its round)
       const tAt = (px) => { const t = b2s(c.start + px / song.ppb) - s0; return c.loop ? t % c.loop : t; };
-      let k = 0;
-      while (k + 1 < levels.length && (512 << (k + 1)) <= secPerPx * sr * clipRatio(c)) k++;
-      const pk = levels[k], per = 512 << k;
+      const r = clipRatio(c), dpr = window.devicePixelRatio || 1, step = 1 / dpr;
       const lv = document.querySelector("#lanes").clientWidth;
       const px0 = Math.max(0, Math.floor(-x)), px1 = Math.min(Math.ceil(w), Math.ceil(lv - x));
+      // frames of the file per device pixel: coarser than 512 draws from the overview, finer
+      // from the stretch on screen at this zoom (asked of the engine, kept until the zoom changes)
+      const per = secPerPx * sr * r / dpr;
+      let k = 0;
+      while (k + 1 < levels.length && (512 << (k + 1)) <= per * dpr) k++;
+      let pk = levels[k], pper = 512 << k, pstart = 0, scale = 127;
+      const fine = per < 384 ? waveFine(c, file, per, px0, px1, tAt) : null;
+      if (fine) { pk = fine.data; pper = fine.per; pstart = fine.start; scale = 32767; }
       ctx.fillStyle = col + "e0";
-      const g = (c.gain ?? 1) * (wh / 2) / 127;
-      const r = clipRatio(c);
-      for (let px = px0; px < px1; px++) {
+      const g = (c.gain ?? 1) * (wh / 2) / scale;
+      const line = fine && fine.per <= 1.5 ? [] : null; // zoomed in to the samples: a line through them
+      for (let px = px0; px < px1; px += step) {
         // the stretch of the file this pixel plays (backwards: read from the end)
-        const ta = tAt(px), dt = b2s(c.start + (px + 1) / song.ppb) - b2s(c.start + px / song.ppb);
+        const ta = tAt(px), dt = b2s(c.start + (px + step) / song.ppb) - b2s(c.start + px / song.ppb);
         const a = clipSrcAt(c, ta), b = clipSrcAt(c, ta + dt);
-        const t0 = Math.min(a, b), w = dt * r;
-        let i0 = Math.floor(t0 * sr / per), i1 = Math.max(i0 + 1, Math.floor((t0 + w) * sr / per));
+        const f0 = Math.min(a, b) * sr - pstart, fw = dt * r * sr;
+        const i0 = Math.floor(f0 / pper), i1 = Math.max(i0 + 1, Math.floor((f0 + fw) / pper));
         let lo = 0, hi = 0;
         for (let i = i0; i < i1 && 2 * i + 1 < pk.length; i++) {
           if (i < 0) continue;
           lo = Math.min(lo, pk[2 * i]); hi = Math.max(hi, pk[2 * i + 1]);
         }
+        if (line) { line.push(x + px, mid - (i0 >= 0 && 2 * i0 + 1 < pk.length ? (pk[2 * i0] + pk[2 * i0 + 1]) / 2 : 0) * g); continue; }
         const top = mid - hi * g, bot = mid - lo * g;
-        ctx.fillRect(x + px, top, 1, Math.max(1, bot - top));
+        ctx.fillRect(x + px, top, step, Math.max(step, bot - top));
+      }
+      if (line && line.length) {
+        ctx.strokeStyle = col + "f0"; ctx.lineWidth = 1.25;
+        ctx.beginPath(); ctx.moveTo(line[0], line[1]);
+        for (let i = 2; i < line.length; i += 2) ctx.lineTo(line[i], line[i + 1]);
+        ctx.stroke();
       }
     } else if (!song.peakReq[c.file]) {
       song.peakReq[c.file] = true;
@@ -2144,6 +2183,23 @@ function demoSong() {
     daw_record: async () => { playing = true; recording = true; recFrom = pos; t0 = performance.now(); return { ok: true }; },
     daw_locate: async (p) => { pos = p; t0 = performance.now(); },
     daw_peaks: async (n) => pk[n] || null,
+    // the demo's "audio": a guitar-ish tone under the same envelope, to zoom into
+    daw_wave: async (n, start, per, cnt) => {
+      if (!pk[n]) return null;
+      const out = new Int16Array(2 * cnt), seed = n.includes("v1") ? 1.7 : 0.3;
+      for (let k = 0; k < cnt; k++) {
+        let lo = 0, hi = 0;
+        const f0 = start + k * per, m = Math.max(1, Math.ceil(per));
+        for (let j = 0; j < m; j++) {
+          const t = (f0 + j * Math.min(per, 1)) / 48000, env = 0.35 + 0.3 * Math.sin(t * 1.3 + seed) * Math.sin(t * 0.21 + seed * 2);
+          const v = env * (Math.sin(2 * Math.PI * 196 * t) + 0.4 * Math.sin(2 * Math.PI * 392 * t + 1)) * 0.6;
+          lo = Math.min(lo, v); hi = Math.max(hi, v);
+        }
+        out[2 * k] = lo * 32767; out[2 * k + 1] = hi * 32767;
+      }
+      let s = ""; for (const b of new Uint8Array(out.buffer)) s += String.fromCharCode(b);
+      return btoa(s);
+    },
     stems_state: async () => ({ model: false, size: 174264716, download: null, job: null }),
     stems_get_model: async () => ({ ok: true }),
     stems_split: async () => ({ error: "The demo has no stem model." }),

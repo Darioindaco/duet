@@ -749,6 +749,13 @@ def test_big_file():
         assert worst[0] < 0.25, f"the project didn't answer for {worst[0]:.2f} s while loading"
         f = d.view()["files"][key]
         assert f["here"] and not f["loading"] and f["frames"] == secs * sr
+        # zoomed in: the waveform of any stretch at any resolution (here 1 kHz at 44.1k: a peak of
+        # about the tone's amplitude every column of 64 frames, and single samples at 0.5 a column)
+        w = np.frombuffer(e.daw_wave(key, sr * 10.0, 64.0, 500), dtype="<i2").reshape(-1, 2)
+        assert w.shape == (500, 2) and (w[:, 1] > 0.4 * 32767).all() and (w[:, 0] < -0.4 * 32767).all(), w[:3]
+        s1 = np.frombuffer(e.daw_wave(key, sr * 10.0, 0.5, 40), dtype="<i2").reshape(-1, 2)
+        assert (s1[:, 0] == s1[:, 1]).all() and (s1[0::2] == s1[1::2]).all()
+        assert e.daw_wave("nothing.wav", 0.0, 1.0, 4) is None
         wait_for(lambda: d.sent_desc and any(d.sent_desc), what="the clip on the timeline")
         # 1 kHz in, 1 kHz out at the device's 48k: count the zero crossings
         e.daw_play(5.0)

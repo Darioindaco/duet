@@ -11,6 +11,7 @@ threads that never wait for Python or the UI.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import re
@@ -280,6 +281,14 @@ class Api:
 
     def daw_peaks(self, name):
         return self._daw.peaks(name)
+
+    def daw_wave(self, name, start, per, n):
+        # a stretch of a file's waveform at the zoom it's drawn at: (min, max) i16 pairs, base64
+        try:
+            b = self._engine.daw_wave(str(name), float(start), float(per), int(n))
+        except Exception:
+            return None
+        return base64.b64encode(b).decode() if b is not None else None
 
     def daw_analyze(self, clip, what, sensitivity=0.5):
         """For the clip editor: "peak" (its loudest sample), "hits" (where the

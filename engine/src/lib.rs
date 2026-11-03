@@ -1446,6 +1446,16 @@ impl Engine {
         Ok((frames, sr, PyBytes::new(py, &peaks)))
     }
 
+    /// A loaded file's waveform zoomed in: `n` columns of `per` frames from frame `start`, each a
+    /// (min, max) i16 pair (both channels), as bytes; None if the file isn't loaded.
+    fn daw_wave<'py>(&self, py: Python<'py>, key: &str, start: f64, per: f64, n: usize) -> Option<Bound<'py, PyBytes>> {
+        let a = self.inner.daw.lock().unwrap().cache.file(key)?;
+        let (per, n) = (per.max(1e-3), n.min(20_000));
+        let w = py.allow_threads(|| daw::wave_range(&a, start, per, n));
+        let bytes: Vec<u8> = w.iter().flat_map(|v| v.to_le_bytes()).collect();
+        Some(PyBytes::new(py, &bytes))
+    }
+
     fn daw_loaded(&self, key: &str) -> bool {
         self.inner.daw.lock().unwrap().cache.get(key).is_some()
     }

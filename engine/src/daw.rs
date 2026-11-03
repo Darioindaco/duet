@@ -605,6 +605,34 @@ pub fn audio_peaks(a: &AudioData) -> Vec<u8> {
     out
 }
 
+/// A waveform at any resolution, for drawing a stretch of a file zoomed in: `n` columns of
+/// `per` frames each from frame `start` (fractions allowed; per < 1 is a column per sample or
+/// finer), each column (min, max) of both channels as i16. Past the file's ends: silence.
+pub fn wave_range(a: &AudioData, start: f64, per: f64, n: usize) -> Vec<i16> {
+    let len = a.samples.len() as i64;
+    let mut out = Vec::with_capacity(2 * n);
+    let q = |v: f32| (v.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+    for k in 0..n {
+        let f0 = start + per * k as f64;
+        let (i0, i1) = (f0.floor() as i64, ((f0 + per).ceil() as i64).max(f0.floor() as i64 + 1));
+        let (i0, i1) = (i0.clamp(0, len), i1.clamp(0, len));
+        if i0 >= i1 {
+            out.extend_from_slice(&[0, 0]);
+            continue;
+        }
+        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for ch in std::iter::once(&a.samples).chain(a.right.as_ref()) {
+            for &v in &ch[i0 as usize..i1 as usize] {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+        }
+        out.push(q(lo));
+        out.push(q(hi));
+    }
+    out
+}
+
 /// Waveform overview: a (min, max) pair of i8 per PEAK_BUCKET samples.
 pub fn peaks(x: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 * x.len() / PEAK_BUCKET + 2);
@@ -1042,6 +1070,28 @@ pub fn render_ex(tl: &Timeline, tracks: Vec<TrackMix>, mut wiring: Box<Wiring>, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_waveform_at_any_zoom() {
+        // a 100-sample ramp from -1 to 1 (right channel: its negative)
+        let l: Vec<f32> = (0..100).map(|i| i as f32 / 49.5 - 1.0).collect();
+        let r: Vec<f32> = l.iter().map(|v| -v).collect();
+        let a = AudioData { sr: 48000, samples: l.clone(), right: Some(r) };
+        // 10 columns of 10: both channels together span (-|x|, |x|) of each stretch
+        let w = super::wave_range(&a, 0.0, 10.0, 10);
+        assert_eq!(w.len(), 20);
+        assert!(w[0] == -32767 && w[1] == 32767, "{:?}", &w[..2]);
+        // a column per half sample, mono: each sample twice
+        let m = AudioData { sr: 48000, samples: l, right: None };
+        let w = super::wave_range(&m, 10.0, 0.5, 4);
+        assert_eq!(w[0], w[2]);
+        assert_eq!(w[0], w[1]);
+        // before the start and past the end: silence
+        let w = super::wave_range(&m, -50.0, 10.0, 3);
+        assert_eq!(&w[..4], &[0, 0, 0, 0]);
+        let w = super::wave_range(&m, 95.0, 10.0, 2);
+        assert_eq!(&w[2..], &[0, 0]);
+    }
+
     use super::*;
 
     #[test]
