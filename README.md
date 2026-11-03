@@ -223,7 +223,11 @@ the same time, like a shared document: the song is open on both computers and
 every change (a new track, a moved clip, the tempo) shows up on the other side
 right away. The green dot on the song name means you're in the same song.
 
-1. **Tracks:** *+ Track* asks what goes on it. **Audio · line in**: pick **who
+1. **Tracks:** *+ Track* asks what goes on it. **Empty track** (*Ctrl+T*): a
+   track with nothing set, for whatever you put on it (audio clips, samples,
+   patterns); its header says *No input*, and you can pick one later to record
+   on it. Dragging a clip below the last track, or a sound from the browser
+   there, makes a new track for it. **Audio · line in**: pick **who
    plays on it and from which input** (*You · Guitar* or *Partner · Vocals*);
    it's armed right away. **Software instrument**: a drum kit, the synth or a VST,
    with a pattern for it already in the song at the playhead, and the sequencer

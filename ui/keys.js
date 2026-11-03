@@ -36,6 +36,8 @@ const ACTIONS = [
   ["delete", "Delete", "Editing", ["Delete", "Backspace"], () => song.sel.size && deleteSel()],
   ["selectAll", "Select everything", "Selection", ["Mod+A"], () => { song.view.clips.forEach((c) => song.sel.add(c.id)); songDraw(); }],
   ["deselect", "Select nothing", "Selection", ["Escape"], () => { hideCtx(); song.sel.clear(); songDraw(); }],
+  ["newTrack", "New empty track", "Song", ["Mod+T"], () => newEmptyTrack()],
+  ["newTrackMenu", "New track… (audio, instrument, empty)", "Song", ["Mod+Shift+T"], () => openNewTrack("song")],
   ["undo", "Undo", "Song", ["Mod+Z"], () => undo()],
   ["redo", "Redo", "Song", ["Mod+Shift+Z", "Mod+Y"], () => redo()],
   ["export", "Export", "Song", ["Mod+E"], () => openExport()],
@@ -50,8 +52,8 @@ const GLOBAL_ACTIONS = new Set(["play", "record", "home", "export", "shortcuts"]
 // the other sets: only what differs from Duet's
 const KEY_PRESETS = {
   duet: { name: "Duet", map: {} },
-  fl: { name: "FL Studio", map: { duplicate: ["Mod+B"], export: ["Mod+R"], record: ["R"], split: ["Mod+T"], zoomSel: ["Z"] } },
-  logic: { name: "Logic", map: { split: ["Mod+T"], loopSel: ["Mod+U"], record: ["R"], home: ["Enter", "Home"], zoomSel: ["Z"], editClip: ["E"],
+  fl: { name: "FL Studio", map: { duplicate: ["Mod+B"], export: ["Mod+R"], record: ["R"], split: ["Mod+T"], newTrack: ["Mod+Alt+N"], zoomSel: ["Z"] } },
+  logic: { name: "Logic", map: { split: ["Mod+T"], newTrack: ["Mod+Alt+N"], loopSel: ["Mod+U"], record: ["R"], home: ["Enter", "Home"], zoomSel: ["Z"], editClip: ["E"],
     crossfade: ["Mod+Alt+X"] } },
   protools: { name: "Pro Tools", map: { split: ["B", "Mod+E"], trimStart: ["A"], trimEnd: ["S"], fadeIn: ["D"], fadeOut: ["G"], crossfade: ["F"],
     export: ["Mod+Alt+B"], record: ["Mod+Space"], editClip: ["Mod+Shift+E"], nudgeLeft: ["Comma"], nudgeRight: ["Period"] } },

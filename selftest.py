@@ -1916,7 +1916,12 @@ def test_clip_gain():
         first = level(0.02, 0.2)
         assert first > 0.3 * full, (first, full)
         d.edit([["note", "n1", {"len": 8.0}], ["track", "syn", {"rack": []}]])
-
+        # an empty track (no input) can be armed, but there's nothing to record from it: Record says so
+        d.edit([["track", "empty", {"name": "Track 2", "order": 6.0, "owner": "me", "src": -1, "arm": True, "vol": 0.8}]])
+        r = d.record(0.0)
+        assert "no input" in (r.get("error") or ""), r
+        d.edit([["track", "empty", {"del": True}]])
+        # the pattern on its own, from beat 4 of it (the piano roll's ruler)
         d.play_pattern("p1", 4.0)
         e.process(x)
         pos = e.state()["daw_pos"]  # seconds: beat 4 at 120 BPM is 2 s

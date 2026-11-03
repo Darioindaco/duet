@@ -1149,6 +1149,8 @@ class Daw:
             armed = [t for t in self.p.live("track").values() if t.get("arm")]
             if not armed:
                 return {"error": "Arm a track first: the red dot on the track."}
+            if all(not t.get("inst") and int(t.get("src", 0)) < 0 for t in armed):
+                return {"error": "The armed track has no input: pick one in its header (or arm another track)."}
             if self.rec:
                 return {"error": "Already recording."}
             pos = self.cursor if pos is None else float(pos)
@@ -1181,7 +1183,8 @@ class Daw:
             live = self.p.live("track")
             # armed audio tracks record your input; armed channels record the notes you play
             mine = {tid: t for tid, t in live.items()
-                    if t.get("arm") and t.get("owner") == self.me and tid in self.slots and not t.get("inst")}
+                    if t.get("arm") and t.get("owner") == self.me and tid in self.slots and not t.get("inst")
+                    and int(t.get("src", 0)) >= 0}  # (an empty track has no input: nothing to record)
             channels = [tid for tid, t in live.items() if t.get("arm") and t.get("inst") and tid in self.slots]
             for tid, t in mine.items():
                 src = int(t.get("src", 0))
@@ -1860,7 +1863,7 @@ class Daw:
             if not safe(track) or track not in tracks or tracks[track].get("auto") or tracks[track].get("bus"):
                 track = new_id("t")
                 order = max([float(t.get("order", 0)) for t in tracks.values() if not t.get("bus")] or [0]) + 1
-                changes.append(["track", track, {"name": Path(path).stem[:40], "order": order, "owner": self.me, "src": 0,
+                changes.append(["track", track, {"name": Path(path).stem[:40], "order": order, "owner": self.me, "src": -1,
                                                  "arm": False, "vol": 0.8, "pan": 0.0, "rack": []}])
             changes.append(["clip", new_id("c"), {"track": track, "file": key, "start": max(0.0, float(start)), "offset": 0.0,
                                                   "len": f["frames"] / f["sr"], "gain": 1.0, "fade_in": 0.0, "fade_out": 0.0}])
@@ -2202,7 +2205,7 @@ class Daw:
             tid = new_id("t")
             changes.append(["track", tid, {"name": f"{t.get('name') or 'Track'} · {name}"[:60],
                                            "order": here + (i + 1) * (nxt - here) / (len(job["outs"]) + 1),
-                                           "owner": self.me, "src": 0, "arm": False, "vol": 0.8, "pan": 0.0, "rack": []}])
+                                           "owner": self.me, "src": -1, "arm": False, "vol": 0.8, "pan": 0.0, "rack": []}])
             changes.append(["clip", new_id("c"), {**keep, "track": tid, "file": f, "offset": 0.0}])
         changes.append(["clip", job["clip"], {"mute": True}])
         self._do(changes)

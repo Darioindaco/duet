@@ -434,10 +434,10 @@ function songRender() {
 }
 
 function srcOptions(t) {
-  const v = song.view, opts = [];
+  const v = song.view, opts = [[`${v.me}|-1`, "No input"]];
   for (const [i, s] of ui.mixer.local.entries()) if (s.active) opts.push([`${v.me}|${i}`, `You · ${stripName("L" + i)}`]);
   if (v.partner) for (const s of ui.partnerStrips || []) opts.push([`${v.partner}|${s.i}`, `Partner · ${s.name}`]);
-  const cur = `${t.owner}|${t.src}`;
+  const cur = (t.src ?? 0) < 0 ? `${v.me}|-1` : `${t.owner}|${t.src}`;
   if (!opts.some((o) => o[0] === cur)) opts.push([cur, t.mine ? `You · In ${t.src + 1}` : `Partner · input ${t.src + 1}`]);
   return { opts, cur };
 }
@@ -603,6 +603,13 @@ function ntKind(kind) {
   box.innerHTML = "";
   $("ntFoot").hidden = !kind;
   if (!kind) return;
+  if (kind === "empty") {
+    nt.opt = "empty";
+    if (!nt.named) $("ntName").value = uniqueTrackName(`Track ${song.view.tracks.length + 1}`);
+    $("ntArm").hidden = true;
+    $("ntGo").focus();
+    return;
+  }
   const opts = kind === "inst"
     ? [["drums", INST.drums.name, false], ["synth", INST.synth.name, false], ["vst", "VST instrument…", false]]
     : audioSources();
@@ -647,6 +654,7 @@ function ntCreate() {
   if (!nt.opt) return;
   const name = $("ntName").value.trim();
   $("newTrackM").hidden = true;
+  if (nt.kind === "empty") { newEmptyTrack(name); return; }
   if (nt.kind === "inst") {
     if (nt.opt === "vst") {
       ui.instFor = nt.from === "song" ? "new-track" : "new-channel";
@@ -662,6 +670,29 @@ function ntCreate() {
   const order = v.tracks.reduce((a, t) => Math.max(a, t.order || 0), 0) + 1;
   songEdit([["track", newId("t"), { name: name || `Track ${v.tracks.length + 1}`, order, owner, src: +s, arm: nt.arm, vol: 0.8, pan: 0, rack: [] }]]);
   requestAnimationFrame(() => ($("lanes").scrollTop = 1e6));
+}
+
+// an empty track: no input, no instrument, ready for whatever goes on it (audio clips, samples,
+// pattern blocks); an input or an instrument can come later
+function emptyTrackFields(name) {
+  return { name: uniqueTrackName(name || `Track ${song.view.tracks.length + 1}`), order: lastOrder() + 1, owner: song.view.me,
+    src: -1, arm: false, vol: 0.8, pan: 0, rack: [] };
+}
+const lastOrder = () => song.view.tracks.reduce((a, t) => Math.max(a, t.order || 0), 0);
+function clipLabel(c) {
+  if (!c) return null;
+  if (c.pattern) return (song.view.patterns || []).find((p) => p.id === c.pattern)?.name || null;
+  const f = song.view.files[c.file], name = ((f && f.name) || c.file || "").replace(/\.[a-z0-9]+$/i, "");
+  // a recording is called after the track it was made on (a new track: "Guitar 2")
+  if (!name || /^take-\w+$/.test(name)) return song.view.tracks.find((t) => t.id === c.track)?.name || "Audio";
+  return name;
+}
+function newEmptyTrack(name) {
+  const id = newId("t");
+  songEdit([["track", id, emptyTrackFields(name)]]);
+  song.selTrack = id;
+  requestAnimationFrame(() => ($("lanes").scrollTop = 1e6));
+  return id;
 }
 
 function deleteTrack(t) {
@@ -1287,7 +1318,11 @@ function lanesDown(e) {
 // what a drag would do: {id: {fields, row}} for the clips it changes
 function dragResult(d, q, snap) {
   const v = song.view, c = d.anchor, out = {}, cs = b2s(c.start), ce = b2s(c.start + clipBeats(c));
-  const clampRow = (r, from) => { const k = Math.max(0, Math.min(v.tracks.length - 1, r)); return isAuto(v.tracks[k]) ? from : k; };
+  // past the last track: a new track there (up to a few), made when the drag ends
+  const clampRow = (r, from) => {
+    const k = Math.max(0, Math.min(v.tracks.length + 3, r));
+    return k < v.tracks.length && isAuto(v.tracks[k]) ? from : k;
+  };
   if (d.zone === "body") {
     const db = Math.max(0, snapBeat(q.beat - d.grab, snap)) - c.start;
     const minStart = Math.min(...d.sel.map((k) => k.start));
@@ -1352,11 +1387,21 @@ function dragResult(d, q, snap) {
 
 function commitDrag(d) {
   const v = song.view, ch = [];
+  // rows past the last track become new, empty tracks, named after the first clip going there
+  const made = {};
+  const trackAt = (row, clip) => {
+    if (row < v.tracks.length) return v.tracks[row].id;
+    if (!made[row]) {
+      made[row] = newId("t");
+      ch.push(["track", made[row], { ...emptyTrackFields(clipLabel(clip)), order: lastOrder() + 1 + (row - v.tracks.length) * 0.01 }]);
+    }
+    return made[row];
+  };
   if (d.copy) {
     song.sel.clear();
     for (const k of d.sel) {
       const r = d.result[k.id], id = newId("c");
-      ch.push(["clip", id, { ...clipFields(k), start: r.start, track: v.tracks[r.row].id }]);
+      ch.push(["clip", id, { ...clipFields(k), start: r.start, track: trackAt(r.row, k) }]);
       song.sel.add(id);
     }
   } else {
@@ -1377,7 +1422,7 @@ function commitDrag(d) {
     }
     for (const [id, r] of Object.entries(d.result)) {
       const { row, ...f } = r;
-      if (row != null) f.track = v.tracks[row].id;
+      if (row != null) f.track = trackAt(row, v.clips.find((k) => k.id === id));
       ch.push(["clip", id, f]);
       moved.add(id);
       // a clip of a take folder moves the whole folder with it (its takes and the rest of the comp)
