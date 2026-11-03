@@ -9,6 +9,11 @@
 
 pub const MAX_FRAME: usize = 1024;
 pub const MAX_CH: usize = 8;
+/// Talkback: the partner's voice when they talk to you, a channel of its own next to the
+/// others (it never becomes one of their strips). A packet with `first` = TALK_CH carries it.
+pub const TALK_CH: usize = MAX_CH;
+/// Room in a block for the channels and the talkback one.
+pub const SLOT_CH: usize = MAX_CH + 1;
 const SLOTS: usize = 64;
 const TRIM_WINDOW: u32 = 200; // blocks to watch before trimming drift
 const HARD_TRIM: i64 = 32; // frames over target that get trimmed right away
@@ -68,7 +73,7 @@ pub struct JitterBuffer {
 impl JitterBuffer {
     pub fn new(target: i64) -> Self {
         let slots = (0..SLOTS)
-            .map(|_| Slot { seq: -1, channels: 0, len: 0, mask: 0, data: vec![0.0; MAX_CH * MAX_FRAME] })
+            .map(|_| Slot { seq: -1, channels: 0, len: 0, mask: 0, data: vec![0.0; SLOT_CH * MAX_FRAME] })
             .collect();
         let mut jb = JitterBuffer {
             target,
@@ -233,14 +238,24 @@ impl JitterBuffer {
                 return;
             }
         }
+        let talk = first == TALK_CH;
         let slot = &mut self.slots[Self::index(seq)];
         if slot.seq != seq {
             slot.seq = seq;
-            slot.channels = total;
+            slot.channels = if talk { 0 } else { total };
             slot.len = len;
             slot.mask = 0;
+        } else if !talk {
+            slot.channels = total;
         }
-        for c in 0..count {
+        if talk {
+            if len <= samples.len() {
+                slot.data[TALK_CH * MAX_FRAME..TALK_CH * MAX_FRAME + len].copy_from_slice(&samples[..len]);
+                slot.mask |= 1 << TALK_CH;
+                slot.len = slot.len.max(len);
+            }
+        }
+        for c in 0..if talk { 0 } else { count } {
             let ch = first + c;
             if ch >= total || (c + 1) * len > samples.len() {
                 break;
@@ -254,9 +269,9 @@ impl JitterBuffer {
     }
 
     /// Next block into `out` (channel-major, stride MAX_FRAME, `n` samples per
-    /// channel). Returns (channel count, the block's sequence number), or None when
-    /// there's nothing to play.
-    pub fn pop(&mut self, out: &mut [f32], n: usize) -> Option<(usize, i64)> {
+    /// channel, SLOT_CH channels of room). Returns (channel count, the block's sequence number,
+    /// whether the talkback channel came: then it's at TALK_CH), or None when there's nothing to play.
+    pub fn pop(&mut self, out: &mut [f32], n: usize) -> Option<(usize, i64, bool)> {
         if !self.started {
             let first = self.min_seq()?;
             if self.highest - first + 1 < self.target {
@@ -316,9 +331,15 @@ impl JitterBuffer {
                     dst.fill(0.0); // that channel's packet got lost
                 }
             }
+            let talk = slot.mask & (1 << TALK_CH) != 0;
+            if talk {
+                let dst = &mut out[TALK_CH * MAX_FRAME..TALK_CH * MAX_FRAME + n];
+                dst[..len].copy_from_slice(&slot.data[TALK_CH * MAX_FRAME..TALK_CH * MAX_FRAME + len]);
+                dst[len..].fill(0.0);
+            }
             self.next = Some(next + 1);
             self.starved = 0;
-            return Some((slot.channels, next));
+            return Some((slot.channels, next, talk));
         }
         if self.highest > next {
             // later frames are here, so this one is lost: move on
@@ -346,7 +367,7 @@ mod tests {
         jb.push(s, 1, 0, 1, 128, &[v; 128]);
     }
     fn pop(jb: &mut JitterBuffer) -> Option<f32> {
-        let mut out = vec![0f32; MAX_CH * MAX_FRAME];
+        let mut out = vec![0f32; SLOT_CH * MAX_FRAME];
         jb.pop(&mut out, 128).map(|_| out[0])
     }
 
@@ -410,16 +431,35 @@ mod tests {
         let b: Vec<f32> = [vec![3.0; n], vec![4.0; n]].concat();
         jb.push(0, 4, 2, 2, n, &b);
         jb.push(0, 4, 0, 2, n, &a);
-        let mut out = vec![0f32; MAX_CH * MAX_FRAME];
-        assert_eq!(jb.pop(&mut out, n), Some((4, 0)));
+        let mut out = vec![0f32; SLOT_CH * MAX_FRAME];
+        assert_eq!(jb.pop(&mut out, n), Some((4, 0, false)));
         for ch in 0..4 {
             assert_eq!(out[ch * MAX_FRAME], (ch + 1) as f32);
         }
         // block 1: second group lost -> channels 2-3 silent, 0-1 still play
         jb.push(1, 4, 0, 2, n, &a);
         jb.push(2, 4, 0, 2, n, &a); // keeps the buffer moving
-        assert_eq!(jb.pop(&mut out, n), Some((4, 1)));
+        assert_eq!(jb.pop(&mut out, n), Some((4, 1, false)));
         assert_eq!((out[0], out[MAX_FRAME], out[2 * MAX_FRAME], out[3 * MAX_FRAME]), (1.0, 2.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn talkback_rides_along_without_becoming_a_channel() {
+        let mut jb = JitterBuffer::new(1);
+        let n = 128;
+        let a: Vec<f32> = [vec![1.0; n], vec![2.0; n]].concat();
+        let mut out = vec![0f32; SLOT_CH * MAX_FRAME];
+        // talk first (as it may arrive), then the two channels
+        jb.push(0, 2, TALK_CH, 1, n, &vec![0.5; n]);
+        jb.push(0, 2, 0, 2, n, &a);
+        assert_eq!(jb.pop(&mut out, n), Some((2, 0, true)));
+        assert_eq!((out[0], out[MAX_FRAME], out[TALK_CH * MAX_FRAME]), (1.0, 2.0, 0.5));
+        // a block with only talk (the partner sends no channels)
+        jb.push(1, 0, TALK_CH, 1, n, &vec![0.25; n]);
+        assert_eq!(jb.pop(&mut out, n), Some((0, 1, true)));
+        assert_eq!(out[TALK_CH * MAX_FRAME], 0.25);
+        jb.push(2, 2, 0, 2, n, &a);
+        assert_eq!(jb.pop(&mut out, n), Some((2, 2, false)), "no talk in this block");
     }
 
     /// Plays ticks `from..to`; block s arrives at tick s + delay(s). Returns what

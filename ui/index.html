@@ -38,7 +38,7 @@ body {
   overflow: hidden;
 }
 button, input, select { font: inherit; color: inherit; }
-.app { display: grid; grid-template-rows: auto 1fr auto; height: 100%; gap: 10px; padding: 10px 14px 12px; }
+.app { display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr); height: 100%; gap: 10px; padding: 10px 14px 12px; }
 
 /* ---------- header ---------- */
 header { display: flex; align-items: center; gap: 18px; min-width: 0; }
@@ -374,6 +374,8 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 .toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%) translateY(20px); background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; padding: 10px 16px; opacity: 0; transition: 0.25s; pointer-events: none; max-width: 560px; font-size: 13px; }
 .toast.show { opacity: 1; transform: translateX(-50%); }
 .toast.bad { border-color: var(--bad); }
+.talkbtn.on { background: var(--me); color: #0e0d12; border-color: transparent; }
+.talkbtn.them { box-shadow: 0 0 0 2px var(--partner, #4fd6c6); color: var(--partner, #4fd6c6); }
 .updcard { position: fixed; right: 18px; bottom: 74px; z-index: 900; width: 300px; padding: 12px 14px; border-radius: 14px;
   background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--line-2); box-shadow: 0 16px 50px rgba(0,0,0,0.55); font-size: 12.5px; }
 .updcard[hidden] { display: none; }
@@ -447,6 +449,10 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
     <button class="iconbtn" id="keysBtn" title="Play the selected instrument with your computer keyboard">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M7 5v8M12 5v8M17 5v8"/><path d="M5.5 5v5h3V5M15.5 5v5h3V5"/></svg>
       <span id="keysTxt">Keys</span>
+    </button>
+    <button class="iconbtn talkbtn" id="talkBtn" title="Talk to your partner (hold, or hold the ` key; a quick click keeps it on). Only they hear it: it's never in a track, a recording or the mix. Right-click: choose your talk mic">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M9 10.5v3M12 9v6M15 10.5v3"/></svg>
+      <span id="talkTxt">Talk</span>
     </button>
     <button class="iconbtn" id="camBtn" title="Video call">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="3"/><path d="M16 10.5 22 7v10l-6-3.5"/></svg>
@@ -745,6 +751,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 <script src="auto.js"></script>
 <script src="learn.js"></script>
 <script src="update.js"></script>
+<script src="talk.js"></script>
 <script src="clipedit.js"></script>
 <script src="tune.js"></script>
 <script src="tunewin.js"></script>
@@ -1809,6 +1816,7 @@ function paint(s) {
   if (m.M) m.M.style.height = dbPct(s.levels.master) + "%";
   songPaint(s.daw);
   paintMidi(s.midiEvents);
+  talkPaint(s.talk);
 
   // latency
   const L = s.latency;
@@ -1913,6 +1921,7 @@ async function boot(a) {
   seqSetup();
   mlSetup();
   updSetup();
+  talkSetup();
   toolsSetup();
   masterSetup();
   browserSetup();
@@ -2199,6 +2208,7 @@ function demoApi() {
     },
     inst_param: async () => {}, inst_pad: async () => copy(), inst_pad_open: async () => null, note: async () => {},
     midi_controllers: async () => window.mockMidi || { count: 0, last: 0, values: Array(129).fill(-1) },
+    talk_config: async (i) => ({ input: i }), talk: async () => {},
     midi_inputs: async () => ["Arturia KeyStep 37"], midi_open: async () => ({ ok: true }), midi_target: async () => {},
     nam_library: async () => [{ path: "C:/models/plexi.nam", title: "Plexi 1959", name: "Crunch" }, { path: "C:/models/twin.nam", title: "Twin Reverb", name: "Clean" }],
     nam_open_file: async () => null,

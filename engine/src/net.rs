@@ -25,7 +25,7 @@ pub const T_NOTE: u8 = 11;
 
 /// Sent as an extra byte after HELLO's samplerate/frame. Builds that predate it
 /// send 6 bytes, so a missing byte means version 1: mono T_AUDIO only.
-pub const PROTOCOL: u8 = 2;
+pub const PROTOCOL: u8 = 3; // 3: talkback (a channel at jitter::TALK_CH)
 pub const MAX_AUDIO_PAYLOAD: usize = 1200;
 
 pub const SIGNAL_CHUNK: usize = 1000;

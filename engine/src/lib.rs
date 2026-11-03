@@ -1052,6 +1052,18 @@ impl Engine {
         (cc >> 16, ((cc >> 8) & 255) as u32, vals)
     }
 
+    /// Talkback: which input of the interface is the talk mic (None: none). Its sound only ever
+    /// goes to the partner's ears, never into a strip, a recording or the song.
+    #[pyo3(signature = (input=None))]
+    fn talk_input(&self, input: Option<usize>) {
+        self.inner.shared.talk_input.store(input.map_or(0, |i| i as u64 + 1), Relaxed);
+    }
+
+    /// Talking now (push-to-talk held, or latched on)?
+    fn talk(&self, on: bool) {
+        self.inner.shared.talk_on.store(on, Relaxed);
+    }
+
     /// A raw MIDI message as if it came from the keyboard (tests, and what a learn can be tried with).
     fn midi_feed(&self, msg: Vec<u8>) {
         if let Some(ev) = midi::parse(&msg) {
@@ -2203,6 +2215,8 @@ impl Engine {
         d.set_item("correlation", ((s.correlation.get() * 100.0).round() / 100.0) as f64)?;
         d.set_item("remote_channels", s.remote_channels.load(Relaxed))?;
         d.set_item("sent_channels", s.sent_channels.load(Relaxed))?;
+        d.set_item("talk_tx", s.talk_tx_level.get())?;
+        d.set_item("talk_rx", s.talk_rx_level.get())?;
         d.set_item("in_channels", s.in_channels.load(Relaxed))?;
         d.set_item("peer_protocol", s.peer_protocol.load(Relaxed))?;
         let cushion_ms = s.cushion_frames.load(Relaxed) as f64 * 1000.0 / s.samplerate.load(Relaxed).max(1) as f64;

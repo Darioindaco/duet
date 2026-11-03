@@ -2328,7 +2328,54 @@ def test_ui_names():
     print(f"ui names: ok  ({len(seen)} globals in {len(order) + 1} files, none twice)")
 
 
+def test_talkback():
+    """Talkback: A's talk mic (input 2) reaches B's ears only while A talks, without becoming one
+    of A's channels on B's side; B's own sound goes down under it, and comes back after."""
+    a, b, _ = connect_pair()
+    try:
+        t0 = time.monotonic()
+        while a.state()["peer_protocol"] < 3 and time.monotonic() - t0 < 3:
+            time.sleep(0.01)
+        a.strip_set("L0", "send", 0)  # A sends no channels at all: talk comes on its own
+        b.strip_set("L0", "mon", 1)   # B hears its own input: a 1 kHz tone
+        k = np.arange(N)
+        n_blk = 0
+
+        def run(blocks, talk_on):
+            nonlocal n_blk
+            a.talk(talk_on)
+            out = []
+            base = b.state()["packets_in"]
+            for i in range(blocks):
+                t = (n_blk + k) / SR
+                n_blk += N
+                voice = 0.5 * np.sin(2 * np.pi * 440 * t)
+                a.process(np.column_stack([np.zeros(N), voice]).ravel().tolist(), 2)
+                wait_packets(b, base + i + 1, timeout=0.05)
+                out += b.process((0.3 * np.sin(2 * np.pi * 1000 * t)).tolist())
+            y = np.array(out[len(out) // 2:])
+            spec = np.abs(np.fft.rfft(y * np.hanning(len(y))))
+            f = np.fft.rfftfreq(len(y), 1 / SR)
+            at = lambda hz: spec[np.argmin(np.abs(f - hz))]
+            return at(440), at(1000)
+
+        a.talk_input(1)
+        v0, own0 = run(200, False)
+        v1, own1 = run(200, True)
+        st = b.state()
+        v2, own2 = run(300, False)
+        assert v0 < 0.02 * v1, ("nothing before talking", v0, v1)
+        assert st["remote_channels"] == 0 and st["talk_rx"] > 0.2, st["talk_rx"]
+        assert 0.15 < own1 / own0 < 0.4, ("B's own sound down about 12 dB under the voice", own0, own1)
+        assert v2 < 0.05 * v1 and own2 > 0.85 * own0, ("after: no voice, B's sound back", v2, own2, own0)
+        print(f"talkback: ok  (the voice only while talking, not a channel; B's sound under it: {own1 / own0:.2f})")
+    finally:
+        a.close()
+        b.close()
+
+
 if __name__ == "__main__":
+    test_talkback()
     test_ui_names()
     test_updater()
     test_effects_cpu()

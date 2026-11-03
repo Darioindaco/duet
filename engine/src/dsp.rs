@@ -20,7 +20,7 @@ use crate::daw::{Timeline, MAX_TRACKS};
 use crate::fx::{no_keys, Slot};
 use crate::instr::{InstSlot, NoteEv};
 use crate::mix::{render_tracks, Play, Strip, TrackBufs, Wiring};
-use crate::jitter::{JitterBuffer, MAX_CH, MAX_FRAME};
+use crate::jitter::{JitterBuffer, MAX_CH, MAX_FRAME, SLOT_CH, TALK_CH};
 use crate::net;
 
 pub const MAX_LOCAL: usize = 4;
@@ -157,6 +157,12 @@ pub struct Shared {
     pub correlation: AtomicF32,
     pub remote_channels: AtomicU64,
     pub sent_channels: AtomicU64,
+    /// talkback: which of my interface's inputs is the talk mic (0 = none, else input + 1),
+    /// whether I'm talking now (push-to-talk or latched), how loud my talk and the partner's are
+    pub talk_input: AtomicU64,
+    pub talk_on: AtomicBool,
+    pub talk_tx_level: AtomicF32,
+    pub talk_rx_level: AtomicF32,
     pub underruns: AtomicU64,
     pub lost: AtomicU64,
     pub late: AtomicU64,
@@ -409,6 +415,13 @@ pub struct Dsp {
     plc_gain: f32,
     remote_count: usize,
     rx: Vec<f32>, // jitter output, channel-major, stride MAX_FRAME
+    /// talkback: my mic for this block, its fade in/out, and the partner's voice (with how much
+    /// the music is turned down under it)
+    talk_tx: Vec<f32>,
+    talk_gain: f32,
+    talk_rx: Vec<f32>,
+    talk_env: f32,
+    duck: f32,
     unpacked: Vec<f32>,
     send_buf: Vec<u8>,
     mix_l: Vec<f32>,
@@ -480,7 +493,12 @@ impl Dsp {
             epoch: 0,
             plc_gain: 0.0,
             remote_count: 0,
-            rx: vec![0.0; MAX_CH * MAX_FRAME],
+            rx: vec![0.0; SLOT_CH * MAX_FRAME],
+            talk_tx: vec![0.0; MAX_FRAME],
+            talk_gain: 0.0,
+            talk_rx: vec![0.0; MAX_FRAME],
+            talk_env: 0.0,
+            duck: 1.0,
             unpacked: vec![0.0; MAX_FRAME],
             send_buf: Vec::with_capacity(net::HEADER + 3 + net::MAX_AUDIO_PAYLOAD + 2 * MAX_FRAME),
             mix_l: vec![0.0; MAX_FRAME],
@@ -817,10 +835,22 @@ impl Dsp {
             }
         }
         self.shared.sent_channels.store(total as u64, Relaxed);
+        let seq = self.seq;
+        // talkback: my voice on a channel of its own (a build that knows it: protocol 3)
+        if self.talk_gain > 0.0 && self.shared.peer_protocol.load(Relaxed) >= 3 {
+            self.send_buf.clear();
+            self.send_buf.extend_from_slice(net::MAGIC);
+            self.send_buf.push(net::T_AUDIO_MC);
+            self.send_buf.extend_from_slice(&seq.to_be_bytes());
+            self.send_buf.extend_from_slice(&[total as u8, TALK_CH as u8, 1]);
+            for &v in &self.talk_tx[..n] {
+                self.send_buf.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+            }
+            let _ = self.socket.send_to(&self.send_buf, peer);
+        }
         if total == 0 {
             return;
         }
-        let seq = self.seq;
 
         if self.shared.peer_protocol.load(Relaxed) < 2 {
             // an old build on the other end: one mono mix, the original format
@@ -952,10 +982,36 @@ impl Dsp {
                 }
             }
         }
+        // --- talkback: my talk mic, faded in and out over ~10 ms so it never clicks ---
+        {
+            let sel = self.shared.talk_input.load(Relaxed) as usize;
+            let on = sel > 0 && sel <= in_ch && self.shared.talk_on.load(Relaxed);
+            let step = 1.0 / (0.01 * self.samplerate as f32);
+            let mut pk = 0f32;
+            for k in 0..n {
+                self.talk_gain = if on { (self.talk_gain + step).min(1.0) } else { (self.talk_gain - step).max(0.0) };
+                let x = if sel > 0 && sel <= in_ch { input[k * in_ch + sel - 1] } else { 0.0 };
+                self.talk_tx[k] = x * self.talk_gain;
+                pk = pk.max(self.talk_tx[k].abs());
+            }
+            self.shared.talk_tx_level.set(pk);
+        }
         self.send(n);
 
         // --- partner's strips ---
-        match self.jitter.pop(&mut self.rx, n) {
+        let popped = self.jitter.pop(&mut self.rx, n);
+        let mut talk_pk = 0f32;
+        match popped {
+            Some((_, _, true)) => {
+                self.talk_rx[..n].copy_from_slice(&self.rx[TALK_CH * MAX_FRAME..TALK_CH * MAX_FRAME + n]);
+                talk_pk = self.talk_rx[..n].iter().fold(0f32, |a, v| a.max(v.abs()));
+            }
+            _ => self.talk_rx[..n].fill(0.0),
+        }
+        // the voice's envelope (fast up, slow down) sets how far the music goes down under it
+        self.talk_env = if talk_pk > self.talk_env { talk_pk } else { self.talk_env * 0.97 };
+        self.shared.talk_rx_level.set(self.talk_env);
+        match popped.map(|(c, rseq, _)| (c, rseq)) {
             Some((c, rseq)) => {
                 // which of the partner's blocks is playing now, relative to ours
                 self.remote_offset = Some(rseq - self.seq as i64);
@@ -1043,6 +1099,19 @@ impl Dsp {
             pk = pk.max(l.abs()).max(r.abs());
         }
         self.master_level = pk.max(self.master_level * 0.9);
+        // the partner talking: the music down 12 dB under their voice (only what you hear: the
+        // song's meters, its export and recordings don't have it), their voice on top
+        {
+            let target = if self.talk_env > 0.01 { 0.25 } else { 1.0 };
+            let (d0, d1) = (self.duck, self.duck + (target - self.duck) * 0.15);
+            for k in 0..n {
+                let d = d0 + (d1 - d0) * k as f32 / n as f32;
+                let t = self.talk_rx[k];
+                out[2 * k] = out[2 * k] * d + t;
+                out[2 * k + 1] = out[2 * k + 1] * d + t;
+            }
+            self.duck = d1;
+        }
         self.loud.process(&self.mix_l[..n], &self.mix_r[..n]);
         self.analyzer.process(&self.mix_l[..n], &self.mix_r[..n]);
 

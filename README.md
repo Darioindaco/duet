@@ -634,6 +634,14 @@ over their shoulder:
   channel and spot in the song, as they move. It stops as soon as you click or
   scroll yourself.
 
+**Talkback:** talk to each other without it ending up in the music. Right-click
+**Talk** (the speech bubble at the top) and pick the input your talk mic is on.
+Then hold *Talk*, or hold the **`** key (left of 1), and your partner hears you;
+a quick click keeps it on until you click again. It's only ever in their ears:
+never in a track, a recording, the mix or an export. While your partner talks,
+your music goes 12 dB down under their voice, and *Talk* glows in their colour.
+(Both of you need this version or newer.)
+
 **Playing a channel live:** whatever you play on a channel (MIDI keyboard,
 computer keyboard, a piano roll key or a step you click) your partner hears
 right away, on their side. Only the notes go over the line, not the sound: their

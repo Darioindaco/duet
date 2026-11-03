@@ -165,9 +165,14 @@ header > .songbtn { flex-shrink: 1; min-width: 124px; }
 header > .phere { flex-shrink: 3; }
 header > .pill { flex-shrink: 8; }
 header > .spacer { flex-shrink: 1; }
-#keysTxt, #camTxt, header .latency-big .lbl { display: none; }
+#keysTxt, #camTxt, #talkTxt, header .latency-big .lbl { display: none; }
 @media (max-width: 1800px) { header .msync { display: none; } }
-@media (max-width: 1560px) { header .tglbl, #tapBtn, header .phere .ptxt { display: none; } header .phere { min-width: 0; padding-left: 9px; } }
+@media (max-width: 1800px) { header .tglbl, #tapBtn, header .phere .ptxt { display: none; } header .phere { min-width: max-content; padding-left: 9px; } }
+/* narrower still: the jam tempo's −/+ (type it or scroll on it) and the song's beats-per-bar menu go;
+   nothing is pushed off the right edge (the connection pill, camera, talk) */
+@media (max-width: 1500px) { #bpmMinus, #bpmPlus, #beatsSel { display: none; } }
+@media (max-width: 1700px) { header .latency-big { display: none; } } /* (the bottom bar shows the latency too) */
+@media (max-width: 1380px) { #metroSync { display: none; } }
 @media (max-width: 1440px) {
   #bpmMinus, #bpmPlus, #pillTxt { display: none; }
   header .pill { padding: 9px; }
@@ -483,7 +488,7 @@ header > .spacer { flex-shrink: 1; }
 .mastercard .mcorr::after { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--muted); }
 .mastercard .mcorr i { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
 .mastercard .mtarget label { color: var(--muted); font-size: 12px; }
-header .phere { flex-shrink: 0; }
+/* (the partner pill may shrink: see the end of this file) */
 @media (max-width: 1560px) { header.transport { gap: 5px; } header .bpm span { display: none; } header .tgrp { padding-left: 5px; gap: 3px; } }
 
 /* ---------- the plugin kit (plugkit.js): a built-in effect's window ---------- */
@@ -605,3 +610,7 @@ header .phere { flex-shrink: 0; }
 .twtools select.twkey { width: auto; max-width: 210px; flex: none; }
 .twsure { white-space: nowrap; }
 .twtools select.twkey { height: 26px; padding: 0 22px 0 8px; line-height: normal; }
+/* the partner pill gives way when the top bar runs out of room (its text first) */
+header #pHere { flex: 0 1 auto; }
+@media (max-width: 1640px) { #metroVol, header .tgrp .zoom { display: none; } header .songbtn { max-width: 92px; } }
+@media (max-width: 1340px) { header.transport { flex-wrap: wrap; row-gap: 6px; } }

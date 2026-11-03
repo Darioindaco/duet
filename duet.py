@@ -61,6 +61,9 @@ class Api:
         self._daw = Daw(engine, data_dir() / "Projects", settings["peer_id"], float(settings.get("rec_offset_ms", 0)))
         from daw import https_context
         self._upd = Updater(build_info(resource("build_info.json")), data_dir() / "updates", https_context())
+        self._talk_input = settings.get("talk_input")
+        if self._talk_input is not None:
+            engine.talk_input(int(self._talk_input))
         threading.Thread(target=self._discover, daemon=True).start()
 
     def _discover(self):
@@ -243,6 +246,7 @@ class Api:
             "streamError": s["stream_error"],
             "signals": self._daw.take_ui_signals(),
             "midiEvents": s["midi_events"],
+            "talk": {"tx": s["talk_tx"], "rx": s["talk_rx"], "input": self._talk_input},
             "daw": self._daw.status(s),
         }
 
@@ -741,6 +745,21 @@ class Api:
         if r.get("ok") and self._window:
             threading.Timer(0.3, self._window.destroy).start()
         return r
+
+    # --- talkback: a talk mic that only ever goes to the partner's ears --------------
+
+    def talk_config(self, input_=None):
+        """Which interface input is the talk mic (None: none); kept for next time."""
+        sel = None if input_ is None or int(input_) < 0 else int(input_)
+        self._engine.talk_input(sel)
+        self._talk_input = sel
+        settings = load_settings()
+        settings["talk_input"] = sel
+        save_settings(settings)
+        return {"input": sel}
+
+    def talk(self, on):
+        self._engine.talk(bool(on))
 
     def shutdown(self):
         self.save_mixer()  # plugin windows may have changed settings since the last save
