@@ -1254,7 +1254,8 @@ function fader({ value, onChange }) {
     let lastY = e.clientY;
     const h = el.getBoundingClientRect().height - 22;
     const move = (ev) => { set(pos + (lastY - ev.clientY) / h * (ev.shiftKey ? 0.25 : 1)); lastY = ev.clientY; };
-    const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); };
+    song.mixDrag = true;
+    const up = () => { song.mixDrag = false; el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
   });
@@ -1880,7 +1881,13 @@ function paint(s) {
 }
 
 async function poll() {
-  try { paint(await api.state()); } catch (e) { console.error(e); }
+  try {
+    const t0 = performance.now(), s = await api.state();
+    // the position was read somewhere between asking and the answer: the middle is
+    // closer than the answer's arrival (drawing from that put the playhead late, to the left)
+    if (s && s.daw) { s.daw.at = (t0 + performance.now()) / 2; s.daw.asked = t0; }
+    paint(s);
+  } catch (e) { console.error(e); }
   setTimeout(poll, 80);
 }
 

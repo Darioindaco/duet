@@ -423,6 +423,7 @@ function twRuler(ctx, c, g, w) {
 
 // where the song's playhead is, in the file (null when it isn't playing this clip)
 function twPlayhead(c) {
+  if (tw.scrubbing) return tw.cursor; // dragged on the ruler: right under the mouse
   if (!song.st || !song.st.playing) return null;
   const t = secsBetween(c.start, curPos());
   return t >= 0 && t <= c.len ? clipSrcAt(c, t) : null;
@@ -552,9 +553,22 @@ function twCanvas() {
       const g = twGeom(c, q.w, q.h);
       const place = (px) => { tw.cursor = Math.max(0, g.t(Math.max(TW_KEYS, px))); twDraw(); };
       place(q.px);
-      const move = (ev) => place(at(ev).px);
+      // dragging scrubs: you hear the song (this clip with the rest) from where the mouse is
+      const x0 = q.px;
+      let moved = false;
+      const move = (ev) => {
+        const px = at(ev).px;
+        if (!moved && Math.abs(px - x0) < 4) return;
+        moved = true;
+        place(px);
+        tw.scrubbing = true;
+        scrubTo(twBeatOf(c, tw.cursor), ev);
+        twTick();
+      };
       const up = async () => {
         cv.removeEventListener("pointermove", move); cv.removeEventListener("pointerup", up);
+        tw.scrubbing = false;
+        if (moved) { scrubEnd(); return; }
         if (song.st && song.st.playing) { const b = twBeatOf(c, tw.cursor); await api.daw_locate(b); await api.daw_play(b); twTick(); }
       };
       cv.addEventListener("pointermove", move); cv.addEventListener("pointerup", up);

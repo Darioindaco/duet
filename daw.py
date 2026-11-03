@@ -649,6 +649,7 @@ class Daw:
         self.sent_cmap = None
         self.cursor = 0.0  # playhead while stopped, in beats
         self.play_from = 0.0
+        self.scrubbing = False  # the song plays for a moment because the playhead is being dragged (scrub)
         self.rec: dict | None = None
         self.undos: list[dict] = []  # your own edits only: undo never takes back the partner's work
         self.redos: list[dict] = []
@@ -1200,7 +1201,7 @@ class Daw:
 
     def _start(self, pos: float, rec: bool, countin: bool, broadcast: bool, delay: float = 0.0, jam: bool = False,
                punch: bool = False):
-        if self.rec or self._playing():
+        if self.rec or self._playing() or self.scrubbing:
             self._stop(broadcast=False)
         tm = self._tm()
         bar = tm.bar_secs(pos)
@@ -1244,6 +1245,7 @@ class Daw:
             self._stop(broadcast=True)
 
     def _stop(self, broadcast: bool):
+        self.scrubbing = False
         stop_at = self.e.state()["daw_pos"]
         takes = self.e.daw_stop()
         played = self.e.daw_rec_notes()
@@ -1413,6 +1415,24 @@ class Daw:
         if changes:
             self._do(changes)
             self._flush()
+
+    def scrub(self, pos: float | None, what: str = "move"):
+        """Dragging the playhead. move: it goes to pos (beats). Playing, the song goes on from there; stopped,
+        you hear it from there (just you: the partner's transport isn't touched) while the mouse moves, until it
+        rests or lets go (rest / end: quiet again, the playhead stays where it is)."""
+        with self.lock:
+            if what == "move" and pos is not None:
+                self.cursor = max(0.0, float(pos))
+                at = self._tm().b2s(self.cursor)
+                if self.scrubbing or self._playing():
+                    self.e.daw_locate(at)
+                elif not self.rec:
+                    self.e.daw_play(at, None)
+                    self.scrubbing = True
+            elif self.scrubbing:
+                self.scrubbing = False
+                self.e.daw_stop()  # (not _stop: nothing was recorded, and the playhead stays here)
+            self.version += 1
 
     def locate(self, pos: float):
         with self.lock:
@@ -3076,7 +3096,8 @@ class Daw:
             elif self.rec and self.rec.get("prange") and s["daw_pos"] > self.rec["prange"][1] + 0.5:
                 self._stop(broadcast=True)  # past the out point: the punch is done
             tm = self._tm()
-            playing = bool(s["daw_playing"])
+            # scrubbing: that's not playing (the playhead stays under the mouse)
+            playing = bool(s["daw_playing"]) and not self.scrubbing
             levels = {tid: s["track_levels"][slot] for tid, slot in self.slots.items()}
             st = self.e.file_status()
             xfer = {n: [d, tot, "out"] for n, d, tot in st["out"]}

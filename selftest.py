@@ -2408,6 +2408,37 @@ def test_collab():
         da.play(0.0)
         wait_for(lambda: b.state()["daw_playing"], what="together: bob plays along")
         da.stop()
+        wait_for(lambda: not b.state()["daw_playing"], what="together: bob stops along")
+
+        # scrubbing (together too): alice drags the playhead while stopped, she hears the song from
+        # there, it isn't playing (the playhead stays under the mouse), bob's transport isn't touched
+        da.scrub(4.0)
+        da.scrub(6.0)
+        for _ in range(20):
+            a.process(x); b.process(x)
+        time.sleep(0.3)
+        assert a.state()["daw_playing"], "scrub: alice hears it"
+        assert not b.state()["daw_playing"], "scrub: bob doesn't play along"
+        st = da.status(a.state())
+        assert not st["playing"] and abs(st["pos"] - 6.0) < 1e-9, st["pos"]
+        da.scrub(None, "rest")
+        for _ in range(4):
+            a.process(x)
+        assert not a.state()["daw_playing"], "scrub: quiet when the mouse rests"
+        da.scrub(7.0)
+        da.scrub(None, "end")
+        for _ in range(4):
+            a.process(x)
+        assert not a.state()["daw_playing"] and da.status(a.state())["pos"] == 7.0
+        # playing: a scrub moves it and it plays on
+        da.play(0.0)
+        da.scrub(8.0)
+        da.scrub(None, "end")
+        for _ in range(4):
+            a.process(x); b.process(x)
+        assert a.state()["daw_playing"], "scrub while playing: it plays on"
+        assert da.status(a.state())["pos"] >= 8.0 - 1e-6
+        da.stop()
         wait_for(lambda: not b.state()["daw_playing"], what="bob stops too")
 
         # edit lock: bob has the pattern open in the piano roll: alice can't change its notes meanwhile
@@ -2477,7 +2508,7 @@ def test_collab():
         v = da.view()
         assert v["notes"][0]["key"] == 67 and v["patterns"][0]["len"] == 8.0, "bob's version on both sides"
         assert any(x.get("label") and "before your partner" in x["label"] for x in da.versions()), "alice's version kept"
-        print("collab: ok  (apart: play not shared; a lock while the partner edits; offline changes come in, "
+        print("collab: ok  (apart: play not shared; scrubbing; a lock while the partner edits; offline changes come in, "
               "both changed: asked, merged or one version for both, the other kept)")
     finally:
         da.close()

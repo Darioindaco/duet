@@ -301,6 +301,9 @@ class Api:
     def daw_locate(self, pos):
         self._daw.locate(float(pos))
 
+    def daw_scrub(self, pos, what="move"):
+        self._daw.scrub(None if pos is None else float(pos), str(what))
+
     def daw_peaks(self, name):
         return self._daw.peaks(name)
 

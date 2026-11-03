@@ -98,6 +98,7 @@ function prScaleSet() {
 
 // beats into the open pattern at the playhead (null: not playing it)
 function prPlayBeat() {
+  if (seq.prScrub != null) return seq.prScrub; // dragged on the ruler
   const st = song.st, p = curPattern();
   if (!st || !st.playing || !p) return null;
   if (song.view.patternMode) return song.view.patternMode === p.id ? curPos() % patLen(p) : null;
@@ -148,8 +149,31 @@ function rulerDraw() {
 async function prRulerDown(e) {
   const p = curPattern();
   if (!p || e.button !== 0) return;
-  const r = $("prRuler").getBoundingClientRect(), lanes = $("prLanes");
+  const ru = $("prRuler"), r = ru.getBoundingClientRect(), lanes = $("prLanes");
   const beat = Math.max(0, Math.min(patLen(p) - 0.001, Math.floor(((e.clientX - r.left + lanes.scrollLeft) / seq.ppb) / (seq.snap || 1)) * (seq.snap || 1)));
+  // dragging scrubs (SONG: the song from that spot of the pattern's block; PAT: the pattern's cursor)
+  ru.setPointerCapture(e.pointerId);
+  const x0 = e.clientX, free = (ev) => Math.max(0, Math.min(patLen(p) - 0.001, (ev.clientX - r.left + lanes.scrollLeft) / seq.ppb));
+  let moved = false, block = null;
+  const move = (ev) => {
+    if (!moved && Math.abs(ev.clientX - x0) < 4) return;
+    moved = true;
+    const b = free(ev);
+    if (ui.playMode === "pat") { seq.prCursor = b; rulerDraw(); return; }
+    block = block || prBlockFor(p);
+    if (!block) return;
+    seq.prScrub = b; rulerDraw(); prDraw();
+    scrubTo(Math.max(block.start, block.start - (block.boff || 0) + b), ev);
+  };
+  await new Promise((res) => {
+    const up = () => { ru.removeEventListener("pointermove", move); ru.removeEventListener("pointerup", up); res(); };
+    ru.addEventListener("pointermove", move); ru.addEventListener("pointerup", up);
+  });
+  if (moved) {
+    if (ui.playMode === "pat") { if (song.st && song.st.playing) await api.daw_play_pattern(p.id, seq.prCursor); }
+    else { seq.prScrub = null; scrubEnd(); rulerDraw(); prDraw(); }
+    return;
+  }
   if (ui.playMode === "pat") {
     seq.prCursor = beat;
     rulerDraw();
@@ -157,12 +181,18 @@ async function prRulerDown(e) {
     return;
   }
   // SONG: jump to that beat of the pattern's block in the playlist (the one playing, or the first)
-  const blocks = song.view.clips.filter((c) => c.pattern === p.id).sort((a, b) => a.start - b.start);
-  if (!blocks.length) { toast("This pattern isn't in the playlist yet: switch to PAT to play it on its own, or put it in the song."); return; }
-  const pos = curPos();
-  const c = blocks.find((k) => k.track === seq.channel && pos >= k.start && pos < k.start + (k.blen || patLen(p))) || blocks.find((k) => k.track === seq.channel) || blocks[0];
+  const c = prBlockFor(p);
+  if (!c) return;
   const at = c.start - (c.boff || 0) + beat;
   if (song.st && song.st.playing) await api.daw_play(Math.max(c.start, at)); else await api.daw_locate(Math.max(c.start, at));
+}
+
+// the pattern's block in the playlist the ruler stands for: the one playing on this channel, or the first
+function prBlockFor(p) {
+  const blocks = song.view.clips.filter((c) => c.pattern === p.id).sort((a, b) => a.start - b.start);
+  if (!blocks.length) { toast("This pattern isn't in the playlist yet: switch to PAT to play it on its own, or put it in the song."); return null; }
+  const pos = curPos();
+  return blocks.find((k) => k.track === seq.channel && pos >= k.start && pos < k.start + (k.blen || patLen(p))) || blocks.find((k) => k.track === seq.channel) || blocks[0];
 }
 
 // keep the playhead in sight while it plays

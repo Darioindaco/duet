@@ -19,6 +19,7 @@
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -684,13 +685,18 @@ impl IEventListTrait for Events {
 
 // --- an instance ---------------------------------------------------------------
 
-/// The parts of a plugin instance that belong to the plugin thread.
+/// The parts of a plugin instance that belong to the plugin thread. The plugin's
+/// objects are let go there too (see Drop): the last release runs the plugin's
+/// destructor, and JUCE plugins (LABS...) corrupt the heap when that happens on
+/// another thread.
 pub struct Instance {
     pub name: String,
-    component: ComPtr<IComponent>,
-    processor: ComPtr<IAudioProcessor>,
-    controller: Option<ComPtr<IEditController>>,
-    _handler: ComWrapper<Handler>,
+    component: ManuallyDrop<ComPtr<IComponent>>,
+    processor: ManuallyDrop<ComPtr<IAudioProcessor>>,
+    controller: ManuallyDrop<Option<ComPtr<IEditController>>>,
+    /// the controller is a separate object (connected to the component), not the component itself
+    separate: bool,
+    _handler: ManuallyDrop<ComWrapper<Handler>>,
     pub latency: u32,
     editor: Mutex<Option<editor::Editor>>,
     pub has_editor: bool,
@@ -704,26 +710,43 @@ unsafe impl Sync for Instance {}
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        // tear down where it was built
-        let parts = Shared((self.component.clone(), self.processor.clone(), self.controller.clone(), self.editor.lock().unwrap().take()));
+        // tear down where it was built, and let go of the plugin's objects there too: these are
+        // the instance's own references (taken, not copied), so the last release happens on the
+        // plugin thread and not on whichever thread dropped the instance
+        let separate = self.separate;
+        let parts = unsafe {
+            Shared((ManuallyDrop::take(&mut self.component), ManuallyDrop::take(&mut self.processor),
+                    ManuallyDrop::take(&mut self.controller), ManuallyDrop::take(&mut self._handler),
+                    self.editor.lock().unwrap().take()))
+        };
         on_ui(move || unsafe {
             // bind the whole wrapper: a 2021-edition closure would otherwise
             // capture just the (non-Send) fields inside it
             let parts = parts;
-            let (component, processor, controller, editor) = parts.0;
+            let (component, processor, controller, handler, editor) = parts.0;
             drop(editor);
             processor.setProcessing(0);
             component.setActive(0);
-            if let (Some(c), Some(a), Some(b)) = (&controller, component.cast::<IConnectionPoint>(), controller.as_ref().and_then(|c| c.cast::<IConnectionPoint>())) {
-                a.disconnect(b.as_ptr());
-                b.disconnect(a.as_ptr());
-                let _ = c;
-            }
             if let Some(c) = &controller {
+                if separate {
+                    if let (Some(a), Some(b)) = (component.cast::<IConnectionPoint>(), c.cast::<IConnectionPoint>()) {
+                        a.disconnect(b.as_ptr());
+                        b.disconnect(a.as_ptr());
+                    }
+                }
                 c.setComponentHandler(ptr::null_mut());
-                c.terminate();
+                // one object for both: terminated once, below
+                if separate {
+                    c.terminate();
+                }
             }
             component.terminate();
+            // the controller first, then the processor and the component (the same object in a
+            // single-component plugin: its last reference goes last), then our handler
+            drop(controller);
+            drop(processor);
+            drop(component);
+            drop(handler);
         });
     }
 }
@@ -746,8 +769,9 @@ unsafe fn speaker_channels(arr: SpeakerArrangement) -> usize {
 
 /// Audio side of a VST3 plugin: what process() needs, all preallocated.
 pub struct Vst3Proc {
-    inst: Arc<Instance>,
+    // (declared before `inst`: dropped first, so the plugin thread lets go last, see Instance)
     processor: Shared<ComPtr<IAudioProcessor>>,
+    inst: Arc<Instance>,
     edits: rtrb::Consumer<(ParamID, f64)>,
     changes: ComWrapper<Changes>,
     out_changes: ComWrapper<Changes>,
@@ -1014,7 +1038,7 @@ impl Vst3Proc {
         let (inst, in_ch, out_ch) = built;
         let id = NEXT_ID.fetch_add(1, Relaxed);
         registry().lock().unwrap().insert(id, Arc::downgrade(&inst));
-        let processor = Shared(inst.processor.clone());
+        let processor = Shared((*inst.processor).clone());
         let mk = |chs: &Vec<usize>| -> Vec<Vec<Vec<f32>>> { chs.iter().map(|&c| (0..c).map(|_| vec![0.0; MAX_BLOCK]).collect()).collect() };
         let mut p = Vst3Proc {
             inst,
@@ -1061,7 +1085,7 @@ impl Vst3Proc {
         self.sr = sr;
         self.context.sampleRate = sr;
         let p = Shared(self.processor.0.clone());
-        let c = Shared(self.inst.component.clone());
+        let c = Shared((*self.inst.component).clone());
         on_ui(move || unsafe {
             p.0.setProcessing(0);
             c.0.setActive(0);
@@ -1342,7 +1366,11 @@ unsafe fn build(
             }
         }
     }
-    let inst = Arc::new(Instance { name, component, processor, controller, _handler: handler, latency, editor: Mutex::new(None), has_editor, touched, midi_map });
+    let inst = Arc::new(Instance {
+        name, component: ManuallyDrop::new(component), processor: ManuallyDrop::new(processor),
+        controller: ManuallyDrop::new(controller), separate, _handler: ManuallyDrop::new(handler),
+        latency, editor: Mutex::new(None), has_editor, touched, midi_map,
+    });
     Ok((inst, in_ch, out_ch))
 }
 
@@ -1368,7 +1396,7 @@ impl Instance {
         let me = Shared(self.clone());
         on_ui(move || unsafe {
             let me = me.0;
-            let Some(c) = &me.controller else { return Vec::new() };
+            let Some(c) = &*me.controller else { return Vec::new() };
             let n = c.getParameterCount().max(0);
             let mut out = Vec::new();
             for i in 0..n {
@@ -1416,7 +1444,7 @@ impl Instance {
             }
             let component = s.inner.lock().unwrap().0.clone();
             let mut controller = Vec::new();
-            if let Some(c) = &me.controller {
+            if let Some(c) = &*me.controller {
                 let s2 = stream(&[]);
                 if c.getState(s2.as_com_ref::<IBStream>().unwrap().as_ptr()) == kResultOk {
                     controller = s2.inner.lock().unwrap().0.clone();
@@ -1436,7 +1464,7 @@ impl Instance {
                 e.show();
                 return Ok(());
             }
-            let c = me.controller.as_ref().ok_or("this plugin has no editor")?;
+            let c = (*me.controller).as_ref().ok_or("this plugin has no editor")?;
             let view = ComPtr::<IPlugView>::from_raw(c.createView(b"editor\0".as_ptr() as FIDString)).ok_or("this plugin has no editor")?;
             *ed = Some(editor::Editor::open(view, &title)?);
             Ok(())

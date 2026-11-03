@@ -49,7 +49,7 @@ const SNAPS = [["Off", -1], ["Smart", -2], ["Bar", 0], ["Beat", 1], ["1/2", 0.5]
 const song = {
   // tracks whose takes are open under them (this computer only)
   takesOpen: (() => { try { return new Set(JSON.parse(localStorage.getItem("duet.takesOpen") || "[]")); } catch (e) { return new Set(); } })(),
-  view: null, v: -1, st: null, stAt: 0, fetching: false,
+  view: null, v: -1, st: null, stAt: 0, fetching: false, editSeq: 0, unacked: 0, locAt: -1e9, mixDrag: false,
   peaks: {}, peakReq: {}, fine: {}, fineReq: {},
   sel: new Set(), selTrack: null,
   ppb: 22, snap: -1,         // pixels per beat, snap (beats; 0 = bar, -1 = off, -2 = smart)
@@ -222,12 +222,21 @@ async function songEdit(changes) {
   if (!changes.length) return;
   applyLocal(changes);
   songRender();
-  setSongView(await api.daw_edit(changes));
+  // an older answer doesn't have the newer edits yet: setting it would undo them here, and the
+  // next step (a semitone up, a tune move) would start from the old value and change nothing
+  const seq = ++song.editSeq;
+  song.unacked++;
+  let v;
+  try { v = await api.daw_edit(changes); } finally { song.unacked--; }
+  if (seq === song.editSeq) setSongView(v);
 }
 function setSongView(v) {
   if (!v) return;
   const before = song.view;
   song.view = v;
+  // edits still waiting to be sent (turning a knob): on top again, or they'd jump back
+  const pend = Object.entries(pendingEdits).map(([key, f]) => [...key.split("\n"), f]);
+  if (pend.length) applyLocal(pend);
   for (const id of [...song.sel]) if (!v.clips.some((c) => c.id === id)) song.sel.delete(id);
   if (ui.sel[0] === "T" && !trackBySlot(+ui.sel.slice(1))) { ui.sel = "L0"; renderRack(); }
   // track strips in the mixer follow the song's tracks (names, owners, slots),
@@ -239,6 +248,20 @@ function setSongView(v) {
     ...(FXMETA[x.kind]?.knobs || []).map(([k]) => Math.round((x[k] ?? 0) * 1000))]));
   const racksMoved = ui.mixer?.tracks && ([...v.tracks, ...(v.buses || [])].some((t) => t.slot != null && rs(t.rack) !== rs(ui.mixer.tracks[t.slot].rack))
     || rs(v.meta.master_rack) !== rs(ui.mixer.master_strip?.rack));
+  // a track's volume and pan are the song's too: moved by the partner (or an undo), the faders follow
+  // (not while you're moving one yourself: it would be rebuilt under the mouse)
+  let levelsMoved = false;
+  if (ui.mixer?.tracks && !song.mixDrag) {
+    for (const t of [...v.tracks, ...(v.buses || [])]) {
+      const s = t.slot != null && ui.mixer.tracks[t.slot];
+      if (!s) continue;
+      const vol = t.vol ?? 0.8, pan = t.pan ?? 0;
+      if (Math.abs((s.fader ?? 0.8) - vol) > 1e-4 || Math.abs((s.pan ?? 0) - pan) > 1e-4) {
+        s.fader = vol; s.pan = pan; levelsMoved = true;
+      }
+    }
+  }
+  if (levelsMoved && !racksMoved && before && sig === song.trackSig) { renderStrips(); if (ui.sel[0] === "T") renderRack(); }
   if (!before || sig !== song.trackSig || racksMoved) {
     song.trackSig = sig;
     api.mixer().then((m) => { ui.mixer = m; renderStrips(); if (ui.sel[0] === "T") renderRack(); });
@@ -327,6 +350,11 @@ function songSetup() {
   $("exX").onclick = () => ($("exportm").hidden = true);
   $("exportm").onclick = (e) => e.target === $("exportm") && ($("exportm").hidden = true);
   song.ruler.addEventListener("pointerdown", rulerDown);
+  song.ruler.addEventListener("pointermove", (e) => {
+    if (e.buttons || !song.view) return;
+    const p = rulerAt(e);
+    song.ruler.style.cursor = (p.lane === "bars" || !p.hit) && nearPlayhead(p.x) ? "ew-resize" : "";
+  });
   song.ruler.addEventListener("contextmenu", rulerContext);
   song.ruler.addEventListener("dblclick", rulerDbl);
   new ResizeObserver(() => songDraw()).observe($("lanewrap"));
@@ -381,12 +409,19 @@ function zoomBy(f, anchorX) {
 function songPaint(d) {
   if (!d) return;
   const was = song.st;
-  song.st = d; song.stAt = performance.now();
+  // asked before the last click on the ruler: its position is from before the jump (the engine
+  // takes a block to get there), so the playhead stays where you clicked until a newer answer
+  if (was && d.asked != null && d.asked < song.locAt + 60 && d.playing === was.playing) {
+    d.pos = was.pos; song.st = d;
+  } else { song.st = d; song.stAt = d.at ?? performance.now(); }
   for (const n of d.notices || []) toast(n);
-  if (d.v !== song.v && !song.fetching) {
+  if (d.v !== song.v && !song.fetching && !song.unacked) {
     song.fetching = true;
-    const v = d.v;
-    api.daw_project().then((p) => { song.v = v; setSongView(p); }).finally(() => (song.fetching = false));
+    const v = d.v, seq = song.editSeq;
+    api.daw_project().then((p) => {
+      if (seq !== song.editSeq || song.unacked) return; // an edit came in between: the next poll fetches again
+      song.v = v; setSongView(p);
+    }).finally(() => (song.fetching = false));
   }
   $("tpPlay").classList.toggle("on", d.playing);
   $("tpPlay").innerHTML = d.playing
@@ -1299,7 +1334,8 @@ function lanesHover(e) {
   const tool = song.tool && song.tool !== "pointer" && !(song.tool === "pencil" && h);
   // Loop on: a clip's end drags out more rounds of it (the cursor says so)
   const loopEnd = h && h.zone === "right" && song.patLoop && (h.c.pattern || canLoopAudio(h.c));
-  $("lanes").style.cursor = tool ? toolCursor() : loopEnd ? LOOP_CURSOR : h ? CURSORS[h.zone] : p.inside && p.lane >= 0 && takeLaneAt(p) ? "crosshair" : "";
+  $("lanes").style.cursor = tool ? toolCursor() : loopEnd ? LOOP_CURSOR : h ? CURSORS[h.zone] : p.inside && p.lane >= 0 && takeLaneAt(p) ? "crosshair"
+    : p.inside && nearPlayhead(p.beat * song.ppb - $("lanes").scrollLeft) ? "ew-resize" : "";
   const key = h ? h.c.id + h.zone : "";
   if (key !== song.hoverKey) { song.hoverKey = key; song.hover = h ? h.c.id : null; songDraw(); }
 }
@@ -1317,6 +1353,7 @@ function lanesDown(e) {
   if (p.lane >= 0) { takeLaneDown(e, p); return; }
   if (song.tool && song.tool !== "pointer" && toolDown(e, p)) return;
   const h = hitZone(p);
+  if (!h && nearPlayhead(p.beat * song.ppb - lanes.scrollLeft)) { playheadDrag(e, lanes, (ev) => lanePoint(ev).beat); return; }
   if (!h) { bandSelect(e, p); return; }
   const c = h.c;
   if (e.shiftKey && h.zone === "body") { song.sel.has(c.id) ? song.sel.delete(c.id) : song.sel.add(c.id); songDraw(); return; }
@@ -1494,9 +1531,7 @@ function bandSelect(e, p) {
     song.band = null;
     if (!b.moved) {
       if (!e.shiftKey) song.sel.clear();
-      const at = Math.max(0, snapBeat(p.beat, snapFor(e)));
-      api.daw_locate(at);
-      if (song.st && !song.st.playing) song.st.pos = at;
+      locateTo(Math.max(0, snapBeat(p.beat, snapFor(e))));
     }
     songDraw();
   };
@@ -1899,9 +1934,63 @@ function rulerDragThing(e, p) {
   cv.addEventListener("pointermove", move); cv.addEventListener("pointerup", up);
   return true;
 }
+// the playhead goes where you clicked right away, playing or not (the poll's answers from
+// before the jump are ignored in songPaint)
+function locateTo(at) {
+  api.daw_locate(at);
+  song.locAt = performance.now();
+  if (song.st) { song.st.pos = at; song.stAt = song.locAt; }
+}
+// Scrubbing: dragging the playhead (playlist, piano roll, Tune). It follows the mouse; stopped, you hear
+// the song from there while the mouse moves (just you, also when playing together), quiet when it rests.
+// Playing, the song goes on from wherever you let go. Alt: no sound.
+const scrub = { chain: Promise.resolve(), move: null, rest: 0, on: false };
+function scrubCall(pos, what) {
+  if (what === "move") {
+    const queued = scrub.move != null;
+    scrub.move = pos;
+    if (queued) return; // (one waiting is enough: it takes the newest position)
+    scrub.chain = scrub.chain.then(() => { const b = scrub.move; scrub.move = null; return api.daw_scrub(b, "move"); }).catch(() => {});
+  } else scrub.chain = scrub.chain.then(() => api.daw_scrub(null, what)).catch(() => {});
+}
+function scrubTo(beat, ev) {
+  beat = Math.max(0, beat);
+  scrub.on = true;
+  song.locAt = performance.now();
+  if (song.st) { song.st.pos = beat; song.stAt = song.locAt; }
+  clearTimeout(scrub.rest);
+  if (ev && ev.altKey && !(song.st && song.st.playing)) { scrubCall(null, "rest"); api.daw_locate(beat); }
+  else {
+    scrubCall(beat, "move");
+    scrub.rest = setTimeout(() => scrubCall(null, "rest"), 120);
+  }
+  drawRuler(); drawOverlay();
+}
+function scrubEnd() {
+  if (!scrub.on) return;
+  scrub.on = false;
+  clearTimeout(scrub.rest);
+  scrubCall(null, "end");
+}
+// near the playlist's playhead (px from the left of the lanes' view)
+const nearPlayhead = (x) => Math.abs(x - (curPos() * song.ppb - $("lanes").scrollLeft)) <= 6;
+// grab the playlist's playhead (on the ruler or its line in the lanes) and drag it
+function playheadDrag(e, el, beatOf) {
+  el.setPointerCapture(e.pointerId);
+  const prev = el.style.cursor;
+  el.style.cursor = "ew-resize";
+  const move = (ev) => scrubTo(beatOf(ev), ev);
+  const up = () => {
+    el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up);
+    el.style.cursor = prev;
+    scrubEnd();
+  };
+  el.addEventListener("pointermove", move); el.addEventListener("pointerup", up);
+}
 function rulerDown(e) {
   if (e.button !== 0 || !song.view) return;
   const rp = rulerAt(e);
+  if ((rp.lane === "bars" || !rp.hit) && nearPlayhead(rp.x)) { playheadDrag(e, song.ruler, (ev) => rulerAt(ev).beat); return; }
   if (rp.hit && (rp.hit.what === "marker" || rp.hit.what === "tag" ||
       (rp.hit.what === "section" && Math.abs(rp.x - rp.hit.x0) <= 6)) && rulerDragThing(e, rp)) return;
   if (rp.hit && rp.hit.what === "section") {  // a click on a section's band selects it (and drags nothing)
@@ -1933,8 +2022,7 @@ function rulerDown(e) {
       songEdit([["meta", "meta", { loop: true, loop_start: Math.min(b0, at(lastEv)), loop_end: Math.max(b0, at(lastEv)) }]]);
     } else {
       Object.assign(m, before);
-      api.daw_locate(b0);
-      if (song.st && !song.st.playing) song.st.pos = b0;
+      locateTo(b0);
       songDraw();
     }
   };
@@ -2260,6 +2348,7 @@ function demoSong() {
     daw_stop: async () => { playing = false; recording = false; pos = 0; view.patternMode = null; v++; },
     daw_record: async () => { playing = true; recording = true; recFrom = pos; t0 = performance.now(); return { ok: true }; },
     daw_locate: async (p) => { pos = p; t0 = performance.now(); },
+    daw_scrub: async (p) => { if (p != null) { pos = p; t0 = performance.now(); } },
     daw_peaks: async (n) => pk[n] || null,
     // the demo's "audio": a guitar-ish tone under the same envelope, to zoom into
     daw_wave: async (n, start, per, cnt) => {
