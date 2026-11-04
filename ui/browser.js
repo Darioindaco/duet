@@ -382,3 +382,78 @@ async function brRename(path, name) {
   const res = await api.lib_rename(path, n);
   if (res.error) toast(res.error, true); else brRefresh(true);
 }
+
+// ---------- files dragged in from the desktop or a folder ----------
+// The page can't see where they come from; Duet (duet.py hook_file_drops) passes their paths to
+// osDrop with where they were let go. Meanwhile the spot they'd land on lights up, as when you
+// drag a sound from the browser: the playlist (a track, or a new one), a drum pad, a sampler, the
+// channel rack (a new sampler; several sounds or a folder: one sampler, laid out by their names),
+// a folder of yours in the browser (copied there). A .mid file: its notes as channels and a pattern.
+const OS_AUDIO = /\.(wav|wave|mp3|m4a|aac|mp4|flac|aif|aiff|aifc|ogg|oga)$/i;
+const osDrag = { at: null, over: null };
+
+function osDragEnd() {
+  if (osDrag.over) osDrag.over.classList.remove("brdrop");
+  osDrag.over = null;
+  if (song.dropGhost) { song.dropGhost = null; if (winShown("song")) drawOverlay(); }
+}
+
+document.addEventListener("dragover", (e) => {
+  if (!e.dataTransfer || ![...(e.dataTransfer.types || [])].includes("Files")) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+  osDrag.at = { x: e.clientX, y: e.clientY };
+  const t = song.view ? brTarget(e.target, e, { name: "sound", path: "" }) : null;
+  if (osDrag.over !== (t && t.el)) { if (osDrag.over) osDrag.over.classList.remove("brdrop"); osDrag.over = t ? t.el : null; if (osDrag.over) osDrag.over.classList.add("brdrop"); }
+  song.dropGhost = t && t.lane ? t.lane : null;
+  if (winShown("song")) drawOverlay();
+});
+document.addEventListener("dragleave", (e) => { if (!e.relatedTarget) osDragEnd(); });
+document.addEventListener("drop", (e) => {
+  if (!e.dataTransfer || ![...(e.dataTransfer.types || [])].includes("Files")) return;
+  e.preventDefault(); // (Duet itself brings the paths: osDrop)
+  osDrag.at = { x: e.clientX, y: e.clientY };
+  osDragEnd();
+  if (!window.osDropReady) toast("Dragging files in needs the Duet app (it can't see where they come from here). Use the browser on the left, or Import.", true);
+});
+
+async function osDrop(files, x, y) {
+  osDragEnd();
+  if (!song.view) return;
+  if (x == null || y == null) ({ x, y } = osDrag.at || { x: innerWidth / 2, y: innerHeight / 2 });
+  const el = document.elementFromPoint(x, y), ev = { clientX: x, clientY: y };
+  const sounds = files.filter((f) => !f.dir && OS_AUDIO.test(f.path));
+  const dirs = files.filter((f) => f.dir), mids = files.filter((f) => !f.dir && /\.midi?$/i.test(f.path));
+  const other = files.length - sounds.length - dirs.length - mids.length;
+  if (other) toast(`${other} file${other === 1 ? " isn't a sound" : "s aren't sounds"} Duet can use (WAV, AIFF, FLAC, MP3, M4A, OGG, or MIDI).`, true);
+  // MIDI: where it was let go in the playlist, else at the playhead
+  for (const f of mids) {
+    const p = el && el.closest("#lanes") ? lanePoint(ev) : null;
+    const at = p && p.inside ? Math.max(0, snapBeat(p.beat)) : curPos();
+    const res = await api.midi_file_import(f.path, at);
+    if (res && res.error) toast(res.error, true); else if (res) setSongView(res.tracks ? res : await api.daw_project());
+  }
+  // a folder: a sampler of its sounds
+  for (const f of dirs) {
+    const t = brTarget(el, ev, f);
+    if (t) await t.drop(f);
+    else toast("Drop a folder of samples on the channel rack (a new sampler) or onto a sampler.", true);
+  }
+  if (!sounds.length) return;
+  const t = brTarget(el, ev, sounds[0]);
+  if (!t) { toast("Drop sounds on the playlist, the channel rack, a drum pad or a sampler.", true); return; }
+  if (sounds.length === 1) { await t.drop(sounds[0]); return; }
+  // several sounds: in the playlist each on a track of its own (the first where it landed), at the
+  // same beat; in the channel rack or on a sampler, one sampler laid out by their names
+  const smp = el && el.closest(".smpbox[data-t]"), chan = el && el.closest("#chanRows .chan[data-id]");
+  const ct = chan && trackById(chan.dataset.id);
+  if (smp) return brMapSamples(smp.dataset.t, sounds.map((f) => f.path));
+  if (ct && ct.inst?.kind === "sampler") return brMapSamples("T" + ct.slot, sounds.map((f) => f.path));
+  if (el && el.closest("#chanRows")) return brMapSamples(null, sounds.map((f) => f.path));
+  if (t.lane) {
+    await t.drop(sounds[0]);
+    for (const f of sounds.slice(1)) await brToSong(f, null, t.lane.beat);
+    return;
+  }
+  for (const f of sounds) await t.drop(f); // (a bin or a folder: all of them)
+}

@@ -27,6 +27,7 @@ import re
 import os
 import random
 import shutil
+import traceback
 import socket
 import subprocess
 import threading
@@ -492,6 +493,10 @@ class Api:
         path = picked[0] if isinstance(picked, (list, tuple)) else picked
         return self._daw.import_midi(path, pattern or None, track or None, float(at or 0.0))
 
+    def midi_file_import(self, path, at=0.0):
+        """A .mid file dragged in from the desktop: new channels and a pattern at `at` (beats)."""
+        return self._daw.import_midi(str(path), None, None, float(at or 0.0))
+
     def midi_export(self, pattern=None):
         """The song's notes (or a pattern's) as a .mid file, wherever you choose."""
         name = (self._daw.p.meta().get("name") or "Song").strip() or "Song"
@@ -943,6 +948,7 @@ def main():
     api._window = window
     window.events.closing += api._closing
     window.events.closed += api.shutdown
+    window.events.loaded += lambda: hook_file_drops(window)
     clear_stale_web_cache()
     # Served from http://127.0.0.1:<fixed port> rather than file://: the camera needs a
     # secure origin, and a stable origin + persistent storage keep saved settings and
@@ -968,6 +974,36 @@ def data_dir() -> Path:
     path = base / "Duet"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def hook_file_drops(window):
+    """Files dragged in from the desktop or a folder: the page doesn't get their paths, pywebview
+    (5 and later) gives them to a drop handler here, with where they were let go; the page then
+    puts them where they landed (ui/browser.js osDrop), like a sound from Duet's own browser."""
+    try:
+        from webview.dom import DOMEventHandler
+    except ImportError:
+        return  # an older pywebview: no dragging in (the page says so)
+
+    def on_drop(e):
+        try:
+            files = []
+            for f in ((e or {}).get("dataTransfer") or {}).get("files") or []:
+                p = f.get("pywebviewFullPath") if isinstance(f, dict) else None
+                if p:
+                    files.append({"path": p, "name": Path(p).name, "dir": os.path.isdir(p)})
+            if files:
+                x, y = (e or {}).get("clientX"), (e or {}).get("clientY")
+                at = f"{float(x)}, {float(y)}" if isinstance(x, (int, float)) and isinstance(y, (int, float)) else "null, null"
+                window.evaluate_js(f"osDrop({json.dumps(files)}, {at})")
+        except Exception:
+            traceback.print_exc()
+
+    try:
+        window.dom.document.events.drop += DOMEventHandler(on_drop, True, False)
+        window.evaluate_js("window.osDropReady = true")
+    except Exception:
+        traceback.print_exc()
 
 
 def clear_stale_web_cache() -> None:

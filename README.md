@@ -767,6 +767,14 @@ library, like FL Studio's:
   channel rack: a new **sampler** channel that plays the sound at every pitch
   (C4 plays it as it is; *One-shot* plays a hit to its end).
 
+**From your desktop or a folder:** drag sound files straight into Duet (Finder,
+Explorer, the desktop): what's under the pointer lights up and takes them, just
+like from the browser: the playlist (on that track at that beat, or below the
+last track a new one; several files: each on its own track, at the same beat), a
+drum pad, a sampler, or the channel rack (a new sampler; several files or a
+folder: one sampler laid out by their names). A **.mid** file brings its notes in
+as channels and a pattern where you let go.
+
 A sound you use in the song is copied into the project, so your partner gets
 it too and hears the same.
 
