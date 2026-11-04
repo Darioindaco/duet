@@ -14,7 +14,7 @@
 
 use std::f32::consts::PI;
 
-use crate::instr::{Instrument, NoteEv, N_PARAMS};
+use crate::instr::{Instrument, NoteEv, Zone, MAX_ZONES, N_PARAMS};
 
 // where each knob is (by name in the song: NAMES)
 const LEVEL: usize = 0;
@@ -101,11 +101,24 @@ struct Voice {
     done: bool,
     /// just started: it glides from the last note's pitch only if there's a glide
     fresh: bool,
+    /// which sample, and its zone's root (None: the root knob)
+    smp: u8,
+    root: Option<f32>,
+}
+
+/// One sample, both sides (r: None for mono).
+struct Smp {
+    l: Vec<f32>,
+    r: Option<Vec<f32>>,
 }
 
 pub struct Sampler {
-    l: Vec<f32>,
-    r: Option<Vec<f32>>,
+    smps: Vec<Option<Smp>>,
+    zones: Vec<Zone>,
+    /// per zone: the first zone with the same keys and velocities (its round-robin group), and
+    /// each group's turn
+    group: Vec<u8>,
+    turn: [u32; MAX_ZONES],
     voices: Vec<Voice>,
     sr: f32,
     sustain: bool,
@@ -116,23 +129,75 @@ pub struct Sampler {
 }
 
 impl Sampler {
-    pub fn new(sr: f32, path: Option<String>) -> (Sampler, Option<String>) {
-        let mut s = Sampler { l: vec![], r: None, voices: Vec::with_capacity(VOICES), sr, sustain: false, bend: 0.0, lfo: 0.0, last: None };
-        let Some(path) = path else { return (s, None) };
-        match crate::decode::read_audio(std::path::Path::new(&path)) {
-            Ok(a) => {
-                s.l = crate::daw::resample(&a.samples, a.sr, sr as u32);
-                s.r = a.right.as_ref().map(|r| crate::daw::resample(r, a.sr, sr as u32));
-                (s, None)
-            }
-            Err(e) => (s, Some(e)),
+    /// The samples (pads) and where they play. A sample that can't be read is left out and said.
+    pub fn new(sr: f32, pads: &[Option<String>], zones: &[Zone]) -> (Sampler, Option<String>) {
+        let mut err = None;
+        let mut smps: Vec<Option<Smp>> = Vec::with_capacity(pads.len());
+        for path in pads.iter().take(MAX_ZONES) {
+            let smp = path.as_ref().and_then(|path| match crate::decode::read_audio(std::path::Path::new(path)) {
+                Ok(a) => Some(Smp {
+                    l: crate::daw::resample(&a.samples, a.sr, sr as u32),
+                    r: a.right.as_ref().map(|r| crate::daw::resample(r, a.sr, sr as u32)),
+                }),
+                Err(e) => {
+                    err.get_or_insert(e);
+                    None
+                }
+            });
+            smps.push(smp);
         }
+        (Sampler::build(sr, smps, zones), err)
+    }
+
+    fn build(sr: f32, smps: Vec<Option<Smp>>, zones: &[Zone]) -> Sampler {
+        let zones: Vec<Zone> = zones.iter().copied().filter(|z| (z.pad as usize) < smps.len()).take(MAX_ZONES).collect();
+        let group = (0..zones.len())
+            .map(|i| {
+                let z = zones[i];
+                zones.iter().position(|y| (y.lo, y.hi, y.vlo, y.vhi) == (z.lo, z.hi, z.vlo, z.vhi)).unwrap_or(i) as u8
+            })
+            .collect();
+        Sampler { smps, zones, group, turn: [0; MAX_ZONES], voices: Vec::with_capacity(VOICES), sr, sustain: false, bend: 0.0, lfo: 0.0, last: None }
     }
 
     /// From a sample in memory (tests).
     #[cfg(test)]
     pub fn from_samples(sr: f32, l: Vec<f32>, r: Option<Vec<f32>>) -> Sampler {
-        Sampler { l, r, voices: Vec::with_capacity(VOICES), sr, sustain: false, bend: 0.0, lfo: 0.0, last: None }
+        Sampler::build(sr, vec![Some(Smp { l, r })], &[])
+    }
+
+    #[cfg(test)]
+    fn from_zones(sr: f32, smps: Vec<Vec<f32>>, zones: &[Zone]) -> Sampler {
+        Sampler::build(sr, smps.into_iter().map(|l| Some(Smp { l, r: None })).collect(), zones)
+    }
+
+    fn start(&mut self, key: u8, vel: u8, smp: u8, root: Option<f32>) {
+        if self.voices.len() >= VOICES {
+            self.voices.remove(0); // (capacity is reserved: no allocation)
+        }
+        let mut v = Voice {
+            key,
+            vel: vel as f32 / 127.0,
+            pos: 0.0,
+            pitch: key as f32,
+            target: key as f32,
+            on: true,
+            held: false,
+            amp: 0.0,
+            stage: 1,
+            fenv: 0.0,
+            fstage: 1,
+            flt: [[0.0; 2]; 2],
+            done: false,
+            fresh: true,
+            smp,
+            root,
+        };
+        // (mono and glide are knobs: sorted out in process, with the pitch it glides from)
+        if let Some(from) = self.last {
+            v.pitch = from; // process puts it right back when there's no glide
+        }
+        self.voices.push(v);
     }
 
     fn release(v: &mut Voice) {
@@ -221,32 +286,28 @@ impl Instrument for Sampler {
     fn note(&mut self, ev: NoteEv) {
         match ev {
             NoteEv::On(key, vel) => {
-                let v = Voice {
-                    key,
-                    vel: vel as f32 / 127.0,
-                    pos: 0.0,
-                    pitch: key as f32,
-                    target: key as f32,
-                    on: true,
-                    held: false,
-                    amp: 0.0,
-                    stage: 1,
-                    fenv: 0.0,
-                    fstage: 1,
-                    flt: [[0.0; 2]; 2],
-                    done: false,
-                    fresh: true,
-                };
-                // (mono and glide are knobs: sorted out in process, with the pitch it glides from)
-                if self.voices.len() >= VOICES {
-                    self.voices.remove(0); // (capacity is reserved: no allocation)
-                }
-                let mut v = v;
-                if let Some(from) = self.last {
-                    v.pitch = from; // process puts it right back when there's no glide
+                if self.zones.is_empty() {
+                    self.start(key, vel, 0, None);
+                } else {
+                    // every zone this key and velocity are in; of zones with the same range, the
+                    // one whose turn it is
+                    let mut done = [false; MAX_ZONES];
+                    for i in 0..self.zones.len() {
+                        let z = self.zones[i];
+                        let g = self.group[i] as usize;
+                        if done[g] || key < z.lo || key > z.hi || vel < z.vlo || vel > z.vhi {
+                            continue;
+                        }
+                        done[g] = true;
+                        let n = self.group.iter().filter(|&&x| x as usize == g).count() as u32;
+                        let pick = (self.turn[g] % n.max(1)) as usize;
+                        self.turn[g] = self.turn[g].wrapping_add(1);
+                        let zi = (0..self.zones.len()).filter(|&j| self.group[j] as usize == g).nth(pick).unwrap_or(i);
+                        let zz = self.zones[zi];
+                        self.start(key, vel, zz.pad, Some(zz.root as f32));
+                    }
                 }
                 self.last = Some(key as f32);
-                self.voices.push(v);
             }
             NoteEv::Off(key) => {
                 for v in self.voices.iter_mut().filter(|v| v.key == key && v.on) {
@@ -284,14 +345,11 @@ impl Instrument for Sampler {
     fn process(&mut self, p: &[f32; N_PARAMS], out_l: &mut [f32], out_r: &mut [f32]) {
         out_l.fill(0.0);
         out_r.fill(0.0);
-        let n = self.l.len();
-        if n < 2 {
+        if self.smps.iter().all(|x| x.as_ref().is_none_or(|x| x.l.len() < 2)) {
             self.voices.clear();
             return;
         }
         let sr = self.sr;
-        let reg = Region::of(p, n);
-        let len = reg.len();
         // the old sampler's knobs, as they were
         let level = p[LEVEL] * p[LEVEL] * 1.6;
         let tune = (p[TUNE] - 0.5) * 24.0; // ±12 semitones
@@ -343,13 +401,22 @@ impl Instrument for Sampler {
             }
             self.voices.retain(|v| !v.done);
         }
-        let right = self.r.as_deref();
         let n_out = out_l.len();
         const CHUNK: usize = 16;
+        let smps = &self.smps;
         for v in self.voices.iter_mut() {
             if std::mem::take(&mut v.fresh) && glide <= 0.001 {
                 v.pitch = v.target;
             }
+            // its sample, where it plays in it, and its root (its zone's, else the knob's)
+            let Some(smp) = smps.get(v.smp as usize).and_then(|x| x.as_ref()).filter(|x| x.l.len() >= 2) else {
+                v.done = true;
+                continue;
+            };
+            let reg = Region::of(p, smp.l.len());
+            let len = reg.len();
+            let root = v.root.unwrap_or(root);
+            let right = smp.r.as_deref();
             let mut lfo_ph = self.lfo;
             let mut s0 = 0;
             while s0 < n_out {
@@ -383,7 +450,7 @@ impl Instrument for Sampler {
                         v.done = true;
                         break;
                     }
-                    let mut xl = tap(&self.l, &reg, v.pos);
+                    let mut xl = tap(&smp.l, &reg, v.pos);
                     let mut xr = match right {
                         Some(r) => tap(r, &reg, v.pos),
                         None => xl,
@@ -564,6 +631,51 @@ mod tests {
         let rms = |x: &[f32]| (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt();
         let (early, late) = (rms(&l[30..90]), rms(&l[18000..24000]));
         assert!(late < 0.4 * early && late > 0.15 * early, "{early} {late}");
+    }
+
+    #[test]
+    fn zones_by_key_velocity_layers_and_round_robin() {
+        let sr = 48000.0;
+        // four samples you can tell apart by their level
+        let dc = |x: f32| vec![x; 24000];
+        let z = |pad, root, lo, hi, vlo, vhi| Zone { pad, root, lo, hi, vlo, vhi };
+        let zones = [
+            z(0, 48, 0, 59, 0, 127),   // low keys
+            z(1, 72, 60, 127, 0, 79),  // high keys, soft
+            z(2, 72, 60, 127, 80, 127), // high keys, hard: round robin of two
+            z(3, 72, 60, 127, 80, 127),
+        ];
+        let mut p = defaults();
+        p[ATTACK] = 0.0;
+        p[VELOCITY] = 0.0; // (so the level is the sample's)
+        let mut s = Sampler::from_zones(sr, vec![dc(0.1), dc(0.2), dc(0.3), dc(0.4)], &zones);
+        let lv = p[LEVEL] * p[LEVEL] * 1.6;
+        let hit = |s: &mut Sampler, key, vel| {
+            s.note(NoteEv::AllOff);
+            s.note(NoteEv::On(key, vel));
+            let (l, _) = run(s, &p, 512);
+            ((l[400] / lv) * 10.0).round() as i32
+        };
+        assert_eq!(hit(&mut s, 40, 100), 1, "a low key: the low zone");
+        assert_eq!(hit(&mut s, 70, 50), 2, "a high key, soft");
+        let a = hit(&mut s, 70, 110);
+        let b = hit(&mut s, 70, 110);
+        let c = hit(&mut s, 70, 110);
+        assert!([a, b] == [3, 4] || [a, b] == [4, 3], "hard: they take turns ({a} {b})");
+        assert_eq!(a, c, "and round again");
+        // a zone plays at its own root: an octave above it is twice as fast
+        let mut s = Sampler::from_zones(sr, vec![ramp(4800)], &[z(0, 50, 0, 127, 0, 127)]);
+        let mut p = defaults();
+        p[ONESHOT] = 1.0;
+        s.note(NoteEv::On(62, 127));
+        let (l, _) = run(&mut s, &p, 6000);
+        let last = l.iter().rposition(|x| x.abs() > 1e-6).unwrap();
+        assert!((2380..2410).contains(&last), "an octave above its root ({last})");
+        // no zone for the key: silence
+        let mut s = Sampler::from_zones(sr, vec![dc(0.5)], &[z(0, 60, 60, 72, 0, 127)]);
+        s.note(NoteEv::On(30, 100));
+        let (l, _) = run(&mut s, &defaults(), 512);
+        assert!(l.iter().all(|x| *x == 0.0));
     }
 
     #[test]

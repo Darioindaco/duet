@@ -819,6 +819,16 @@ as usual, and a song track set to that strip records it.
   velocity, an **LFO** (vibrato, filter, tremolo), glide, **mono / legato**,
   velocity and pan. Every knob can be automated. Songs made with the old
   sampler sound as they did (its knobs kept their names and curves).
+  **Several samples** (a multi-sampled piano, strings, a kit): *Map several
+  samples…*, or drag a **folder** from the browser onto the channel rack (a new
+  sampler) or onto a sampler. Each sample goes to the note in its name (*C4*,
+  *A#3*, *Db2*, or a MIDI number like *060*) and covers the keys halfway to its
+  neighbours; *pp/p/mp/mf/f/ff*, *soft/hard* or *v1/v2/…* in the names make
+  **velocity layers** (harder above softer); the same note and layer twice
+  (*rr1*, *rr2*) take turns: **round robin**, so repeated notes don't sound like
+  a machine gun. Names without a note: one key each from C2 up, as one-shots
+  (a drum kit). The panel shows the zones: across, the keys; up, how hard. Up to
+  64 samples; they go to your partner with the song.
 - **VST3 instruments**: the instruments in your VST3 folder; *Open window* shows
   their own controls. Like VST effects in a song, your partner only needs the
   plugin for a song track's effects, not to hear you play it live.

@@ -82,14 +82,33 @@ pub struct InstCfg {
     pub kind: usize,
     pub p: [f32; N_PARAMS],
     pub vst: Option<VstRef>,
-    /// drum kit: your own sample per pad (a WAV path), None = the built-in sound
+    /// drum kit: your own sample per pad (a WAV path), None = the built-in sound;
+    /// the sampler: its samples (the zones say which plays where)
     pub pads: Vec<Option<String>>,
+    /// the sampler's zones: none = pads[0] on every key, at the root knob
+    pub zones: Vec<Zone>,
     pub error: Option<String>,
 }
 
+/// Where one of the sampler's samples plays: keys lo..=hi, velocities vlo..=vhi, at its root.
+/// Zones with the very same keys and velocities take turns (round robin).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Zone {
+    pub pad: u8,
+    pub root: u8,
+    pub lo: u8,
+    pub hi: u8,
+    pub vlo: u8,
+    pub vhi: u8,
+}
+
+/// How many samples a sampler holds.
+pub const MAX_ZONES: usize = 64;
+
 impl InstCfg {
     pub fn new(kind: usize) -> Self {
-        InstCfg { kind, p: DEFAULTS[kind], vst: None, pads: vec![None; PADS.len()], error: None }
+        let pads = if kind == SAMPLER { MAX_ZONES } else { PADS.len() };
+        InstCfg { kind, p: DEFAULTS[kind], vst: None, pads: vec![None; pads], zones: vec![], error: None }
     }
 }
 
@@ -139,7 +158,7 @@ impl InstSlot {
                 Box::new(VstInst { proc, pending: [None; 160], n_pending: 0, sustain: false, held: [false; 128], sounding: [false; 128] })
             }
             SAMPLER => {
-                let (smp, err) = Sampler::new(sr, cfg.pads.first().cloned().flatten());
+                let (smp, err) = Sampler::new(sr, &cfg.pads, &cfg.zones);
                 cfg.error = err;
                 Box::new(smp)
             }
@@ -322,7 +341,7 @@ mod tests {
             w.write_sample(((2.0 * PI * 440.0 * i as f32 / 48000.0).sin() * 16000.0) as i16).unwrap();
         }
         w.finalize().unwrap();
-        let (mut s, err) = Sampler::new(48000.0, Some(path.to_string_lossy().into_owned()));
+        let (mut s, err) = Sampler::new(48000.0, &[Some(path.to_string_lossy().into_owned())], &[]);
         assert!(err.is_none());
         let p = DEFAULTS[SAMPLER];
         let pitch = |s: &mut Sampler, key: u8| {
@@ -338,7 +357,7 @@ mod tests {
         s.note(NoteEv::Off(72));
         let gone = run(&mut s, &p, 200);
         assert!(peak(&gone[gone.len() - 512..]) < 1e-3);
-        let (_, err) = Sampler::new(48000.0, Some("/nope/missing.wav".into()));
+        let (_, err) = Sampler::new(48000.0, &[Some("/nope/missing.wav".into())], &[]);
         assert!(err.is_some(), "a missing file says so");
         std::fs::remove_dir_all(&dir).ok();
     }

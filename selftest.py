@@ -2583,6 +2583,71 @@ def test_warp():
     print("warp: ok  (follows the tempo in beats, one undo step, pieces across tempo changes, moves)")
 
 
+def test_sampler_zones():
+    """Several samples into one sampler by their names: zones per note, velocity layers, round
+    robin; the engine has them (and keeps them when a knob turns), and plays the right one."""
+    import shutil
+    import tempfile
+    import wave
+    from pathlib import Path
+
+    import daw
+    from daw import Daw
+
+    def wav(path, level):
+        x = (np.ones(24000) * level * 32767).astype("<i2")
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(x.tobytes())
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-zones-"))
+    d = Daw(e, root / "songs", "me")
+    try:
+        d.set_local("click", False)
+        names = {"Keys C3 soft": 0.1, "Keys C3 hard": 0.2, "Keys C5 soft": 0.3, "Keys C5 hard": 0.4}
+        paths = []
+        for n, lv in names.items():
+            wav(root / f"{n}.wav", lv)
+            paths.append(str(root / f"{n}.wav"))
+        res = d.sampler_map(None, paths)
+        assert res.get("ok") and res["mapped"] == 4 and not res["unplaced"], res
+        tid = res["track"]
+        inst = d.p.live("track")[tid]["inst"]
+        assert len(inst["pads"]) == 4 and [z["root"] for z in inst["zones"]] == [48, 48, 72, 72], inst["zones"]
+        wait_for(lambda: tid in d.slots and (e.mixer()["tracks"][d.slots[tid]]["inst"] or {}).get("zones"), what="the zones in the engine")
+        slot = d.slots[tid]
+        assert len(e.mixer()["tracks"][slot]["inst"]["zones"]) == 4
+        # turning a knob (the UI does it through the engine) keeps the zones in the song
+        e.inst_param(f"T{slot}", "velocity", 0.0)
+        e.inst_param(f"T{slot}", "attack", 0.0)
+        d.track_inst_changed(slot)
+        assert len(d.p.live("track")[tid]["inst"]["zones"]) == 4
+        def level(key, vel):
+            e.note(f"T{slot}", True, key, vel)
+            out = []
+            for _ in range(12):
+                out += e.process([0.0] * N)
+            e.note(f"T{slot}", False, key, 0)
+            for _ in range(80):
+                e.process([0.0] * N)
+            return float(np.median(np.abs(out[N * 4:])))
+
+        # the four samples' levels are 1 : 2 : 3 : 4
+        got = [level(k, v) for k, v in ((48, 40), (48, 120), (72, 40), (72, 120))]
+        assert all(abs(g / got[0] / (i + 1) - 1) < 0.05 for i, g in enumerate(got)), f"C3 soft/hard, C5 soft/hard: {got}"
+        assert daw.name_note("Strings A#3 v2") == 58 and daw.name_note("bass_036") == 36
+        assert [z["lo"] for z in daw.map_zones(["Kick", "Snare"])] == [36, 37], "no notes: one key each"
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+    print("sampler zones: ok  (by name: notes, velocity layers; in the engine; kept when a knob turns; the right one plays)")
+
+
 def test_ui_names():
     """The page's scripts share one global scope: two top-level functions with the same name in
     different files means the later file's silently replaces the earlier one (that's how the
@@ -3000,6 +3065,7 @@ if __name__ == "__main__":
     test_ui_names()
     test_colors_names()
     test_warp()
+    test_sampler_zones()
     test_updater()
     test_effects_cpu()
     test_two_engines()

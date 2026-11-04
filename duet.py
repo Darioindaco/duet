@@ -36,7 +36,7 @@ from pathlib import Path
 import webview
 
 from daw import Daw, file_name
-from library import Library
+from library import AUDIO as AUDIO_EXTS, Library
 from duet_engine import Engine
 from t3k import Tone3000
 from updater import Updater, build_info
@@ -777,6 +777,33 @@ class Api:
         picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=False,
                                                  file_types=("Audio (*.wav;*.mp3;*.m4a;*.aac;*.flac;*.aif;*.aiff;*.ogg)", "All files (*.*)"))
         return picked[0] if picked else None
+
+    def inst_samples_open(self):
+        """Native file picker for several samples (a multi-sample instrument); the paths."""
+        if not self._window:
+            return []
+        picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=True,
+                                                 file_types=("Audio (*.wav;*.mp3;*.m4a;*.aac;*.flac;*.aif;*.aiff;*.ogg)", "All files (*.*)"))
+        return list(picked or [])
+
+    def sampler_map(self, target, paths):
+        """Samples into a sampler, laid out by their names (target: its strip "T3", or None: a new
+        channel). A folder counts as the sounds in it."""
+        files = []
+        for x in paths or []:
+            p = Path(str(x))
+            if p.is_dir():
+                files += sorted(str(f) for f in p.iterdir() if f.suffix.lower() in AUDIO_EXTS)
+            else:
+                files.append(str(p))
+        tid = None
+        if target and str(target).startswith("T"):
+            tid = next((t for t, s in self._daw.slots.items() if s == int(str(target)[1:])), None)
+        res = self._daw.sampler_map(tid, files)
+        for f in files:
+            if res.get("ok"):
+                self._lib.used(f)
+        return res
 
     def note(self, target, on, key, vel=100):
         self._engine.note(target, bool(on), int(key), int(vel))

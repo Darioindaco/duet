@@ -2205,12 +2205,13 @@ class Daw:
                 self.e.inst_set(t, None)
                 return
             same = (old and old.get("kind") == new.get("kind") and old.get("pads") == new.get("pads")
+                    and old.get("zones") == new.get("zones")
                     and (old.get("vst") or {}).get("cid") == (new.get("vst") or {}).get("cid"))
             if not same:
                 self.e.inst_set(t, new["kind"], None, new)
                 return
             for k, v in new.items():
-                if k not in ("kind", "pads", "vst") and old.get(k) != v and isinstance(v, (int, float)):
+                if k not in ("kind", "pads", "vst", "zones") and old.get(k) != v and isinstance(v, (int, float)):
                     self.e.inst_param(t, k, float(v))
         except Exception as exc:  # e.g. a VST instrument the other side has and we don't
             self.notices.append(f"Couldn't load the instrument on a track: {exc}")
@@ -2689,14 +2690,52 @@ class Daw:
             return {"error": f"Couldn't use that sample: {exc}"}
         with self.lock:
             pads = list(inst.get("pads") or [])
-            n = 1 if inst["kind"] == "sampler" else 16
+            n = MAX_SAMPLES if inst["kind"] == "sampler" else 16
             pads = (pads + [None] * n)[:n]
             if not 0 <= int(pad) < n:
                 return {"error": "No such pad."}
             pads[int(pad)] = ref
             inst["pads"] = pads
+            if inst["kind"] == "sampler" and int(pad) == 0:
+                inst["pads"], _ = [ref], inst.pop("zones", None)  # one sound again, on every key
             self._do([["track", track, {"inst": inst}]])
             return {"ok": True}
+
+    def sampler_map(self, track: str | None, paths: list[str]) -> dict:
+        """Several samples into one sampler, laid out by their names (see map_zones): on `track`
+        (a sampler channel; its knobs stay), or a new channel. One undo step."""
+        paths = [str(x) for x in paths][:MAX_SAMPLES]
+        if not paths:
+            return {"error": "No samples."}
+        try:
+            keys = [self.import_sample(x) for x in paths]
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {"error": f"Couldn't use those samples: {exc}"}
+        zones = map_zones([Path(x).stem for x in paths])
+        with self.lock:
+            tracks = self.p.live("track")
+            t = tracks.get(track) if track else None
+            inst = json.loads(json.dumps((t or {}).get("inst") or {}))
+            if t and inst.get("kind") != "sampler":
+                return {"error": "That channel isn't a sampler."}
+            if not inst:
+                inst = {"kind": "sampler", "level": 0.8, "tune": 0.5, "attack": 0.0, "release": 0.15, "root": 0.5}
+            inst["pads"] = ["file:" + k for k in keys]
+            inst["zones"] = zones
+            # one-shot hits on single keys (a kit) play out; notes on a keyboard don't
+            inst["oneshot"] = 1.0 if all(z["lo"] == z["hi"] for z in zones) else float(inst.get("oneshot", 0.0))
+            if t:
+                self._do([["track", track, {"inst": inst}]])
+                tid = track
+            else:
+                tid = new_id("t")
+                order = max([float(x.get("order", 0)) for x in tracks.values() if not x.get("bus")] or [0]) + 1
+                name = os.path.commonprefix([Path(x).stem for x in paths]).strip(" _-") or Path(paths[0]).parent.name or "Sampler"
+                self._do([["track", tid, {"name": name[:40], "order": order, "owner": self.me, "src": 0, "arm": False,
+                                          "vol": 0.8, "pan": 0.0, "rack": [], "inst": inst}]])
+            placed = {z["pad"] for z in zones}
+            return {"ok": True, "track": tid, "mapped": len(placed),
+                    "unplaced": [Path(paths[i]).name for i in range(len(paths)) if i not in placed]}
 
     def sampler_channel(self, path: str) -> dict:
         """A new channel that plays this sample at each note's pitch (FL's sampler)."""
@@ -3543,6 +3582,62 @@ def file_name(name: str) -> str:
     """A song or track name as part of a file name, on any system."""
     out = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name)).strip(" .")
     return out[:80] or "Untitled"
+
+
+# --- the sampler's zones from file names ---------------------------------------------------
+
+NOTE_RE = re.compile(r"(?<![A-Za-z])([A-Ga-g])(#|b|s|sharp|flat)?(-?\d)(?![0-9])")
+VEL_WORDS = {"ppp": 0, "pp": 1, "p": 2, "mp": 3, "mf": 4, "f": 5, "ff": 6, "fff": 7, "soft": 1, "medium": 4, "med": 4,
+             "hard": 6, "loud": 6}
+MAX_SAMPLES = 64
+
+
+def name_note(stem: str) -> int | None:
+    """The note a sample's name says (C4 = 60, also C#3, Db2, F#-1, or a MIDI number on its own)."""
+    for m in NOTE_RE.finditer(stem):
+        letter, acc, octave = m.group(1).upper(), (m.group(2) or "").lower(), int(m.group(3))
+        n = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}[letter] + 12 * (octave + 1)
+        n += 1 if acc in ("#", "s", "sharp") else -1 if acc in ("b", "flat") else 0
+        if 0 <= n <= 127:
+            return n
+    for tok in re.split(r"[\s_\-.()\[\]]+", stem):
+        if tok.isdigit() and 21 <= int(tok) <= 108:
+            return int(tok)
+    return None
+
+
+def name_layer(stem: str):
+    """How hard it was played, from its name: pp..ff, soft/hard, v1/vel2/layer3 (a number to sort by)."""
+    for tok in re.split(r"[\s_\-.()\[\]]+", stem.lower()):
+        if tok in VEL_WORDS:
+            return VEL_WORDS[tok]
+        m = re.fullmatch(r"(?:v|vel|velocity|layer|dyn)(\d{1,3})", tok)
+        if m:
+            return 10 + int(m.group(1))
+    return None
+
+
+def map_zones(stems: list[str]) -> list[dict]:
+    """Zones for samples by their names: each note's sample from halfway to the note below to
+    halfway to the note above, the louder layers above the softer, round robins (the same note
+    and layer) taking turns. Names without a note: one key each from C2 up, like a drum kit."""
+    notes = [name_note(x) for x in stems]
+    if not any(n is not None for n in notes):
+        return [{"pad": i, "root": 36 + i, "lo": 36 + i, "hi": 36 + i, "vlo": 0, "vhi": 127}
+                for i in range(min(len(stems), 127 - 36))]
+    roots = sorted({n for n in notes if n is not None})
+    out = []
+    for i, (stem, n) in enumerate(zip(stems, notes)):
+        if n is None:
+            continue
+        k = roots.index(n)
+        lo = 0 if k == 0 else (roots[k - 1] + n) // 2 + 1
+        hi = 127 if k == len(roots) - 1 else (n + roots[k + 1]) // 2
+        layers = sorted({name_layer(stems[j]) for j, m in enumerate(notes) if m == n}, key=lambda x: (x is None, x or 0))
+        lay = layers.index(name_layer(stem))
+        vlo, vhi = lay * 128 // len(layers), (lay + 1) * 128 // len(layers) - 1
+        out.append({"pad": i, "root": n, "lo": lo, "hi": hi, "vlo": vlo, "vhi": vhi})
+    return out
 
 
 def clean_inst(x: dict | None) -> dict | None:

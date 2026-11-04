@@ -311,7 +311,8 @@ function samplerBox(t, inst) {
   const box = document.createElement("div");
   box.className = "smpbox";
   box.dataset.t = t;
-  box.innerHTML = `<b>${own ? esc(own.split(/[\\/]/).pop().replace(/\.(wav|wave|mp3|m4a|aac|mp4|flac|aif|aiff|aifc|ogg|oga)$/i, "").replace(/^s-[0-9a-f]+$/, "Sample")) : "No sound yet"}</b>
+  const nz = (inst.zones || []).length;
+  box.innerHTML = nz ? `<b>${nz} samples</b><span>Drag a folder here from the browser to map other ones</span><button class="mb">One sample instead…</button>` : `<b>${own ? esc(own.split(/[\\/]/).pop().replace(/\.(wav|wave|mp3|m4a|aac|mp4|flac|aif|aiff|aifc|ogg|oga)$/i, "").replace(/^s-[0-9a-f]+$/, "Sample")) : "No sound yet"}</b>
     <span>${own ? "Drag another one here from the browser" : "Drag one here from the browser, or"}</span><button class="mb">Load a sample…</button>`;
   box.querySelector("button").onclick = async () => {
     const path = await api.inst_pad_open();
@@ -319,7 +320,75 @@ function samplerBox(t, inst) {
     const res = await api.inst_pad(t, 0, path);
     if (res && res.error) toast(res.error, true); else await rackChanged(res);
   };
+  // several samples (a multi-sample instrument), laid out by their names
+  const many = document.createElement("button");
+  many.className = "mb";
+  many.textContent = "Map several samples…";
+  many.title = "Pick several samples (or drag a folder here from the browser): each goes to the note in its name (C4, A#3...), pp/mf/ff or v1/v2 make velocity layers, the same note and layer twice take turns";
+  many.onclick = async () => {
+    const paths = await api.inst_samples_open();
+    if (paths && paths.length) await brMapSamples(t, paths);
+  };
+  box.append(many);
+  if ((inst.zones || []).length) box.append(zoneMap(inst));
   return box;
+}
+
+// the sampler's zones: which sample plays on which keys (across) and how hard (up)
+function zoneMap(inst) {
+  const zs = inst.zones, pads = inst.pads || [];
+  const wrap = document.createElement("div");
+  wrap.className = "zonemap";
+  // around the samples' notes (a zone to the end of the keyboard would squash the rest)
+  const roots = zs.map((z) => z.root);
+  const lo = Math.max(0, Math.min(...roots) - 12), hi = Math.min(127, Math.max(...roots) + 12);
+  const cv = document.createElement("canvas");
+  wrap.append(cv);
+  const name = (z) => (pads[z.pad] || "").split(/[\\/]/).pop().replace(/\.[a-z0-9]+$/i, "");
+  const rr = (z) => zs.filter((y) => y.lo === z.lo && y.hi === z.hi && y.vlo === z.vlo && y.vhi === z.vhi);
+  const draw = () => {
+    const w = Math.max(200, wrap.clientWidth || 400), h = 70;
+    const ctx = sizeCanvas(cv, w, h);
+    const kx = (k) => ((k - lo) / (hi - lo + 1)) * w;
+    ctx.fillStyle = "#0e0d12"; ctx.fillRect(0, 0, w, h);
+    // the keyboard underneath
+    for (let k = lo; k <= hi; k++) {
+      const black = [1, 3, 6, 8, 10].includes(k % 12);
+      ctx.fillStyle = black ? "#1b1922" : "#24212b";
+      ctx.fillRect(kx(k), h - 10, Math.max(1, kx(k + 1) - kx(k) - 1), 10);
+    }
+    const seen = new Set();
+    zs.forEach((z, i) => {
+      const key = `${z.lo}|${z.hi}|${z.vlo}|${z.vhi}`;
+      const y0 = (1 - (z.vhi + 1) / 128) * (h - 12), y1 = (1 - z.vlo / 128) * (h - 12);
+      ctx.fillStyle = `hsl(${(i * 47) % 360} 55% 58% / 0.55)`;
+      ctx.fillRect(kx(z.lo) + 0.5, y0 + 0.5, kx(z.hi + 1) - kx(z.lo) - 1, y1 - y0 - 1);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(kx(z.root) + (kx(z.root + 1) - kx(z.root)) / 2 - 0.5, y0 + 1, 1, y1 - y0 - 2); // its root
+      if (!seen.has(key) && kx(z.hi + 1) - kx(z.lo) > 26) {
+        seen.add(key);
+        ctx.fillStyle = "#0e0d12"; ctx.font = "700 9px system-ui";
+        const n = rr(z).length;
+        ctx.fillText(noteName(z.root) + (n > 1 ? ` ×${n}` : ""), kx(z.lo) + 3, y0 + 10);
+      }
+    });
+  };
+  cv.title = "The zones: across, the keys each sample plays on (the white line: its root); up, how hard you play (velocity). ×2: two samples take turns";
+  cv.onmousemove = (e) => {
+    const r = cv.getBoundingClientRect(), k = Math.floor(lo + ((e.clientX - r.left) / r.width) * (hi - lo + 1));
+    const v = Math.round((1 - (e.clientY - r.top) / (r.height - 12)) * 127);
+    const z = zs.filter((z) => k >= z.lo && k <= z.hi && v >= z.vlo && v <= z.vhi);
+    cv.title = z.length ? `${noteName(k)}, velocity ${Math.max(0, v)}: ${z.map(name).join(" / ")}` : `${noteName(k)}: nothing`;
+  };
+  requestAnimationFrame(draw);
+  const info = document.createElement("div");
+  info.className = "zoneinfo";
+  const notes = new Set(roots).size;
+  const layers = Math.max(...[...new Set(roots)].map((r) => new Set(zs.filter((z) => z.root === r).map((z) => `${z.vlo}-${z.vhi}`)).size));
+  info.textContent = `${zs.length} samples · ${notes} note${notes === 1 ? "" : "s"}${layers > 1 ? ` · ${layers} velocity layers` : ""}`
+    + (zs.some((z) => rr(z).length > 1) ? " · round robin" : "") + " (each zone plays at its own root)";
+  wrap.append(info);
+  return wrap;
 }
 
 // ---------- the sampler: where it plays, and how ----------

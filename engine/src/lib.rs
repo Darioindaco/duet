@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::{PyBytes, PyDict, PyList};
 
 use daw::{AudioCache, AutoDesc, AutoTarget, ClipDesc, NoteDesc, MAX_TRACKS};
 use dsp::{decode_peer, encode_peer, Cmd, Dsp, Garbage, InPacket, RecRings, Shared, StripParam, StripSettings, Target, MAX_LOCAL, MAX_REMOTE};
@@ -896,6 +896,20 @@ impl Engine {
                     c.pads[i] = x;
                 }
             }
+            if let Some(zs) = d.get_item("zones")? {
+                if let Ok(list) = zs.downcast::<pyo3::types::PyList>() {
+                    for z in list.iter().take(instr::MAX_ZONES) {
+                        let Ok(z) = z.downcast::<PyDict>() else { continue };
+                        let get = |k: &str, def: u8| -> u8 {
+                            z.get_item(k).ok().flatten().and_then(|v| v.extract::<f64>().ok()).map_or(def, |v| v.clamp(0.0, 127.0) as u8)
+                        };
+                        let pad = get("pad", 0);
+                        if (pad as usize) < instr::MAX_ZONES {
+                            c.zones.push(instr::Zone { pad, root: get("root", 60), lo: get("lo", 0), hi: get("hi", 127), vlo: get("vlo", 0), vhi: get("vhi", 127) });
+                        }
+                    }
+                }
+            }
             if let Some(v) = d.get_item("vst")? {
                 if let Ok(v) = v.downcast::<PyDict>() {
                     let get = |k: &str| -> PyResult<Option<String>> {
@@ -936,7 +950,7 @@ impl Engine {
             let mut c = self.inner.ctl.lock().unwrap();
             match mirror(&mut c, t).inst.as_ref() {
                 Some(i) if i.kind == instr::DRUMS && pad < i.pads.len() => i.clone(),
-                Some(i) if i.kind == instr::SAMPLER && pad == 0 => i.clone(), // the sampler's sample
+                Some(i) if i.kind == instr::SAMPLER && pad < i.pads.len() => i.clone(), // one of the sampler's samples
                 _ => return Err(PyValueError::new_err("not a drum pad")),
             }
         };
@@ -1416,7 +1430,23 @@ impl Engine {
                         e.set_item(*name, i.p[k])?;
                     }
                     if i.kind == instr::SAMPLER {
-                        e.set_item("pads", i.pads[..1].to_vec())?;
+                        // its samples, up to the last one there is (at least the first), and its zones
+                        let n = i.pads.iter().rposition(|x| x.is_some()).map_or(1, |k| k + 1);
+                        e.set_item("pads", i.pads[..n].to_vec())?;
+                        if !i.zones.is_empty() {
+                            let zs = PyList::empty(py);
+                            for z in &i.zones {
+                                let zd = PyDict::new(py);
+                                zd.set_item("pad", z.pad)?;
+                                zd.set_item("root", z.root)?;
+                                zd.set_item("lo", z.lo)?;
+                                zd.set_item("hi", z.hi)?;
+                                zd.set_item("vlo", z.vlo)?;
+                                zd.set_item("vhi", z.vhi)?;
+                                zs.append(zd)?;
+                            }
+                            e.set_item("zones", zs)?;
+                        }
                     }
                     if i.kind == instr::DRUMS {
                         e.set_item("pads", i.pads.clone())?;

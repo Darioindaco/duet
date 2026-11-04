@@ -106,6 +106,8 @@ function brDir(box, d, depth) {
   if (d.root?.missing) row.classList.add("missing");
   row.oncontextmenu = (e) => brDirMenu(e, d, list);
   row.addEventListener("click", () => { br.sel = { dir: true, path: d.path, writable: d.root ? d.root.writable : list?.writable }; });
+  // a folder of samples dragged onto the channel rack or a sampler: a multi-sample instrument
+  row.onpointerdown = (e) => { if (e.button === 0 && !d.root) brDragStart(e, { dir: true, path: d.path, name: d.name }); };
   box.append(row);
   if (!br.open.has(key) || !list) return;
   if (list.error) { box.insertAdjacentHTML("beforeend", `<div class="brnone" style="padding-left:${20 + depth * 14}px">${esc(list.error)}</div>`); return; }
@@ -202,12 +204,12 @@ function brDragStart(e, f) {
       if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 5) return;
       ghost = document.createElement("div");
       ghost.className = "brghost";
-      ghost.textContent = "♪ " + f.name;
+      ghost.textContent = (f.dir ? "▤ " : "♪ ") + f.name;
       document.body.append(ghost);
     }
     ghost.style.left = ev.clientX + 12 + "px";
     ghost.style.top = ev.clientY + 10 + "px";
-    const t = brTarget(where(ev), ev);
+    const t = brTarget(where(ev), ev, f);
     if (over && over !== t?.el) over.classList.remove("brdrop");
     over = t?.el || null;
     if (over) over.classList.add("brdrop");
@@ -221,10 +223,10 @@ function brDragStart(e, f) {
     document.removeEventListener("pointerup", up);
     if (over) over.classList.remove("brdrop");
     song.dropGhost = null;
-    if (!ghost) { brSelect(f); return; } // a click: hear it
+    if (!ghost) { if (!f.dir) brSelect(f); return; } // a click: hear it (a folder's click opens it)
     ghost.remove();
     if (winShown("song")) drawOverlay();
-    const t = brTarget(where(ev), ev);
+    const t = brTarget(where(ev), ev, f);
     if (t) await t.drop(f);
   };
   document.addEventListener("pointermove", move);
@@ -232,8 +234,9 @@ function brDragStart(e, f) {
 }
 
 // what's under the pointer that takes a sound: {el, what, drop(f), lane?}
-function brTarget(el, ev) {
+function brTarget(el, ev, f = null) {
   if (!el) return null;
+  if (f && f.dir) return brFolderTarget(el);
   const binEl = el.closest(".britem[data-bin]");
   if (binEl) return { el: binEl, what: "Add to the bin", drop: async (f) => { await api.lib_bin_add(binEl.dataset.bin, [f.path]); brRefresh(true); } };
   const dirEl = el.closest(".britem[data-dir]");
@@ -265,6 +268,29 @@ function brTarget(el, ev) {
       drop: (f) => brToSong(f, tr ? tr.id : null, beat) };
   }
   return null;
+}
+
+// a folder: its sounds as one sampler, laid out by their names (C4, A#3, pp/ff, rr1...)
+function brFolderTarget(el) {
+  const smp = el.closest(".smpbox[data-t]");
+  if (smp) return { el: smp, what: "Map its sounds into this sampler", drop: (f) => brMapSamples(smp.dataset.t, [f.path]) };
+  const chan = el.closest("#chanRows .chan[data-id]");
+  const t = chan && trackById(chan.dataset.id);
+  if (t?.inst?.kind === "sampler") return { el: chan, what: "Map its sounds into this sampler", drop: (f) => brMapSamples("T" + t.slot, [f.path]) };
+  if (el.closest("#chanRows")) return { el: $("chanRows"), what: "A sampler with its sounds", drop: (f) => brMapSamples(null, [f.path]) };
+  return null;
+}
+
+async function brMapSamples(target, paths) {
+  const slow = setTimeout(() => toast("Adding the samples…"), 400);
+  const res = await api.sampler_map(target, paths);
+  clearTimeout(slow);
+  if (!res || res.error) { toast(res ? res.error : "Couldn't add them", true); return; }
+  setSongView(await api.daw_project());
+  if (res.track) selectChannel(res.track);
+  if (typeof fxRefresh === "function") fxRefresh();
+  const left = res.unplaced && res.unplaced.length ? ` (${res.unplaced.length} without a note in the name left out: ${res.unplaced.slice(0, 3).join(", ")}${res.unplaced.length > 3 ? "…" : ""})` : "";
+  toast(`${res.mapped} sample${res.mapped === 1 ? "" : "s"} in the sampler, by their names${left}.`);
 }
 
 // drum kit pads, in the order of the kit (GM 36..51)
