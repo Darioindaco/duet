@@ -212,6 +212,12 @@ function cePitchTab(c) {
       if (!ce.bpm) { toast("Detect or type its tempo first."); return; }
       ceSetRate({ speed: songBpm / ce.bpm, stretch: true });
     }, "btn teal")));
+  // warp: fitted and kept fitted, whatever the song's tempo does
+  box.append(ceRow("Follow the tempo", c.warp
+    ? ceBtn(`On: its own tempo ${Math.round(c.warp * 10) / 10} BPM · turn off`, "It keeps its length in beats when the song's tempo changes; click to stop", () => ceEdit({ warp: null }), "btn on")
+    : ceBtn("Warp it to the song", "From now on it keeps its length in beats and speeds up or slows down with the song (keeping its pitch), tempo changes too", () => {
+      warpClips(c, ce.bpm || null);
+    }, "btn teal")));
   const bars = document.createElement("div");
   bars.className = "cebtns";
   for (const n of [1, 2, 4, 8, 16]) {

@@ -1027,10 +1027,11 @@ function clipBadges(c) {
   if (c.group) out += `  ⧉ take ${c.take}`;
   if (c.tune && (c.tune.notes || []).length) out += "  ♪ tuned";
   if (c.reverse) out += "  ◀";
+  if (c.warp) out += `  ♩ ${Math.round(c.warp * 10) / 10}`;
   const p = c.pitch || 0;
   if (Math.abs(p) >= 0.005) out += `  ${p > 0 ? "+" : ""}${Number.isInteger(+p.toFixed(2)) ? p.toFixed(0) : p.toFixed(2)} st`;
   const sp = c.speed ?? 1;
-  if (Math.abs(sp - 1) >= 0.0005) out += `  ${Math.round(sp * 1000) / 10}%`;
+  if (Math.abs(sp - 1) >= 0.0005 && !c.warp) out += `  ${Math.round(sp * 1000) / 10}%`;
   return out;
 }
 const stretching = (c) => !!(((c.stretch && (Math.abs((c.speed ?? 1) - 1) > 1e-4 || Math.abs(c.pitch || 0) > 0.005))
@@ -1056,7 +1057,10 @@ function drawClip(ctx, c, x, y, w, h, track) {
     if (levels) {
       const sr = file.sr || 48000, secPerPx = 60 / bpmAt(c.start) / song.ppb, s0 = b2s(c.start);
       // seconds into the clip at this pixel (a looped clip: into its round)
-      const tAt = (px) => { const t = b2s(c.start + px / song.ppb) - s0; return c.loop ? t % c.loop : t; };
+      // (a warped clip moves through its audio evenly in beats, also where the tempo changes)
+      const wb = c.warp && !c.loop ? clipBeats(c) : 0, wlen = c.len;
+      const tAt = wb ? (px) => (px / song.ppb) / wb * wlen
+        : (px) => { const t = b2s(c.start + px / song.ppb) - s0; return c.loop ? t % c.loop : t; };
       const r = clipRatio(c), dpr = window.devicePixelRatio || 1, step = 1 / dpr;
       const lv = document.querySelector("#lanes").clientWidth;
       const px0 = Math.max(0, Math.floor(-x)), px1 = Math.min(Math.ceil(w), Math.ceil(lv - x));
@@ -1822,6 +1826,8 @@ function lanesContext(e) {
       items.push(["Split into stems…", "", () => { openClipEditor(c.id); ce.tab = "stems"; ceRender(); }]);
       items.push([c.mute ? "Unmute clip" : "Mute clip", "Alt+M", () => muteSel(!c.mute)]);
       items.push(["Reverse", "", () => songEdit(selClips().filter((k) => !k.pattern).map((k) => ["clip", k.id, { reverse: !k.reverse }]))]);
+      items.push(c.warp ? ["Stop following the tempo", "", () => songEdit(selClips().filter((k) => !k.pattern).map((k) => ["clip", k.id, { warp: null }]))]
+        : ["Follow the song's tempo (warp)…", "", () => warpClips(c)]);
       items.push(["Select everything after", "", () => selectFrom(c)]);
       items.push(["Remove fades", "", () => songEdit(selClips().map((k) => ["clip", k.id, { fade_in: 0, fade_out: 0 }]))]);
       items.push({ gain: c });
@@ -1835,6 +1841,31 @@ function lanesContext(e) {
     items.push(["Automate the master…", "", () => autoMenu("master", e.clientX, e.clientY)]);
   }
   showCtx(items, e.clientX, e.clientY);
+}
+
+// warp: the clip keeps its length in beats and follows the song's tempo (daw.py does the sums).
+// Its own tempo: what the clip editor found, else a guess from its length (a loop is usually
+// 1, 2, 4 or 8 bars), which you can change.
+function warpGuess(c) {
+  const src = (c.len || 0) * clipRatio(c); // seconds of the file it plays
+  if (!(src > 0.2)) return Math.round(bpmAt(c.start));
+  let best = null;
+  for (const beats of [4, 8, 16, 32, 64]) {
+    const bpm = (beats * 60) / src;
+    if (bpm >= 70 && bpm < 180 && (best == null || Math.abs(bpm - bpmAt(c.start)) < Math.abs(best - bpmAt(c.start)))) best = bpm;
+  }
+  return Math.round((best ?? bpmAt(c.start)) * 10) / 10;
+}
+function warpClips(c, bpm = null) {
+  if (bpm == null) {
+    const s = prompt("The audio's own tempo (BPM): from then on it follows the song's", String((ce.id === c.id && ce.bpm) || warpGuess(c)));
+    if (s == null) return;
+    bpm = parseFloat(s.replace(",", "."));
+  }
+  if (!(bpm >= 20 && bpm <= 400)) { toast("A tempo is between 20 and 400 BPM.", true); return; }
+  const ks = song.sel.has(c.id) ? selClips().filter((k) => !k.pattern) : [c];
+  songEdit(ks.map((k) => ["clip", k.id, { warp: bpm }]));
+  toast(`Following the song's tempo (its own: ${bpm} BPM). Change the song's tempo and it stays on the beat.`);
 }
 
 function renameClips(c) {

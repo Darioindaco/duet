@@ -2528,6 +2528,61 @@ def test_colors_names():
     print("colors and names: ok")
 
 
+def test_warp():
+    """A warped clip keeps its length in beats: the tempo changes, it follows (one undo step);
+    across tempo changes it's cut in pieces, each at its own speed, that add up to the same audio."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    import daw
+    from daw import Daw
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-warp-"))
+    d = Daw(e, root / "songs", "me")
+    try:
+        d.edit([["meta", "meta", {"bpm": 120.0, "tempo": []}],
+                ["track", "ta", {"name": "Loop", "order": 1.0, "owner": "me", "src": -1}],
+                ["clip", "c1", {"track": "ta", "file": "x.wav", "start": 4.0, "offset": 0.0, "len": 4.0, "speed": 1.0}]])
+        clip = lambda v: next(c for c in v["clips"] if c["id"] == "c1")
+        # a 100 BPM loop of 4 s: 6.67 beats; at 120 that's 3.33 s, played 1.2x (keeping its pitch)
+        c = clip(d.edit([["clip", "c1", {"warp": 100.0}]]))
+        assert abs(c["len"] - 4.0 * 100 / 120) < 1e-6 and abs(c["speed"] - 1.2) < 1e-6 and c["stretch"], c
+        # the song slows down: it does too, still 6.67 beats long
+        c = clip(d.edit([["meta", "meta", {"bpm": 90.0}]]))
+        assert abs(c["len"] - 4.0 * 100 / 90) < 1e-6 and abs(c["speed"] - 0.9) < 1e-6, c
+        c = clip(d.undo())  # one step: the tempo and the clip together
+        assert d.p.meta()["bpm"] == 120.0 and abs(c["speed"] - 1.2) < 1e-6, c
+        # a tempo change in the middle of it (60 from beat 6): it follows that too...
+        v = d.edit([["meta", "meta", {"tempo": [[6.0, 60.0]]}]])
+        c = clip(v)
+        tm = d._tm()
+        beats = tm.s2b(tm.b2s(4.0) + c["len"]) - 4.0
+        assert abs(beats - 4.0 * 100 / 60) < 1e-6, beats
+        # ...and plays as two pieces: 1.2x for 2 beats at 120, 0.6x after; the same 4 s of audio in all
+        segs = d._clip_segments(c, tm)
+        assert len(segs) == 2, segs
+        (a, b) = segs
+        assert abs(a[6] - 1.2) < 1e-6 and abs(b[6] - 0.6) < 1e-6, (a[6], b[6])
+        assert abs(a[1] - tm.b2s(4.0)) < 1e-9 and abs(b[1] - tm.b2s(6.0)) < 1e-9
+        assert abs(a[3] * a[6] + b[3] * b[6] - 4.0) < 1e-6 and abs(b[2] - a[3] * a[6]) < 1e-6
+        # moved to where it's all 60 BPM: one piece, still 6.67 beats
+        c = clip(d.edit([["clip", "c1", {"start": 8.0}]]))
+        assert abs(c["len"] - 4.0 * 100 / 60) < 1e-6 and len(d._clip_segments(c, d._tm())) == 1, c
+        # not warped: a tempo change leaves it alone
+        d.edit([["clip", "c1", {"warp": None}]])
+        before = clip(d.view())["len"]
+        assert clip(d.edit([["meta", "meta", {"bpm": 140.0}]]))["len"] == before
+        assert daw.SONG_FORMAT >= 6 and "warp" in daw.FIELDS_ADDED[6]["clip"]
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+    print("warp: ok  (follows the tempo in beats, one undo step, pieces across tempo changes, moves)")
+
+
 def test_ui_names():
     """The page's scripts share one global scope: two top-level functions with the same name in
     different files means the later file's silently replaces the earlier one (that's how the
@@ -2944,6 +2999,7 @@ if __name__ == "__main__":
     test_talkback()
     test_ui_names()
     test_colors_names()
+    test_warp()
     test_updater()
     test_effects_cpu()
     test_two_engines()

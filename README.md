@@ -364,6 +364,14 @@ and *Undo* takes it back.
   - *Tape*: faster is higher, like a record. Instant, no artifacts.
   *Detect* finds the sound's tempo; *Fit to the song* then plays it at the
   song's tempo. *Make it last 1/2/4/8/16 bars* stretches it to exactly that.
+  **Warp it to the song** (or right-click a clip → *Follow the song's tempo*)
+  goes further: from then on the clip keeps its length in beats, so when the
+  song's tempo changes (the tempo box, a tempo change on the ruler, undo) it
+  speeds up or slows down with it, keeping its pitch, and stays on the beat. A
+  tempo change in the middle of a clip is followed too (it plays each part at
+  its own speed). Its own tempo comes from *Detect*, or a guess from its length
+  (a loop is usually 1, 2, 4 or 8 bars) you can correct. The clip shows *♩ 95*
+  (its own tempo); *Stop following the tempo* leaves it as it is now.
 - **Chop:** cuts where every hit starts (*Find the hits*, with a sensitivity
   slider), or on the grid (bar, beat, 1/8, 1/16), or click your own; drag a cut
   to move it, right-click it to take it away. *Chop into clips* cuts the clip

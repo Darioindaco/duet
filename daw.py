@@ -75,7 +75,10 @@ FIELDS = {
              "once", "loop", "fade_in_curve", "fade_out_curve",
              # name / color: what the clip is called and its colour in the playlist (unset: the
              # file's or pattern's name, the track's colour)
-             "name", "color", "del"},
+             "name", "color",
+             # warp: the audio's own tempo (BPM): the clip keeps its length in beats and plays
+             # faster or slower (keeping its pitch) when the song's tempo changes; unset: it doesn't follow
+             "warp", "del"},
     "file": {"frames", "sr", "owner", "name", "del"},
     # len: how long it is to write in; base: how long one round is when a block loops (unset: len)
     "pattern": {"name", "len", "base", "color", "del"},
@@ -91,10 +94,10 @@ FIELDS = {
 
 # What the song can hold, as a number both sides tell each other when they connect: one Duet that
 # knows fields the other doesn't shows a note (the older one keeps them, but can't show them).
-# 3: up to build 118; 4: a track's colour, a clip's name and colour; 5: saved mixes
-SONG_FORMAT = 5
+# 3: up to build 118; 4: a track's colour, a clip's name and colour; 5: saved mixes; 6: warp
+SONG_FORMAT = 6
 # the fields each format added (a format's fields: FIELDS without what came after it)
-FIELDS_ADDED = {4: {"track": {"color"}, "clip": {"name", "color"}}, 5: {"meta": {"mixes"}}}
+FIELDS_ADDED = {4: {"track": {"color"}, "clip": {"name", "color"}}, 5: {"meta": {"mixes"}}, 6: {"clip": {"warp"}}}
 # what a saved mix holds of each track and bus (not mute and solo: those are just yours)
 MIX_FIELDS = ("vol", "pan", "sends", "out", "rack")
 MAX_MIXES = 24
@@ -120,7 +123,7 @@ FIELD_DEFAULTS = {
               "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "frozen": None, "color": None, "del": False},
     "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "speed": 1.0, "pitch": 0.0,
              "stretch": False, "reverse": False, "mute": False, "tune": None, "group": None, "take": None,
-             "tsrc": False, "once": False, "loop": None, "name": None, "color": None, "del": False},
+             "tsrc": False, "once": False, "loop": None, "name": None, "color": None, "warp": None, "del": False},
     "file": {"del": False},
     "pattern": {"color": None, "del": False},
     "note": {"vel": 100, "mute": False, "del": False},
@@ -1036,6 +1039,7 @@ class Daw:
         """Changes from the UI: [[kind, id, {field: value}]]. A new id makes a new object."""
         with self.lock:
             changes, blocked = self._blocked(changes)
+            changes = self._warp_follow(changes)
             self._do(changes)
             if blocked:
                 self.notices.append("Your partner is editing that right now: it'll be free when they're done.")
@@ -1047,6 +1051,59 @@ class Daw:
                     self.undos.append({"forward": a["forward"] + b["forward"], "inverse": b["inverse"] + a["inverse"],
                                        "keys": sorted(set(a["keys"]) | set(b["keys"])), "t": b["t"]})
             return self.view()
+
+    def _warp_follow(self, changes: list) -> list:
+        """Warped clips keep their length in beats: when the tempo changes (or one moves to where
+        the tempo is different, or is warped just now), their length in seconds and their speed
+        follow, in the same undo step. (So a partner on an older Duet hears them right too.)"""
+        p = self.p
+        meta = dict(p.meta())
+        tempo = False
+        for k, _, fs in changes:
+            if k == "meta" and isinstance(fs, dict) and ("bpm" in fs or "tempo" in fs):
+                meta.update({f: fs[f] for f in ("bpm", "tempo") if f in fs})
+                tempo = True
+        old_tm = self._tm()
+        new_tm = TempoMap(meta) if tempo else old_tm
+        by = {}
+        for ch in changes:
+            if ch[0] == "clip" and isinstance(ch[2], dict):
+                by[str(ch[1])] = ch
+        out = list(changes)
+        for cid, c in p.live("clip").items():
+            ch = by.get(cid)
+            fs = ch[2] if ch else {}
+            now = {**c, **fs}
+            if now.get("pattern") or now.get("del") or not (num(now.get("warp"), 0.0, 0.0, 999.0) >= 20.0):
+                continue
+            just = "warp" in fs  # warped now: from its own tempo
+            if not (just or tempo or "start" in fs):
+                continue
+            start = float(now.get("start", 0))
+            ln, sp = float(now.get("len", 0)), num(now.get("speed"), 1.0, 0.05, 20.0)
+            if ln <= 0.005:
+                continue
+            span = ln * sp  # seconds of the file it plays
+            if just:
+                beats = span * float(now["warp"]) / 60.0
+            elif "len" in fs and not tempo:
+                continue  # trimmed: the length the UI gives is it
+            else:
+                s0 = float(c.get("start", 0))
+                beats = old_tm.s2b(old_tm.b2s(s0) + float(c.get("len", 0))) - s0
+            new_len = new_tm.b2s(start + beats) - new_tm.b2s(start)
+            new_sp = span / new_len if new_len > 0.005 else 0.0
+            if not (0.05 <= new_sp <= 20.0) or (abs(new_len - ln) < 1e-7 and abs(new_sp - sp) < 1e-9 and not just):
+                continue
+            upd = {"len": new_len, "speed": new_sp, "stretch": True,
+                   "fade_in": min(float(now.get("fade_in", 0)), new_len / 2), "fade_out": min(float(now.get("fade_out", 0)), new_len / 2)}
+            if now.get("loop"):
+                upd["loop"] = float(now["loop"]) * new_len / ln
+            if ch:
+                ch[2].update(upd)
+            else:
+                out.append(["clip", cid, upd])
+        return out
 
     LEVELS = {"vol", "pan", "sends"}
 
@@ -1845,13 +1902,7 @@ class Daw:
             key = c.get("file")
             if slot is None or key not in self.loaded:
                 continue
-            desc[slot].append((key, b2s(float(c.get("start", 0))), float(c.get("offset", 0)), float(c.get("len", 0)),
-                               0.0 if c.get("mute") else float(c.get("gain", 1.0)),
-                               (float(c.get("fade_in", 0)), float(c.get("fade_out", 0)),
-                                num(c.get("fade_in_curve"), 0.0, -1.0, 1.0), num(c.get("fade_out_curve"), 0.0, -1.0, 1.0)),
-                               num(c.get("speed"), 1.0, 0.05, 20.0), num(c.get("pitch"), 0.0, -48.0, 48.0),
-                               bool(c.get("stretch")), bool(c.get("reverse")), tune_moves(c.get("tune")),
-                               0.0 if c.get("reverse") else num(c.get("loop"), 0.0, 0.0, 1e6)))
+            desc[slot].extend(self._clip_segments(c, tm))
         notes, ctls = self._notes(b2s), self._ctls(b2s)
         if desc != self.sent_desc or (notes, ctls) != self.sent_notes:
             e.daw_timeline(desc, notes, ctls)
@@ -1871,6 +1922,40 @@ class Daw:
         if cmap != getattr(self, "sent_cmap", None):
             e.daw_click_map(cmap)
             self.sent_cmap = cmap
+
+    @staticmethod
+    def _clip_segments(c: dict, tm: TempoMap) -> list:
+        """An audio clip for the engine. A warped one across tempo changes is cut where the
+        tempo changes, each piece at its own speed, so its beats stay on the song's beats all the
+        way (one speed, the average, would drift in between)."""
+        key = c.get("file")
+        start, off, ln = float(c.get("start", 0)), float(c.get("offset", 0)), float(c.get("len", 0))
+        gain = 0.0 if c.get("mute") else float(c.get("gain", 1.0))
+        fi, fo = float(c.get("fade_in", 0)), float(c.get("fade_out", 0))
+        ci, co = num(c.get("fade_in_curve"), 0.0, -1.0, 1.0), num(c.get("fade_out_curve"), 0.0, -1.0, 1.0)
+        speed, pitch = num(c.get("speed"), 1.0, 0.05, 20.0), num(c.get("pitch"), 0.0, -48.0, 48.0)
+        stretch, rev, tune = bool(c.get("stretch")), bool(c.get("reverse")), tune_moves(c.get("tune"))
+        loop = 0.0 if rev else num(c.get("loop"), 0.0, 0.0, 1e6)
+        one = [(key, tm.b2s(start), off, ln, gain, (fi, fo, ci, co), speed, pitch, stretch, rev, tune, loop)]
+        if not c.get("warp") or rev or loop or tm.constant() or ln <= 0.01:
+            return one
+        s0 = tm.b2s(start)
+        end = tm.s2b(s0 + ln)
+        cuts = [b for b in tm.beats if start + 1e-6 < b < end - 1e-6]
+        if not cuts:
+            return one
+        span, beats = ln * speed, end - start
+        per_beat = span / beats  # seconds of the file per beat: what warp keeps
+        out, edges = [], [start, *cuts, end]
+        for i, (x, y) in enumerate(zip(edges, edges[1:])):
+            a, b = tm.b2s(x), tm.b2s(y)
+            if b - a < 1e-4:
+                continue
+            sp = (y - x) * per_beat / (b - a)
+            out.append((key, a, off + (x - start) * per_beat, b - a, gain,
+                        (fi if i == 0 else 0.0, fo if i == len(edges) - 2 else 0.0, ci, co),
+                        min(20.0, max(0.05, sp)), pitch, True, False, tune, 0.0))
+        return out or one
 
     def _auto_lane(self, tid: str, t: dict, byid: dict, mrack: list, b2s):
         """An automation lane for the engine: (lane id, strip, what, [(seconds, value)]), or None."""
