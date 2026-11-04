@@ -1410,6 +1410,8 @@ function stripEl(t) {
     + (track ? " trk" : "") + (ui.sel === t ? " sel" : "");
   el.dataset.t = t;
   el.onclick = () => selectStrip(t);
+  // a song track or bus: the same name and colour as in the playlist
+  if (track && okColor(track.color)) el.style.setProperty("--c", track.color);
 
   // name
   const head = document.createElement("div");
@@ -1431,6 +1433,10 @@ function stripEl(t) {
     x.className = "x"; x.textContent = "✕"; x.title = track ? "Delete this bus" : "Remove this strip";
     x.onclick = (e) => { e.stopPropagation(); track ? deleteBus(track) : removeStrip(t); };
     head.append(x);
+  }
+  if (track) {
+    head.title = "Right-click: colour, rename";
+    head.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); trackColorMenu(track, e.clientX, e.clientY); };
   }
   el.append(head);
 

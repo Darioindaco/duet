@@ -306,6 +306,15 @@ bend: drag the round handle halfway along a fade up (fast) or down (slow).
 Pattern blocks fade too (the fade handles or the *Fade* tool), so two patterns
 on different channels can crossfade.
 
+**Names, colours and order.** Right-click a clip → *Rename…* or pick a colour
+from the dots at the top of the menu (the first dot: back to the track's
+colour); with several clips selected it does them all. A track's colour is the
+strip on the left of its head: click it for the colour and *Rename…*, or **drag
+it up or down** to move the track (dragging the empty part of the head works
+too; its automation lanes come along). The mixer strip is the same track: the
+same name and colour, and right-clicking its name gives the same menu. All of it
+is in the shared song and undoes like any edit.
+
 **Editing clips** (right-click a clip for the same things in a menu):
 
 | | |
@@ -550,8 +559,12 @@ the shared song (your partner sees every note you place, and you theirs).
 
 - **Channels** are the song's instruments: *+ Track → Software instrument* in the
   playlist, or *+ Channel* here (it joins the open pattern). A channel is also a
-  track in the playlist and a strip in the mixer (*Sound* opens its knobs, pads
-  and effects there).
+  track in the playlist and a strip in the mixer: one thing with one name and one
+  colour everywhere. The channel rack is the open pattern's editor, so each row is
+  kept minimal: the **dot** switches the channel on or off (just for you; *Alt*-click:
+  solo), the **pill** with its name opens the instrument (double-click: rename,
+  right-click: colour, piano roll, clear, delete). Point at a row for its volume;
+  the rest (effects, pan, sends) is in the mixer.
 - **Patterns** hold notes for any number of channels. Pick one at the top (or
   *+ New pattern*), set its length (1–8 bars); *⋯* renames, copies, clears or
   deletes it. In the playlist each channel plays its part of a pattern from a
@@ -559,7 +572,13 @@ the shared song (your partner sees every note you place, and you theirs).
   already in the song and it gets a block of its own in the same place(s).
   Deleting a channel takes its notes with it.
 - **Steps:** every channel has a row of 16th-note steps per bar; a drum kit has a
-  row per pad (*All pads* shows all 16). Click a step to switch it on or off.
+  row per pad (*+ pad* adds one, *Show every pad* shows all 16). Click a step to
+  switch it on or off. Beats alternate light and dark, each bar starts after a
+  little gap and its number is above. A melody the steps can't show is drawn as a
+  little piano roll on the **same grid**: a note on step 5 sits right under the
+  kick's step 5. **Right-click** a step (or a row's name) to *Fill every 1, 2, 3, 4,
+  8 or 16 steps* from there (like FL's *Fill each N steps*), shift the row left or
+  right, randomise it a little or clear it.
 - **Piano roll** (below; drag the bar above it for more or less room) for the
   selected channel: click to draw a note, drag to move it (up/down changes the
   pitch), drag its right end to make it longer. Notes snap to the grid (*Snap*,

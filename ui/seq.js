@@ -16,7 +16,7 @@ const noteName = (k) => NOTE_NAMES[k % 12] + (Math.floor(k / 12) - 1);
 const PR_SNAPS = [["1/16", 0.25], ["1/8", 0.5], ["1/4", 1], ["1/32", 0.125], ["Off", 0]];
 
 const seq = {
-  pat: null, channel: null, allPads: {},
+  pat: null, channel: null, allPads: {}, morePads: {},
   ppb: 96, rowH: 16, snap: 0.25, lastLen: null,
   sel: new Set(), drag: null, prTop: null,
   tool: "draw", // or "paint": hold and drag to paint a row of notes (B toggles, like FL's brush)
@@ -31,6 +31,8 @@ const patNotes = (pid, tid) => (song.view.notes || []).filter((n) => n.pattern =
 const isDrums = (t) => t && (t.seq ? t.seq === "drums" : t.inst?.kind === "drums" || /drum/i.test(t.inst?.vst?.name || ""));
 const chanLabel = (t) => (t.inst?.kind === "vst" ? t.inst.vst?.name || "VST" : INST[t.inst?.kind]?.name || "Instrument");
 function patColor(pid) {
+  const pc = song.view && (song.view.patterns || []).find((p) => p.id === pid)?.color;
+  if (okColor(pc)) return pc;
   let h = 2166136261;
   for (const c of String(pid)) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
   return `hsl(${Math.round(((h >>> 0) % 1000) * 137.508) % 360} 62% 62%)`; // golden-angle steps: neighbours differ
@@ -353,6 +355,20 @@ function seqRender() {
   if (winShown("roll")) prRender();
 }
 
+// The channel rack is the pattern's editor: each channel a row (a dot to switch it on and off, its
+// name in a pill that opens the instrument), its steps, or a little picture of its notes when the
+// steps can't show them. Everything sits on one grid: a step is always at the same x, in every row
+// and in the picture, with a little room before each bar.
+const RACK = { w: 16, gap: 2, bar: 6 };
+const stepsPerBar = () => Math.max(1, Math.round(bpb() / STEP));
+// where step s starts (from the left of the grid); also for a beat inside a step
+const stepX = (s) => s * (RACK.w + RACK.gap) + Math.floor(s / stepsPerBar()) * RACK.bar;
+function beatX(b) {
+  const s = Math.floor(b / STEP + 1e-9), f = b / STEP - s;
+  return stepX(s) + f * (RACK.w + RACK.gap);
+}
+const gridW = (steps) => stepX(steps - 1) + RACK.w;
+
 function renderRackRows() {
   const box = $("chanRows"), p = curPattern(), chans = channels();
   box.innerHTML = "";
@@ -360,78 +376,68 @@ function renderRackRows() {
     box.innerHTML = `<div class="seq-empty"><b>No channels yet.</b> A channel is an instrument the song plays: add a drum kit, the synth or a VST instrument with <b>+ Channel</b>. It also becomes a track in the playlist and a strip in the mixer.</div>`;
     return;
   }
-  const steps = Math.max(1, Math.round(patLen(p) / STEP));
+  const steps = Math.max(1, Math.round(patLen(p) / STEP)), spb = stepsPerBar();
+  box.style.setProperty("--gridw", gridW(steps) + "px");
+  // the bar numbers over the steps
+  const ruler = document.createElement("div");
+  ruler.className = "rruler";
+  ruler.innerHTML = `<div class="rrpad"></div><div class="rrbars"></div>`;
+  for (let s = 0; s < steps; s += spb) {
+    const n = document.createElement("span");
+    n.textContent = String(s / spb + 1);
+    n.style.left = stepX(s) + "px";
+    ruler.lastChild.append(n);
+  }
+  box.append(ruler);
   for (const t of chans) {
     const drums = isDrums(t);
     const notes = p ? patNotes(p.id, t.id) : [];
     let rows = drums ? DRUM_ROWS.slice() : [60];
     if (drums) {
       for (const n of notes) if (!rows.includes(n.key)) rows.push(n.key);
+      for (const k of seq.morePads[t.id] || []) if (!rows.includes(k)) rows.push(k);
       if (seq.allPads[t.id]) for (let k = 36; k <= 51; k++) if (!rows.includes(k)) rows.push(k);
       rows.sort((a, b) => a - b);
     }
     const ch = document.createElement("div");
-    ch.className = "chan" + (t.id === seq.channel ? " sel" : "") + (t.mine ? "" : " partner");
+    ch.className = "chan" + (t.id === seq.channel ? " sel" : "") + (t.mine ? "" : " partner") + (t.mute ? " muted" : "") + (t.solo ? " soloed" : "");
     ch.dataset.id = t.id;
-    const head = document.createElement("div");
-    head.className = "chead";
-    head.innerHTML = `<div class="cname"><b>${esc(t.name)}</b><span>${esc(chanLabel(t))}</span></div>`;
-    head.onclick = () => selectChannel(t.id);
-    const tools = document.createElement("div");
-    tools.className = "ctools";
-    tools.append(
-      toggleBtn("M", "m", t.mute, "Mute (just for you)", (on) => api.daw_local("mute", on, t.id).then(setSongView)),
-      toggleBtn("S", "s", t.solo, "Solo (just for you)", (on) => api.daw_local("solo", on, t.id).then(setSongView)),
-      hslider(t.vol ?? 0.8, (g) => songEditThrottled(t.id, { vol: g }), "Volume"));
-    const edit = document.createElement("button");
-    edit.className = "fxb"; edit.textContent = "Sound"; edit.title = "The instrument's knobs, pads and effects (in the mixer)";
-    edit.onclick = (e) => { e.stopPropagation(); openTrackFx(t); };
-    tools.append(edit);
-    if (drums) {
-      const more = document.createElement("button");
-      more.className = "fxb"; more.textContent = seq.allPads[t.id] ? "Less" : "All";
-      more.title = "Show every pad, or just the usual ones";
-      more.onclick = (e) => { e.stopPropagation(); seq.allPads[t.id] = !seq.allPads[t.id]; renderRackRows(); };
-      tools.append(more);
-    }
-    head.append(tools);
-    ch.append(head);
+    ch.style.setProperty("--c", tColor(t));
+    ch.append(rackHead(t, drums));
     const grid = document.createElement("div");
     grid.className = "cgrid";
-    // a melody (notes the steps can't show): a little picture of the piano roll instead
+    ch.append(grid);
+    ch.onclick = (e) => { if (!e.target.closest("button, .hs, .pill")) selectChannel(t.id); };
+    box.append(ch);
+    // a melody (notes the steps can't show): a little picture of the piano roll instead, on the same grid
     if (!drums && notes.some((n) => n.key !== 60 || Math.abs(n.len - STEP * 2) > 1e-6 || Math.abs(n.start / STEP - Math.round(n.start / STEP)) > 1e-6)) {
+      const row = document.createElement("div");
+      row.className = "srow";
+      row.innerHTML = `<span class="rname"></span>`;
       const mini = document.createElement("canvas");
       mini.className = "minipr";
       mini.title = "Notes in the piano roll: click to edit them";
-      grid.append(mini);
-      requestAnimationFrame(() => {
-        const w = mini.clientWidth, h = mini.clientHeight;
-        const ctx = sizeCanvas(mini, w, h);
-        const lo = Math.min(...notes.map((n) => n.key)), hi = Math.max(...notes.map((n) => n.key));
-        const span = Math.max(8, hi - lo + 1), plen = patLen(p);
-        ctx.fillStyle = "#16141c"; ctx.fillRect(0, 0, w, h);
-        ctx.fillStyle = t.mine ? song.colors.me : song.colors.partner;
-        for (const n of notes) ctx.fillRect(n.start / plen * w, 3 + (hi - n.key) / span * (h - 6), Math.max(2, n.len / plen * w - 1), Math.max(2, (h - 6) / span));
-      });
-      ch.append(grid);
-      ch.onclick = (e) => { if (!e.target.closest("button, .hs")) selectChannel(t.id); };
-      box.append(ch);
+      mini.onclick = (e) => { e.stopPropagation(); selectChannel(t.id); wmOpen("roll"); };
+      row.append(mini);
+      grid.append(row);
+      requestAnimationFrame(() => drawMiniRoll(mini, t, notes, steps));
       continue;
     }
     for (const key of rows) {
       const row = document.createElement("div");
       row.className = "srow";
       row.dataset.key = key;
-      row.innerHTML = `<span class="rname" title="Click to hear it">${esc(drums ? PAD_NAMES[key] || noteName(key) : "Steps (" + noteName(key) + ")")}</span>`;
-      row.firstChild.onpointerdown = (e) => { e.preventDefault(); audition(t, key); };
+      row.innerHTML = `<span class="rname" title="Click to hear it · right-click: fill, shift, clear">${esc(drums ? PAD_NAMES[key] || noteName(key) : noteName(key))}</span>`;
+      row.firstChild.onpointerdown = (e) => { if (e.button === 0) { e.preventDefault(); audition(t, key); } };
+      row.firstChild.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); stepRowMenu(t, key, 0, e.clientX, e.clientY); };
       const cells = document.createElement("div");
       cells.className = "cells";
-      cells.style.gridTemplateColumns = `repeat(${steps}, var(--stepw))`;
       for (let s = 0; s < steps; s++) {
         const at = s * STEP;
         const hit = notes.find((n) => n.key === key && Math.abs(n.start - at) < 1e-6);
         const c = document.createElement("button");
-        c.className = "step" + (hit ? " on" : "") + (Math.floor(s / 4) % 2 ? " odd" : "") + (s % (4 * bpb()) === 0 ? " bar" : "");
+        const beat = Math.floor(s / (1 / STEP));
+        c.className = "step" + (hit ? " on" : "") + (beat % 2 ? " odd" : "") + (s % spb === 0 && s ? " bar" : "");
         if (hit) c.style.setProperty("--v", (hit.vel / 127).toFixed(2));
         c.onclick = () => {
           if (!p) { const pid = newPattern(); seq.pat = pid; }
@@ -442,16 +448,147 @@ function renderRackRows() {
             audition(t, key);
           }
         };
+        c.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); stepRowMenu(t, key, s, e.clientX, e.clientY); };
         cells.append(c);
       }
       row.append(cells);
       grid.append(row);
     }
-    ch.append(grid);
-    ch.onclick = (e) => { if (!e.target.closest("button, .hs")) selectChannel(t.id); };
-    box.append(ch);
+    if (drums) {
+      const add = document.createElement("button");
+      add.className = "addpad"; add.textContent = "+ pad"; add.title = "Show another pad of the kit";
+      add.onclick = (e) => { e.stopPropagation(); padMenu(t, rows, e.clientX, e.clientY); };
+      grid.append(add);
+    }
   }
   hereMarks();
+}
+
+// a channel's head: the on/off dot and the name pill (and its volume when you point at it)
+function rackHead(t, drums) {
+  const head = document.createElement("div");
+  head.className = "chead";
+  const dot = document.createElement("button");
+  dot.className = "cdot" + (t.mute ? "" : " on") + (t.solo ? " solo" : "");
+  dot.title = t.mute ? "Off (just for you): click to switch it on · Alt-click: solo" : "On: click to switch it off (just for you) · Alt-click: solo";
+  dot.onclick = (e) => {
+    e.stopPropagation();
+    if (e.altKey) api.daw_local("solo", !t.solo, t.id).then(setSongView);
+    else api.daw_local("mute", !t.mute, t.id).then(setSongView);
+  };
+  const pill = document.createElement("button");
+  pill.className = "pill";
+  pill.innerHTML = `<span>${esc(t.name || "Channel")}</span>`;
+  pill.title = `${t.name} · ${chanLabel(t)}\nClick: open the instrument · Double-click: rename · Right-click: more`;
+  let clickT = null;
+  pill.onclick = (e) => {
+    e.stopPropagation();
+    // a double-click renames: wait a moment before opening the instrument
+    clearTimeout(clickT);
+    clickT = setTimeout(() => { selectChannel(t.id); openTrackFx(t); }, 230);
+  };
+  pill.ondblclick = (e) => { e.stopPropagation(); clearTimeout(clickT); renameTrack(t); };
+  pill.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); chanMenu(t, drums, e.clientX, e.clientY); };
+  const vol = hslider(t.vol ?? 0.8, (g) => songEditThrottled(t.id, { vol: g }), "Volume");
+  head.append(dot, pill, vol);
+  return head;
+}
+
+function drawMiniRoll(mini, t, notes, steps) {
+  const w = gridW(steps), h = mini.clientHeight || 34;
+  mini.style.width = w + "px";
+  const ctx = sizeCanvas(mini, w, h);
+  const lo = Math.min(...notes.map((n) => n.key)), hi = Math.max(...notes.map((n) => n.key));
+  const span = Math.max(8, hi - lo + 1), plen = steps * STEP;
+  // the same cells as the steps, dark, so the notes line up with them
+  for (let s = 0; s < steps; s++) {
+    ctx.fillStyle = Math.floor(s / (1 / STEP)) % 2 ? "#1a1720" : "#221e29";
+    ctx.fillRect(stepX(s), 0, RACK.w + (s % stepsPerBar() === stepsPerBar() - 1 ? 0 : RACK.gap), h);
+  }
+  ctx.fillStyle = tColor(t);
+  for (const n of notes) {
+    if (n.start >= plen) continue;
+    const x0 = beatX(n.start), x1 = beatX(Math.min(plen, n.start + n.len));
+    ctx.globalAlpha = n.mute ? 0.3 : 0.55 + 0.45 * ((n.vel ?? 100) / 127);
+    ctx.fillRect(x0, 3 + (hi - n.key) / span * (h - 6), Math.max(2, x1 - x0 - 1), Math.max(2, (h - 6) / span));
+  }
+  ctx.globalAlpha = 1;
+}
+
+function chanMenu(t, drums, x, y) {
+  const items = [
+    ["Open the instrument", "click", () => { selectChannel(t.id); openTrackFx(t); }],
+    ["Edit in the piano roll", "", () => { selectChannel(t.id); wmOpen("roll"); }],
+    ["Rename…", "dbl-click", () => renameTrack(t)],
+    { colors: t.color, pick: (col) => songEdit([["track", t.id, { color: col }]]) },
+  ];
+  if (drums) items.push([seq.allPads[t.id] ? "Show the usual pads" : "Show every pad", "", () => { seq.allPads[t.id] = !seq.allPads[t.id]; renderRackRows(); }]);
+  else items.push(["Fill every 4 steps", "", () => fillRow(t, 60, 4, 0)]);
+  items.push(["Clear in this pattern", "", () => clearChannel(t)]);
+  items.push(["Delete the channel", "", () => deleteTrack(t)]);
+  showCtx(items, x, y);
+}
+
+function padMenu(t, shown, x, y) {
+  const left = Object.keys(PAD_NAMES).map(Number).filter((k) => !shown.includes(k)).sort((a, b) => a - b);
+  showCtx([...left.map((k) => [PAD_NAMES[k], noteName(k), () => {
+    (seq.morePads[t.id] ||= []).push(k);
+    renderRackRows();
+  }]), [seq.allPads[t.id] ? "Show the usual pads" : "Show every pad", "", () => { seq.allPads[t.id] = !seq.allPads[t.id]; renderRackRows(); }]], x, y);
+}
+
+// right-click on a row of steps (or its name): fill it every N steps from there, like FL
+function stepRowMenu(t, key, from, x, y) {
+  const at = from ? ` from step ${from + 1}` : "";
+  const items = [1, 2, 3, 4, 8, 16].map((n) => [`Fill every ${n === 1 ? "step" : n + " steps"}${at}`, "", () => fillRow(t, key, n, from)]);
+  items.push(["Shift left", "", () => shiftRow(t, key, -1)], ["Shift right", "", () => shiftRow(t, key, 1)]);
+  items.push(["Random (a little)", "", () => randomRow(t, key)], ["Clear the row", "", () => fillRow(t, key, 0, 0)]);
+  showCtx(items, x, y);
+}
+
+// the row's notes in the current pattern (one channel, one key)
+function rowNotes(t, key) {
+  const p = curPattern();
+  return p ? patNotes(p.id, t.id).filter((n) => n.key === key) : [];
+}
+function ensurePattern() {
+  if (!curPattern()) { const pid = newPattern(); seq.pat = pid; }
+  return seq.pat;
+}
+
+// every `every` steps from step `from` (0: clear it); what was in the row goes
+function fillRow(t, key, every, from) {
+  const pid = ensurePattern(), steps = Math.round(patLen(curPattern()) / STEP), drums = isDrums(t);
+  const ch = rowNotes(t, key).map((n) => ["note", n.id, { del: true }]);
+  if (every > 0) {
+    const len = drums ? STEP : Math.min(STEP * 2, STEP * every);
+    for (let s = from; s < steps; s += every) ch.push(["note", newId("n"), { pattern: pid, track: t.id, start: s * STEP, len, key, vel: 100 }]);
+  }
+  if (ch.length) songEdit(ch);
+}
+
+function shiftRow(t, key, by) {
+  const L = patLen(curPattern());
+  const ch = rowNotes(t, key).map((n) => ["note", n.id, { start: ((n.start + by * STEP) % L + L) % L }]);
+  if (ch.length) songEdit(ch);
+}
+
+// a few steps on and off, mostly on the beat, like a humanised fill
+function randomRow(t, key) {
+  const pid = ensurePattern(), steps = Math.round(patLen(curPattern()) / STEP), drums = isDrums(t);
+  const ch = rowNotes(t, key).map((n) => ["note", n.id, { del: true }]);
+  for (let s = 0; s < steps; s++) {
+    const pr = s % 4 === 0 ? 0.6 : s % 2 === 0 ? 0.3 : 0.12;
+    if (Math.random() < pr) ch.push(["note", newId("n"), { pattern: pid, track: t.id, start: s * STEP, len: drums ? STEP : STEP * 2, key, vel: 70 + Math.round(Math.random() * 50) }]);
+  }
+  songEdit(ch);
+}
+
+function clearChannel(t) {
+  const p = curPattern();
+  if (!p) return;
+  const ch = patNotes(p.id, t.id).map((n) => ["note", n.id, { del: true }]);
+  if (ch.length) songEdit(ch);
 }
 
 function audition(t, key, vel = 100) {
@@ -562,7 +699,7 @@ function prDraw() {
     const x = Math.round(b * ppb - sx) + 0.5;
     const bar = Math.abs(b % n) < 1e-6, beat = Math.abs(b % 1) < 1e-6;
     if (!beat && ppb < 40) continue;
-    ctx.fillStyle = bar ? "rgba(255,255,255,0.13)" : beat ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.025)";
+    ctx.fillStyle = bar ? "rgba(255,255,255,0.2)" : beat ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.025)";
     ctx.fillRect(x - 0.5, 0, 1, h);
   }
   hereDrawHeld(ctx, sx, sy, w, hi);
@@ -576,7 +713,7 @@ function prDraw() {
     $("prVel").getContext("2d").clearRect(0, 0, 9999, 9999);
     return;
   }
-  const col = t.mine ? song.colors.me : song.colors.partner;
+  const col = tColor(t);
   // ghost notes: the pattern's other melodic channels, faint, to write against
   if (!isDrums(t)) {
     ctx.fillStyle = "rgba(239,234,244,0.13)";
@@ -642,7 +779,7 @@ function velDraw(notes, t, sx) {
   const ctx = sizeCanvas(cv, w, h);
   ctx.fillStyle = "#0c0b10";
   ctx.fillRect(0, 0, w, h);
-  const col = t.mine ? song.colors.me : song.colors.partner;
+  const col = tColor(t);
   for (const nn of notes) {
     const x = nn.start * seq.ppb - sx;
     if (x < -4 || x > w) continue;

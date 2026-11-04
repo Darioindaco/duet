@@ -7,30 +7,43 @@
 #patSel { min-width: 160px; font-weight: 650; }
 #patPlay.on { background: var(--ok); color: #062012; border-color: transparent; }
 
-/* compact, like FL's channel rack: fixed-size steps instead of stretching over the whole width */
-.chanrows { --stepw: 16px; --steph: 15px; flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 3px; padding-right: 2px; }
-.chan { --c: var(--me); display: grid; grid-template-columns: 184px max-content; gap: 6px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 3px 6px 3px 3px; width: max-content; min-width: 100%; }
-.chan.partner { --c: var(--partner); }
-.chan.sel { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset; }
-.chead { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 1px 4px; cursor: pointer; border-left: 3px solid var(--c); border-radius: 2px; position: sticky; left: 0; background: var(--bg); z-index: 1; }
-.cname { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.cname b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.cname span { font-size: 10px; color: var(--muted); white-space: nowrap; flex: none; }
-.ctools { display: flex; align-items: center; gap: 3px; }
-.ctools .tb { width: 20px; height: 18px; font-size: 9.5px; }
-.ctools .hs { width: 46px; flex: none; height: 18px; }
-.ctools .fxb { height: 18px; padding: 0 5px; border-radius: 5px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--muted); font-size: 9.5px; font-weight: 750; cursor: pointer; }
+/* the channel rack: minimal rows (a dot, the name in a pill), every step on one shared grid:
+   16px steps, 2px apart, 6px more before each bar (RACK in seq.js) */
+.chanrows { --stepw: 16px; --steph: 16px; --headw: 150px; --lblw: 58px; flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 4px; padding: 0 2px 6px 0; }
+.rruler { display: grid; grid-template-columns: calc(var(--headw) + 6px + var(--lblw) + 5px) var(--gridw); position: sticky; top: 0; z-index: 2; background: var(--panel); height: 16px; min-width: max-content; padding-left: 5px; }
+.rrpad { position: sticky; left: 0; background: var(--panel); }
+.rrbars { position: relative; }
+.rrbars span { position: absolute; top: 1px; font: 700 10px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); padding-left: 3px; border-left: 1px solid #ffffff40; line-height: 13px; }
+.chan { --c: var(--me); display: grid; grid-template-columns: var(--headw) max-content; gap: 6px; align-items: center; background: #131118; border: 1px solid transparent; border-radius: 9px; padding: 4px 8px 4px 4px; width: max-content; min-width: 100%; }
+.chan:hover { background: #17151d; }
+.chan.sel { border-color: color-mix(in srgb, var(--c) 55%, transparent); background: color-mix(in srgb, var(--c) 5%, #131118); }
+.chead { display: flex; align-items: center; gap: 6px; padding: 0 2px; position: sticky; left: 0; z-index: 1; background: inherit; align-self: stretch; }
+.chan .chead { background: #131118; }
+.chan:hover .chead { background: #17151d; }
+.chan.sel .chead { background: color-mix(in srgb, var(--c) 5%, #131118); }
+.cdot { flex: none; width: 12px; height: 12px; border-radius: 50%; padding: 0; cursor: pointer; border: 2px solid #4a4555; background: transparent; }
+.cdot.on { border-color: var(--c); background: var(--c); box-shadow: 0 0 6px color-mix(in srgb, var(--c) 60%, transparent); }
+.cdot.solo { outline: 2px solid var(--warn); outline-offset: 2px; }
+.pill { flex: 1; min-width: 0; height: 24px; padding: 0 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--c) 45%, transparent); background: color-mix(in srgb, var(--c) 14%, #1d1a24); color: var(--text); font: 650 12px system-ui, sans-serif; cursor: pointer; text-align: left; }
+.pill span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pill:hover { background: color-mix(in srgb, var(--c) 26%, #1d1a24); }
+.chan.muted .pill { opacity: 0.5; }
+.chead .hs { width: 0; flex: none; height: 18px; opacity: 0; transition: width .12s, opacity .12s; overflow: hidden; }
+.chan:hover .chead .hs, .chead .hs:focus-within { width: 40px; opacity: 1; }
 .cgrid { display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0; }
-.srow { display: grid; grid-template-columns: 62px max-content; gap: 5px; align-items: center; }
-.rname { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.srow { display: grid; grid-template-columns: var(--lblw) max-content; gap: 5px; align-items: center; }
+.rname { font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; text-align: right; }
 .rname:hover { color: var(--text); }
-.cells { display: grid; gap: 2px; }
-.step { width: var(--stepw); height: var(--steph); border-radius: 3px; border: 1px solid #000; cursor: pointer; padding: 0; background: #2b2733; }
-.step.odd { background: #221f29; }
-.step.bar { box-shadow: -2px 0 0 rgba(255,255,255,0.12); }
-.step:hover { filter: brightness(1.35); }
-.step.on { background: var(--c); opacity: calc(0.5 + 0.5 * var(--v, 0.8)); }
+.cells { display: flex; gap: 2px; }
+.step { flex: none; width: var(--stepw); height: var(--steph); border-radius: 3px; border: 0; cursor: pointer; padding: 0; background: #34303e; }
+.step.odd { background: #24212b; }
+.step.bar { margin-left: 6px; }
+.step:hover { filter: brightness(1.4); }
+.step.on { background: var(--c); opacity: calc(0.55 + 0.45 * var(--v, 0.8)); }
+.chan.muted .step.on { opacity: 0.35; }
 .step.now { outline: 2px solid #fff; outline-offset: -2px; }
+.addpad { align-self: flex-start; margin-left: calc(var(--lblw) + 5px); height: 16px; padding: 0 6px; border-radius: 5px; border: 1px dashed var(--line-2); background: none; color: var(--faint); font-size: 10px; cursor: pointer; }
+.addpad:hover { color: var(--text); border-color: var(--muted); }
 .seq-empty { color: var(--faint); font-size: 13px; line-height: 1.6; padding: 14px 6px; }
 .seq-empty b { color: var(--muted); }
 
@@ -60,8 +73,7 @@
 .prvelpad .lanehint { font-size: 9.5px; color: var(--faint); line-height: 1.15; overflow: hidden; }
 #prVel { display: block; border-top: 1px solid var(--line); cursor: ns-resize; }
 #viewSeq { grid-template-rows: 1fr; }
-.ctools .fxb { white-space: nowrap; }
-.minipr { display: block; width: calc(16 * (var(--stepw) + 2px) + 72px); height: 34px; border-radius: 6px; cursor: pointer; }
+.minipr { display: block; height: 34px; border-radius: 4px; cursor: pointer; }
 
 /* chords: the progression panel */
 .prhead .cpbtn { padding: 4px 10px; font-size: 12px; border-radius: 8px; flex: none; }

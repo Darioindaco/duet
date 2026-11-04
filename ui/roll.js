@@ -513,7 +513,7 @@ function ctlDraw(t, sx) {
   const lane = patCtls(p.id, t.id).find((k) => k.cc === cc);
   const d = seq.ctlDrag;
   const pts = d ? d.pts : lanePoints(lane);
-  const col = t.mine ? song.colors.me : song.colors.partner;
+  const col = tColor(t);
   if (!pts.length) {
     ctx.setLineDash([4, 4]);
     ctx.strokeStyle = "rgba(255,255,255,0.18)";

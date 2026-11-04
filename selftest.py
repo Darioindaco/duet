@@ -2422,6 +2422,47 @@ def test_updater():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_colors_names():
+    """Tracks and clips keep a colour and a name of their own (shared, undoable, saved), and a
+    track's order is what the playlist shows."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from daw import Daw, Project
+
+    e = Engine()
+    e.start()
+    root = Path(tempfile.mkdtemp(prefix="duet-colors-"))
+    d = Daw(e, root / "songs", "me")
+    try:
+        d.edit([["track", "ta", {"name": "A", "order": 1.0, "owner": "me", "src": -1}],
+                ["track", "tb", {"name": "B", "order": 2.0, "owner": "me", "src": -1}],
+                ["pattern", "p1", {"name": "Beat", "len": 4.0}],
+                ["clip", "c1", {"track": "ta", "pattern": "p1", "start": 0.0, "blen": 4.0}]])
+        v = d.edit([["track", "ta", {"color": "#5cb8ff"}], ["clip", "c1", {"name": "Intro beat", "color": "#ff6fa8"}]])
+        t = next(x for x in v["tracks"] if x["id"] == "ta")
+        c = next(x for x in v["clips"] if x["id"] == "c1")
+        assert t["color"] == "#5cb8ff" and c["name"] == "Intro beat" and c["color"] == "#ff6fa8", (t, c)
+        # undo takes the clip's name and colour back to unset
+        v = d.undo()
+        c = next(x for x in v["clips"] if x["id"] == "c1")
+        assert c.get("name") is None and c.get("color") is None, c
+        d.redo()
+        # moving B above A (the UI gives it an order between its new neighbours)
+        v = d.edit([["track", "tb", {"order": 0.5}]])
+        assert [x["id"] for x in v["tracks"]][:2] == ["tb", "ta"], v["tracks"]
+        # saved with the song
+        d.save_now()
+        p = Project.load(d.p.folder)
+        assert p.live("track")["ta"]["color"] == "#5cb8ff" and p.live("clip")["c1"]["name"] == "Intro beat"
+    finally:
+        d.close()
+        e.close()
+        shutil.rmtree(root, ignore_errors=True)
+    print("colors and names: ok")
+
+
 def test_ui_names():
     """The page's scripts share one global scope: two top-level functions with the same name in
     different files means the later file's silently replaces the earlier one (that's how the
@@ -2744,7 +2785,8 @@ def test_freeze():
         n_tracks = len(d.view()["tracks"])
         wait_for(lambda: d.view()["rendering"] is None and trk("syn").get("frozen"), timeout=30, what="frozen")
         fz = trk("syn")["frozen"]
-        assert fz["file"] in d.view()["files"] and fz["file"] in d.loaded, fz
+        # (the file loads into the engine in the background: under load it can take a moment)
+        wait_for(lambda: fz["file"] in d.view()["files"] and fz["file"] in d.loaded, timeout=20, what="frozen file loaded")
         assert e.mixer()["tracks"][d.slots["syn"]].get("inst") is None and not e.mixer()["tracks"][d.slots["syn"]]["rack"], \
             "frozen: no instrument or effects running"
         frozen = render()
@@ -2836,6 +2878,7 @@ if __name__ == "__main__":
     test_collab()
     test_talkback()
     test_ui_names()
+    test_colors_names()
     test_updater()
     test_effects_cpu()
     test_two_engines()

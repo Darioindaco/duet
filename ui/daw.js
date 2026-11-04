@@ -113,7 +113,12 @@ function barBeat(bar) {
 const secsBetween = (a, b) => b2s(b) - b2s(a);
 const beatsAfter = (a, secs) => s2b(b2s(a) + secs) - a;
 const trackRow = (tid) => song.view.tracks.findIndex((t) => t.id === tid);
-const tColor = (t) => (t && !t.mine ? song.colors.partner : song.colors.me);
+// colours you can give a track, clip, pattern or mixer strip (hex: drawing adds alpha to them)
+const PALETTE = ["#ff9548", "#ffd166", "#a3e36b", "#4fd6c6", "#5cb8ff", "#8f8cff", "#d78bff", "#ff6fa8", "#ff6b6b", "#b8a99a", "#8e9aaf", "#e8e4ee"];
+const okColor = (c) => typeof c === "string" && /^#[0-9a-f]{6}$/i.test(c);
+// a track's colour: the one it was given, else whose it is (yours or your partner's)
+const tColor = (t) => (t && okColor(t.color) ? t.color : t && !t.mine ? song.colors.partner : song.colors.me);
+const clipColor = (c, t) => (c && okColor(c.color) ? c.color : tColor(t));
 // pattern clips are measured in beats (blen), audio clips in seconds (len)
 const clipBeats = (c) => (c.pattern ? c.blen ?? 4 : beatsAfter(c.start || 0, c.len));
 // the finest grid that's at least 12 px wide at this zoom (bar, beat, ... 1/16)
@@ -494,7 +499,14 @@ function renderHeads() {
     el.dataset.id = t.id;
     el.style.top = rowY(i) + "px";
     el.style.height = rows().h[i] + "px";
-    el.onpointerdown = () => { song.selTrack = t.id; for (const x of box.children) x.classList.toggle("sel", x === el); };
+    el.style.setProperty("--c", tColor(t));
+    el.onpointerdown = (e) => {
+      song.selTrack = t.id; for (const x of box.children) x.classList.toggle("sel", x === el);
+      if (e.button === 0 && !isAuto(t) && !e.target.closest("input, button, select, .hs")) headDrag(e, t, el);
+    };
+    const grip = document.createElement("div");
+    grip.className = "tgrip"; grip.title = isAuto(t) ? "" : "Drag: move the track up or down · Click: colour";
+    el.append(grip);
 
     const name = document.createElement("input");
     name.className = "tn"; name.value = t.name || "Track"; name.spellcheck = false; name.title = "Rename";
@@ -574,6 +586,41 @@ function renderHeads() {
   });
   if (!v.tracks.length) box.innerHTML = `<div class="song-empty">No tracks yet. Add one with <b>+ Track</b>.</div>`;
   hereMarks();
+}
+
+// dragging a track head up or down; a click on the colour strip (no drag) picks its colour
+function headDrag(e, t, el) {
+  const box = $("theadsIn"), y0 = e.clientY;
+  const onGrip = e.target.classList.contains("tgrip");
+  let moving = false, to = null, line = null;
+  const move = (ev) => {
+    if (!moving && Math.abs(ev.clientY - y0) < 5) return;
+    if (!moving) {
+      moving = true; song.headBusy = true; el.classList.add("lifting");
+      line = document.createElement("div"); line.className = "tdropline"; box.append(line);
+    }
+    const y = ev.clientY - box.getBoundingClientRect().top, r = rows(), n = song.view.tracks.length;
+    let k = 0;
+    while (k < n && y > r.y[k] + r.h[k] / 2) k++;
+    to = k;
+    line.style.top = (k < n ? r.y[k] : r.total) - 1 + "px";
+    el.style.transform = `translateY(${ev.clientY - y0}px)`;
+  };
+  const up = () => {
+    removeEventListener("pointermove", move); removeEventListener("pointerup", up);
+    if (!moving) { if (onGrip) trackColorMenu(t, e.clientX, e.clientY); return; }
+    song.headBusy = false; line && line.remove(); el.classList.remove("lifting"); el.style.transform = "";
+    const from = song.view.tracks.findIndex((x) => x.id === t.id);
+    // dropped on the line under row `to`: in the list without this track that's `to`, or one less below it
+    if (to != null && from >= 0 && to !== from && to !== from + 1) moveTrack(t.id, to > from ? to - 1 : to);
+    else renderHeads();
+  };
+  addEventListener("pointermove", move); addEventListener("pointerup", up);
+}
+
+function trackColorMenu(t, x, y) {
+  showCtx([{ colors: t.color, pick: (col) => songEdit([["track", t.id, { color: col }]]) },
+    ["Rename…", "", () => renameTrack(t)]], x, y);
 }
 
 function hslider(value, onChange, title) {
@@ -758,6 +805,7 @@ function emptyTrackFields(name) {
 const lastOrder = () => song.view.tracks.reduce((a, t) => Math.max(a, t.order || 0), 0);
 function clipLabel(c) {
   if (!c) return null;
+  if (c.name) return c.name;
   if (c.pattern) return (song.view.patterns || []).find((p) => p.id === c.pattern)?.name || null;
   const f = song.view.files[c.file], name = ((f && f.name) || c.file || "").replace(/\.[a-z0-9]+$/i, "");
   // a recording is called after the track it was made on (a new track: "Guitar 2")
@@ -776,6 +824,13 @@ function newEmptyTrack(name) {
 function trackMenu(t, x, y) {
   const r = song.view.rendering, busy = !!r;
   const items = [];
+  items.push(["Rename…", "dbl-click name", () => renameTrack(t)]);
+  items.push({ colors: t.color, pick: (col) => songEdit([["track", t.id, { color: col }]]) });
+  if (!t.bus) {
+    const list = song.view.tracks, i = list.findIndex((x) => x.id === t.id);
+    items.push(["Move up", "", () => moveTrack(t.id, i - 1), i <= 0]);
+    items.push(["Move down", "", () => moveTrack(t.id, i + 1), i < 0 || i >= list.length - 1]);
+  }
   if (!t.bus && !t.auto) {
     if (t.frozen) items.push(["Unfreeze (play it live again)", "", () => trackFreeze(t, "unfreeze")]);
     else items.push(["Freeze (play it as audio: light on the computer)", "", () => trackFreeze(t, "freeze"), busy]);
@@ -783,6 +838,41 @@ function trackMenu(t, x, y) {
   }
   items.push([`Automate ${t.name || "this track"}…`, "", () => autoMenu(t.id, x, y)]);
   showCtx(items, x, y);
+}
+
+function renameTrack(t) {
+  const name = prompt("Track name", t.name || "");
+  if (name == null || !name.trim() || name.trim() === t.name) return;
+  songEdit([["track", t.id, { name: name.trim().slice(0, 60) }]]);
+}
+
+// put a track at row `to` (of the playlist's tracks): its order goes between the new neighbours,
+// so only that one track changes (and two people moving different tracks don't clash). Its
+// automation lanes come along, right under it.
+function moveTrack(tid, to) {
+  const all = song.view.tracks, me = all.find((x) => x.id === tid);
+  if (!me) return;
+  const lanes = all.filter((x) => x.auto && x.auto.target === tid);
+  const goes = new Set([tid, ...lanes.map((x) => x.id)]);
+  // `to` counts the rows without this track: map it onto the list without its lanes too
+  const rest = all.filter((x) => x.id !== tid);
+  const at = Math.max(0, Math.min(rest.length, to));
+  const list = all.filter((x) => !goes.has(x.id));
+  const k = rest.slice(0, at).filter((x) => !goes.has(x.id)).length;
+  const before = list[k - 1], after = list[k];
+  const a = before ? before.order ?? 0 : null, b = after ? after.order ?? 0 : null;
+  if (a == null && b == null) return;
+  if (a != null && b != null && !(b - a > 1e-6)) {
+    // no room between them (the same order): number every track again
+    const seqd = [...list.slice(0, k), me, ...lanes, ...list.slice(k)];
+    songEdit(seqd.map((x, i) => ["track", x.id, { order: i + 1 }]));
+    return;
+  }
+  const lo = a ?? b - 1, hi = b ?? a + 1;
+  const n = lanes.length, step = (hi - lo) / (n + 2);
+  const order = lo + step;
+  if (Math.abs(order - (me.order ?? 0)) < 1e-12 && !n) return;
+  songEdit([["track", tid, { order }], ...lanes.map((x, i) => ["track", x.id, { order: order + step * (i + 1) }])]);
 }
 
 async function trackFreeze(t, mode) {
@@ -890,7 +980,7 @@ function songDraw() {
     for (let b = 0; b < Math.min(len, step > len ? len : 1e9) - 1e-9; b += Math.min(step, len)) {
       const x = Math.round((at + b) * ppb - sx) + 0.5;
       const beat = at + b;
-      ctx.fillStyle = b === 0 ? "rgba(255,255,255,0.10)" : Math.abs(b - Math.round(b)) < 1e-6 ? "rgba(255,255,255,0.045)" : "rgba(255,255,255,0.02)";
+      ctx.fillStyle = b === 0 ? "rgba(255,255,255,0.17)" : Math.abs(b - Math.round(b)) < 1e-6 ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.02)";
       ctx.fillRect(x - 0.5, 0, 1, Math.max(0, rowsH));
       if (beat > (sx + w) / ppb) break;
     }
@@ -947,7 +1037,7 @@ const stretching = (c) => !!(((c.stretch && (Math.abs((c.speed ?? 1) - 1) > 1e-4
 
 function drawClip(ctx, c, x, y, w, h, track) {
   if (c.pattern) { drawPatternClip(ctx, c, x, y, w, h); return; }
-  const col = tColor(track), sel = song.sel.has(c.id);
+  const col = clipColor(c, track), sel = song.sel.has(c.id);
   const r = 6;
   ctx.save();
   if (c.mute || c._erasing) ctx.globalAlpha = 0.35; // muted (or being erased): still there, greyed
@@ -1030,7 +1120,7 @@ function drawClip(ctx, c, x, y, w, h, track) {
   ctx.fillStyle = "#121016";
   ctx.font = "700 10.5px system-ui, sans-serif";
   const g = c.gain ?? 1;
-  const label = (track ? track.name : "Clip") + (c.mute ? "  (muted)" : Math.abs(g - 1) > 0.001 ? `  ${fmtDb(g)}` : "") + clipBadges(c);
+  const label = (c.name || (track ? track.name : "Clip")) + (c.mute ? "  (muted)" : Math.abs(g - 1) > 0.001 ? `  ${fmtDb(g)}` : "") + clipBadges(c);
   ctx.fillText(label, Math.max(x, 0) + 6, y + 11);
   // being split into stems
   const sj = song.st && song.st.stems && song.st.stems.job;
@@ -1060,7 +1150,7 @@ function drawClip(ctx, c, x, y, w, h, track) {
 // a pattern block: its name and a sketch of its notes, repeated to fill it
 function drawPatternClip(ctx, c, x, y, w, h) {
   const p = (song.view.patterns || []).find((q) => q.id === c.pattern);
-  const col = patColor(c.pattern), sel = song.sel.has(c.id);
+  const col = okColor(c.color) ? c.color : patColor(c.pattern), sel = song.sel.has(c.id);
   ctx.save();
   ctx.beginPath();
   ctx.roundRect(x + 0.5, y + 0.5, Math.max(2, w - 1), h - 1, 6);
@@ -1095,7 +1185,7 @@ function drawPatternClip(ctx, c, x, y, w, h) {
   }
   ctx.fillStyle = "#121016";
   ctx.font = "700 10.5px system-ui, sans-serif";
-  ctx.fillText((p ? p.name || "Pattern" : "(pattern gone)") + (Math.abs((c.gain ?? 1) - 1) > 0.001 ? `  ${fmtDb(c.gain ?? 1)}` : ""), Math.max(x, 0) + 6, y + 11);
+  ctx.fillText((c.name || (p ? p.name || "Pattern" : "(pattern gone)")) + (Math.abs((c.gain ?? 1) - 1) > 0.001 ? `  ${fmtDb(c.gain ?? 1)}` : ""), Math.max(x, 0) + 6, y + 11);
   drawFadesAndGain(ctx, c, x, y, w, h);
   ctx.restore();
   ctx.beginPath();
@@ -1716,6 +1806,8 @@ function lanesContext(e) {
     if (!song.sel.has(c.id)) { song.sel.clear(); song.sel.add(c.id); songDraw(); }
     const at = snapBeat(p.beat, snapFor(e));
     const n = song.sel.size;
+    items.push([n > 1 ? `Rename ${n} clips…` : "Rename…", "", () => renameClips(c)]);
+    items.push({ colors: c.color, pick: (col) => songEdit(selClips().map((k) => ["clip", k.id, { color: col }])) });
     items.push(["Split here", "S", () => splitClips(at > c.start && at < c.start + clipBeats(c) ? at : p.beat, selClips())]);
     items.push([n > 1 ? `Duplicate ${n} clips` : "Duplicate", "Ctrl+D", duplicateSel]);
     items.push(["Copy", "Ctrl+C", () => copySel()]);
@@ -1744,6 +1836,12 @@ function lanesContext(e) {
   showCtx(items, e.clientX, e.clientY);
 }
 
+function renameClips(c) {
+  const name = prompt("Clip name (empty: the usual name)", c.name || clipLabel({ ...c, name: null }) || "");
+  if (name == null) return;
+  songEdit(selClips().map((k) => ["clip", k.id, { name: name.trim().slice(0, 60) || null }]));
+}
+
 function showCtx(items, x, y) {
   const m = $("ctxMenu");
   m.innerHTML = "";
@@ -1758,6 +1856,21 @@ function showCtx(items, x, y) {
         for (const k of selClips()) { k.gain = g; throttledEdit("clip", k.id, { gain: g }); }
         songDraw();
       }, "Clip volume (double-click: 0 dB)"));
+      m.append(row);
+      continue;
+    }
+    if (!Array.isArray(it) && "colors" in it) {
+      // a row of colours (the first: back to the usual one)
+      const row = document.createElement("div");
+      row.className = "cswatch";
+      for (const col of [null, ...PALETTE]) {
+        const b = document.createElement("button");
+        b.className = "sw" + ((col || null) === (it.colors || null) ? " on" : "") + (col ? "" : " none");
+        if (col) b.style.background = col;
+        b.title = col ? "Colour" : "The usual colour";
+        b.onclick = () => { hideCtx(); it.pick(col); };
+        row.append(b);
+      }
       m.append(row);
       continue;
     }
@@ -2356,6 +2469,7 @@ function demoSong() {
         while (used.has(free)) free++;
         if (o) Object.assign(o, f); else list.push({ id, ...f, mine: f.owner === me, slot: free });
       }
+      view.tracks.sort((a, b) => (a.order ?? 0) - (b.order ?? 0)); // (like daw.py's view)
       v++; return copy();
     },
     daw_mode: async (m) => { view.mode = m; v++; return copy(); },

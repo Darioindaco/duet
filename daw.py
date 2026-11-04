@@ -61,7 +61,7 @@ FIELDS = {
     # "master", "param": "vol" | "pan" | "fx:<pos>:<kind>:<knob>" | "inst:<knob>"}),
     # its points [[beat, value 0..1], ...]
     "track": {"name", "order", "owner", "src", "arm", "vol", "pan", "rack", "inst", "seq", "bus", "out", "sends",
-              "auto", "points", "frozen", "del"},
+              "auto", "points", "frozen", "color", "del"},
     # speed (2 = twice as fast), pitch (semitones), stretch (keep the pitch
     # when the speed changes; off = tape), reverse (the clip's stretch of the
     # file backwards). offset is in seconds of the file, len on the timeline.
@@ -71,7 +71,10 @@ FIELDS = {
              "speed", "pitch", "stretch", "reverse", "mute", "tune", "group", "take", "tsrc",
              # once: a pattern block that plays its pattern once instead of round and round;
              # loop: an audio clip that repeats every `loop` seconds of the timeline (unset: no)
-             "once", "loop", "fade_in_curve", "fade_out_curve", "del"},
+             "once", "loop", "fade_in_curve", "fade_out_curve",
+             # name / color: what the clip is called and its colour in the playlist (unset: the
+             # file's or pattern's name, the track's colour)
+             "name", "color", "del"},
     "file": {"frames", "sr", "owner", "name", "del"},
     # len: how long it is to write in; base: how long one round is when a block loops (unset: len)
     "pattern": {"name", "len", "base", "color", "del"},
@@ -89,12 +92,12 @@ FIELDS = {
 FIELD_DEFAULTS = {
     "meta": META_DEFAULTS,
     "track": {"arm": False, "vol": 0.8, "pan": 0.0, "rack": [], "src": 0, "inst": None, "seq": None,
-              "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "frozen": None, "del": False},
+              "bus": False, "out": None, "sends": {}, "auto": None, "points": [], "frozen": None, "color": None, "del": False},
     "clip": {"gain": 1.0, "offset": 0.0, "boff": 0.0, "fade_in": 0.0, "fade_out": 0.0, "speed": 1.0, "pitch": 0.0,
              "stretch": False, "reverse": False, "mute": False, "tune": None, "group": None, "take": None,
-             "tsrc": False, "once": False, "loop": None, "del": False},
+             "tsrc": False, "once": False, "loop": None, "name": None, "color": None, "del": False},
     "file": {"del": False},
-    "pattern": {"del": False},
+    "pattern": {"color": None, "del": False},
     "note": {"vel": 100, "mute": False, "del": False},
     "ctl": {"points": [], "del": False},
     "marker": {"color": None, "section": False, "del": False},
