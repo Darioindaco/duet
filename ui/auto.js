@@ -29,7 +29,7 @@ function autoParams(target) {
   out.push(["vol", "Volume", faderPos(t.vol ?? 0.8)], ["pan", "Pan", ((t.pan ?? 0) + 1) / 2]);
   (t.rack || []).forEach((slot, i) => fxParams(slot, i, out, strip));
   const meta = t.inst && INST[t.inst.kind];
-  if (meta) for (const [key, label] of meta.knobs) out.push([`inst:${key}`, `${meta.name} · ${label}`, t.inst[key] ?? INST_DEFAULTS[t.inst.kind]?.[key] ?? 0.5]);
+  if (meta) for (const [key, label] of instKnobList(meta)) out.push([`inst:${key}`, `${meta.name} · ${label}`, t.inst[key] ?? INST_DEFAULTS[t.inst.kind]?.[key] ?? 0.5]);
   // a plugin instrument's own parameters
   if (t.inst?.kind === "vst" && strip) for (const p of pluginParams(strip, -1) || []) out.push([`inst:p${p.id}`, `${t.inst.vst?.name || "Instrument"} · ${p.name}`, p.value]);
   return out;
@@ -294,7 +294,7 @@ function autoFmt(t, v) {
   if (p === "vol") return fmtDb(faderGain(v));
   if (p === "pan") return fmtPan(2 * v - 1);
   const knobs = p.startsWith("fx:") ? FX.find((f) => f.id === p.split(":")[2])?.knobs
-    : (() => { const tr = song.view.tracks.find((x) => x.id === a.target); return tr?.inst && INST[tr.inst.kind]?.knobs; })();
+    : (() => { const tr = song.view.tracks.find((x) => x.id === a.target); return tr?.inst && INST[tr.inst.kind] && instKnobList(INST[tr.inst.kind]); })();
   const key = p.split(":").pop(), k = (knobs || []).find((x) => x[0] === key);
   return k && k[2] ? k[2](v) : Math.round(v * 100) + "%";
 }

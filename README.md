@@ -800,6 +800,17 @@ as usual, and a song track set to that strip records it.
   *Strings*, *Chip lead*, *Noise riser*), and *Save sound…* keeps your own (on
   this computer). The sustain pedal works. Songs made with the old synth and kit
   still load (their knobs keep their names).
+- **Sampler** (built in): one sound played at every pitch (the *root* key plays
+  it as it is), 16 voices. Its waveform shows where it plays: drag **S** and
+  **E** for the start and end, and with **Loop** on the two **L** markers for
+  the loop, which keeps going while the note sounds (release too); *Loop fade*
+  crossfades the seam so it doesn't click (the shaded bit before the loop's end).
+  Double-click a marker to put it back. **Reverse** plays from E back to S;
+  **One-shot** plays a hit to its end whatever the note's length. An ADSR for
+  the level, a low-pass **filter** with its own envelope, key tracking and
+  velocity, an **LFO** (vibrato, filter, tremolo), glide, **mono / legato**,
+  velocity and pan. Every knob can be automated. Songs made with the old
+  sampler sound as they did (its knobs kept their names and curves).
 - **VST3 instruments**: the instruments in your VST3 folder; *Open window* shows
   their own controls. Like VST effects in a song, your partner only needs the
   plugin for a song track's effects, not to hear you play it live.
@@ -883,7 +894,8 @@ to it through lock-free queues and atomics.
 | `engine/src/fx.rs` | FX racks (stereo): EQ, compressor with sidechain, look-ahead limiter, overdrive, chorus, tremolo, delay, Freeverb, NAM amp (nam-rs) |
 | `engine/src/net.rs` | Packet format, connect codes, STUN |
 | `engine/src/signal.rs` | Reliable side channel for the video call setup |
-| `engine/src/instr.rs` | Instruments: kinds, knobs, the sampler, VST3 instruments (notes in) |
+| `engine/src/instr.rs` | Instruments: kinds, knobs, VST3 instruments (notes in) |
+| `engine/src/sampler.rs` | The sampler: start/end, loop with crossfade, reverse, envelopes, filter, LFO, glide |
 | `engine/src/drums.rs` | The drum kit, synthesized as it plays: four kits, five knobs per pad |
 | `engine/src/synth.rs` | The synth: two oscillators, sub, noise, unison, filter with envelope, LFO, glide, mono |
 | `engine/src/midi.rs` | MIDI keyboards (midir), on a thread of their own |

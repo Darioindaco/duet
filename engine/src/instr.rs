@@ -38,19 +38,10 @@ pub const PARAMS: [&[&str]; 4] = [
     &crate::synth::NAMES,
     &[],
     // root: the key that plays the sample as it is (0.5 = C4); oneshot: play to
-    // the end whatever the note's length (drum hits)
-    &["level", "tune", "attack", "release", "root", "oneshot"],
+    // the end whatever the note's length (drum hits); the rest: see sampler.rs
+    &crate::sampler::NAMES,
 ];
-pub const DEFAULTS: [[f32; N_PARAMS]; 4] = [crate::drums::defaults(), crate::synth::defaults(), [0.0; N_PARAMS], sampler_defaults()];
-
-const fn sampler_defaults() -> [f32; N_PARAMS] {
-    let mut p = [0f32; N_PARAMS];
-    p[0] = 0.8;
-    p[1] = 0.5;
-    p[3] = 0.15;
-    p[4] = 0.5;
-    p
-}
+pub const DEFAULTS: [[f32; N_PARAMS]; 4] = [crate::drums::defaults(), crate::synth::defaults(), [0.0; N_PARAMS], crate::sampler::defaults()];
 
 /// A built-in drum sound, as a sample (the Browser's "Duet sounds").
 pub fn drum_sound(i: usize, sr: f32) -> Vec<f32> {
@@ -158,119 +149,7 @@ impl InstSlot {
     }
 }
 
-// --- the sampler --------------------------------------------------------------------
-
-struct SmpVoice {
-    key: u8,
-    pos: f64,
-    step: f64,
-    gain: f32,
-    env: f32,
-    on: bool,
-    held: bool,
-}
-
-/// One sample (mono or stereo) played at each note's pitch: the root key
-/// plays it as it is, an octave up twice as fast. 16 voices.
-pub struct Sampler {
-    l: Vec<f32>,
-    r: Option<Vec<f32>>,
-    voices: Vec<SmpVoice>,
-    sr: f32,
-    sustain: bool,
-}
-
-const SAMPLER_VOICES: usize = 16;
-
-impl Sampler {
-    pub fn new(sr: f32, path: Option<String>) -> (Sampler, Option<String>) {
-        let mut s = Sampler { l: vec![], r: None, voices: Vec::with_capacity(SAMPLER_VOICES), sr, sustain: false };
-        let Some(path) = path else { return (s, None) };
-        match crate::decode::read_audio(std::path::Path::new(&path)) {
-            Ok(a) => {
-                s.l = crate::daw::resample(&a.samples, a.sr, sr as u32);
-                s.r = a.right.as_ref().map(|r| crate::daw::resample(r, a.sr, sr as u32));
-                (s, None)
-            }
-            Err(e) => (s, Some(e)),
-        }
-    }
-}
-
-impl Instrument for Sampler {
-    fn note(&mut self, ev: NoteEv) {
-        match ev {
-            NoteEv::On(key, vel) => {
-                if self.voices.len() >= SAMPLER_VOICES {
-                    self.voices.remove(0); // (capacity is reserved: no allocation)
-                }
-                let g = vel as f32 / 127.0;
-                self.voices.push(SmpVoice { key, pos: 0.0, step: 0.0, gain: g * g, env: 0.0, on: true, held: false });
-            }
-            NoteEv::Off(key) => {
-                for v in self.voices.iter_mut().filter(|v| v.key == key && v.on) {
-                    if self.sustain { v.held = true } else { v.on = false }
-                }
-            }
-            NoteEv::Sustain(down) => {
-                self.sustain = down;
-                if !down {
-                    for v in self.voices.iter_mut().filter(|v| v.held) {
-                        v.held = false;
-                        v.on = false;
-                    }
-                }
-            }
-            NoteEv::Release => {
-                self.sustain = false;
-                for v in self.voices.iter_mut() {
-                    v.on = false;
-                }
-            }
-            NoteEv::AllOff => self.voices.clear(),
-            NoteEv::Cc(..) | NoteEv::Bend(_) => {}
-        }
-    }
-
-    fn process(&mut self, p: &[f32; N_PARAMS], out_l: &mut [f32], out_r: &mut [f32]) {
-        out_l.fill(0.0);
-        out_r.fill(0.0);
-        if self.l.len() < 2 {
-            self.voices.clear();
-            return;
-        }
-        let level = p[0] * p[0] * 1.6;
-        let tune = (p[1] - 0.5) * 24.0; // ±12 semitones
-        let attack = 0.0005 + 0.5 * p[2] * p[2]; // up to 0.5 s
-        let release = 0.005 + 3.0 * p[3] * p[3]; // up to 3 s
-        let root = 60.0 + ((p[4] - 0.5) * 72.0).round(); // C1 .. C7
-        let oneshot = p[5] >= 0.5;
-        let a_step = 1.0 / (attack * self.sr);
-        let r_mul = (-1.0 / (release * self.sr)).exp();
-        let n = self.l.len();
-        let right = self.r.as_ref().unwrap_or(&self.l);
-        for v in self.voices.iter_mut() {
-            v.step = 2f64.powf((v.key as f64 - root as f64 + tune as f64) / 12.0);
-            for (ol, or) in out_l.iter_mut().zip(out_r.iter_mut()) {
-                let i = v.pos as usize;
-                if i + 1 >= n {
-                    v.env = 0.0;
-                    break;
-                }
-                let t = (v.pos - i as f64) as f32;
-                let xl = self.l[i] + (self.l[i + 1] - self.l[i]) * t;
-                let xr = right[i] + (right[i + 1] - right[i]) * t;
-                let playing = v.on || oneshot;
-                v.env = if playing { (v.env + a_step).min(1.0) } else { v.env * r_mul };
-                let g = v.gain * level * v.env;
-                *ol += xl * g;
-                *or += xr * g;
-                v.pos += v.step;
-            }
-        }
-        self.voices.retain(|v| v.env > 1e-4 || (v.on && v.pos < 1.0));
-    }
-}
+pub use crate::sampler::Sampler;
 
 // --- a VST3 instrument -------------------------------------------------------------------
 

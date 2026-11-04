@@ -69,3 +69,10 @@
 .pad.edited::after { content: ""; position: absolute; right: 5px; top: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--c); }
 .synsec.mono { grid-column: span 12; flex-direction: row; justify-content: center; gap: 18px; }
 .synsec.mono .synt { align-self: center; }
+/* the sampler */
+.smpsw .mb.on { border-color: var(--c); color: #fff; background: color-mix(in srgb, var(--c) 30%, transparent); }
+.smpwave { display: block; width: 100%; height: 86px; border-radius: 8px; border: 1px solid var(--line); cursor: ew-resize; margin: 6px 0 8px; }
+.smpsecs .synsec:nth-child(n) { grid-column: span 6; }
+.smpsecs .synsec:nth-child(1) { grid-column: span 4; }
+.smpsecs .synsec:nth-child(2) { grid-column: span 8; }
+.smpwave { width: 100%; }

@@ -18,6 +18,7 @@ mod plugins;
 mod plugins2;
 mod plugins3;
 mod pool;
+mod sampler;
 mod sandbox;
 mod livenotes;
 mod analyzer;

@@ -1238,6 +1238,18 @@ def test_library():
             for _ in range(20):
                 out += bb.process([0.0] * N)
             assert max(abs(v) for v in out) > 0.1, "the sampler plays its sample"
+            # the sampler's own knobs reach the engine by name: start at the very end plays nothing
+            bb.note(f"T{slot}", False, 60, 0)
+            for _ in range(200):
+                bb.process([0.0] * N)
+            bb.inst_param(f"T{slot}", "start", 0.999)
+            bb.inst_param(f"T{slot}", "oneshot", 1.0)
+            bb.note(f"T{slot}", True, 60, 120)
+            out = []
+            for _ in range(20):
+                out += bb.process([0.0] * N)
+            assert max(abs(v) for v in out) < 0.05, "start at the end: (almost) nothing"
+            bb.inst_param(f"T{slot}", "start", 0.0)
             print("library: ok  (built-in sounds, folders, import, search, nested bins; a clip, a sampler channel and a pad "
                   "reach the partner and play)")
         finally:

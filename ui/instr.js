@@ -40,10 +40,23 @@ const INST = {
         ["level", "Level", pctF]], "mono"],
     ] },
   vst: { name: "VST instrument", sub: "VST3", color: "#9fb4ff", knobs: [] },
-  sampler: { name: "Sampler", sub: "one sound, every pitch", color: "#ffb347",
-    knobs: [["level", "Level", pctF], ["tune", "Tune", semiF(24)],
-      ["attack", "Attack", (v) => fmtSecs(0.0005 + 0.5 * v * v)], ["release", "Release", (v) => fmtSecs(0.005 + 3 * v * v)],
-      ["root", "Root", (v) => noteName(60 + Math.round((v - 0.5) * 72))], ["oneshot", "One-shot", (v) => (v >= 0.5 ? "on" : "off")]] },
+  // (sampler.rs: the first knobs are the old sampler's, with its curves)
+  sampler: { name: "Sampler", sub: "one sound, every pitch", color: "#ffb347", knobs: [],
+    sections: [
+      ["Sample", [["tune", "Tune", semiF(24)], ["root", "Root", (v) => noteName(60 + Math.round((v - 0.5) * 72))],
+        ["xfade", "Loop fade", pctF]]],
+      ["Amp envelope", [["attack", "A", (v) => fmtSecs(0.0005 + 0.5 * v * v)], ["decay", "D", (v) => fmtSecs(synDecay(v))],
+        ["sustain", "S", pctF], ["release", "R", (v) => fmtSecs(0.005 + 3 * v * v)]], "aenv"],
+      ["Filter", [["cutoff", "Cutoff", (v) => (v >= 0.999 ? "open" : hzF(60 * 2 ** (v * 8.4)))], ["resonance", "Reso", pctF],
+        ["env_amt", "Env", (v) => { const o = (v - 0.5) * 12; return (o > 0.05 ? "+" : "") + o.toFixed(1) + " oct"; }],
+        ["key_track", "Key", pctF], ["vel_filter", "Vel", pctF]]],
+      ["Filter envelope", [["f_attack", "A", (v) => fmtSecs(synAttack(v))], ["f_decay", "D", (v) => fmtSecs(synDecay(v))],
+        ["f_sustain", "S", pctF], ["f_release", "R", (v) => fmtSecs(synRelease(v))]], "fenv"],
+      ["LFO", [["lfo_rate", "Rate", (v) => hzF(0.05 * 2 ** (v * 8))], ["lfo_pitch", "Vibrato", (v) => (v * v * 2).toFixed(2) + " st"],
+        ["lfo_filter", "Filter", (v) => (v * 3).toFixed(1) + " oct"], ["lfo_amp", "Tremolo", pctF]]],
+      ["Play", [["glide", "Glide", (v) => (v < 0.001 ? "off" : fmtSecs(v * v))], ["velocity", "Velocity", pctF],
+        ["pan", "Pan", (v) => (Math.abs(v - 0.5) < 0.01 ? "C" : (v < 0.5 ? "L" : "R") + Math.round(Math.abs(v - 0.5) * 200))], ["level", "Level", pctF]]],
+    ] },
 };
 // the engine's defaults (drums.rs, synth.rs, instr.rs)
 const SYNTH_DEFAULTS = { wave: 0.3, cutoff: 0.55, resonance: 0.25, attack: 0.05, release: 0.3, detune: 0.2, decay: 0.5, sustain: 1, osc2: 0.5,
@@ -53,7 +66,11 @@ const DRUM_PAN = { 42: 0.62, 44: 0.62, 46: 0.62, 49: 0.64, 51: 0.36, 41: 0.36, 4
 const DRUM_DEFAULTS = { level: 0.8, tune: 0.5, decay: 0.5, kit: 0.6, drive: 0.2 };
 Array.from({ length: 16 }, (_, i) => 36 + i).forEach((n, i) => Object.assign(DRUM_DEFAULTS, { [`p${i}_tune`]: 0.5, [`p${i}_decay`]: 0.5, [`p${i}_tone`]: 0.5, [`p${i}_level`]: 0.8, [`p${i}_pan`]: DRUM_PAN[n] ?? 0.5 }));
 const INST_DEFAULTS = { drums: DRUM_DEFAULTS, synth: SYNTH_DEFAULTS,
-  sampler: { level: 0.8, tune: 0.5, attack: 0, release: 0.15, root: 0.5, oneshot: 0 } };
+  sampler: { level: 0.8, tune: 0.5, attack: 0, release: 0.15, root: 0.5, oneshot: 0, start: 0, end: 1, loop: 0, loop_start: 0, loop_end: 1,
+    xfade: 0.1, reverse: 0, decay: 0.5, sustain: 1, cutoff: 1, resonance: 0.1, env_amt: 0.5, f_attack: 0, f_decay: 0.5, f_sustain: 1, f_release: 0.3,
+    lfo_rate: 0.45, lfo_pitch: 0, lfo_filter: 0, lfo_amp: 0, glide: 0, mono: 0, velocity: 1, vel_filter: 0, pan: 0.5, key_track: 0 } };
+// every knob of an instrument (the synth and sampler keep theirs in sections), for automation
+const instKnobList = (meta) => [...(meta.knobs || []), ...(meta.sections || []).flatMap((s) => s[1])];
 function fmtSecs(s) { return s < 1 ? Math.round(s * 1000) + " ms" : s.toFixed(1) + " s"; }
 
 // factory sounds for the synth: what each changes from the defaults
@@ -261,7 +278,7 @@ function instPanel(t, inst) {
   if (inst.error) body.insertAdjacentHTML("beforeend", `<div class="mnote bad">${esc(inst.error)}</div>`);
   if (inst.kind === "drums") body.append(drumBody(t, inst));
   if (inst.kind === "synth") body.append(synthBody(t, inst));
-  if (inst.kind === "sampler") body.append(samplerBox(t, inst));
+  if (inst.kind === "sampler") body.append(samplerBox(t, inst), samplerBody(t, inst));
   if (inst.kind === "vst") {
     const open = document.createElement("button");
     open.className = "openwin";
@@ -303,6 +320,125 @@ function samplerBox(t, inst) {
     if (res && res.error) toast(res.error, true); else await rackChanged(res);
   };
   return box;
+}
+
+// ---------- the sampler: where it plays, and how ----------
+const smpInfo = {}; // path -> lib_info (frames, sr, peaks)
+
+function samplerBody(t, inst) {
+  const v = (k) => inst[k] ?? INST_DEFAULTS.sampler[k];
+  const set = (k, x, save = true) => { inst[k] = x; api.inst_param(t, k, x); if (save) saveMixer(); };
+  const wrap = document.createElement("div");
+  wrap.className = "synb smpb";
+  // the switches
+  const bar = document.createElement("div");
+  bar.className = "synbar smpsw";
+  const sw = (key, label, title) => {
+    const b = document.createElement("button");
+    b.className = "mb" + (v(key) >= 0.5 ? " on" : "");
+    b.textContent = label; b.title = title; b.dataset.key = key;
+    b.onclick = () => { set(key, v(key) >= 0.5 ? 0 : 1); b.classList.toggle("on", v(key) >= 0.5); draw(); };
+    return b;
+  };
+  bar.append(sw("loop", "Loop", "Loop between the two loop markers while the note sounds (release too)"),
+    sw("reverse", "Reverse", "Play it backwards (from the end marker to the start marker)"),
+    sw("oneshot", "One-shot", "Play to the end whatever the note's length (drum hits); no loop"),
+    sw("mono", "Mono / legato", "One note at a time; a new key while one is held slides there (with Glide) without starting again"));
+  wrap.append(bar);
+  // the waveform, with its markers to drag
+  const cv = document.createElement("canvas");
+  cv.className = "smpwave";
+  cv.title = "Drag the markers: S and E where it plays, the loop's two (with Loop on). Double-click a marker: back to where it was";
+  wrap.append(cv);
+  const path = inst.pads?.[0];
+  const MARKS = [["start", "S", "#e8e4ee"], ["end", "E", "#e8e4ee"], ["loop_start", "L", "#4fd6c6"], ["loop_end", "L", "#4fd6c6"]];
+  const shown = () => MARKS.filter(([k]) => !k.startsWith("loop") || v("loop") >= 0.5);
+  function draw() {
+    // (as wide as the panel: the canvas's own width is what the last draw set)
+    const w = Math.max(200, (cv.parentElement && cv.parentElement.clientWidth) || 420), h = 86;
+    const ctx = sizeCanvas(cv, w, h);
+    ctx.fillStyle = "#0e0d12"; ctx.fillRect(0, 0, w, h);
+    const info = path && smpInfo[path];
+    const col = INST.sampler.color;
+    if (info && info.peaks) {
+      if (!info.pk) info.pk = decodePeaks(info.peaks);
+      const pk = info.pk, n = pk.length / 2;
+      for (let x = 0; x < w; x++) {
+        const i0 = Math.floor(x / w * n), i1 = Math.max(i0 + 1, Math.floor((x + 1) / w * n));
+        let lo = 0, hi = 0;
+        for (let i = i0; i < i1; i++) { lo = Math.min(lo, pk[2 * i]); hi = Math.max(hi, pk[2 * i + 1]); }
+        const f = x / w, inside = f >= Math.min(v("start"), v("end")) && f <= Math.max(v("start"), v("end"));
+        ctx.fillStyle = inside ? col : "#4a4555";
+        const top = h / 2 - hi / 127 * (h / 2 - 4), bot = h / 2 - lo / 127 * (h / 2 - 4);
+        ctx.fillRect(x, top, 1, Math.max(1, bot - top));
+      }
+    } else {
+      ctx.fillStyle = "#5f586b"; ctx.font = "600 11px system-ui, sans-serif";
+      ctx.fillText(path ? (info && info.error) || "Reading the sound…" : "Load a sample to see it here", 10, h / 2 + 4);
+    }
+    // outside start..end: dark
+    const a = Math.min(v("start"), v("end")) * w, b = Math.max(v("start"), v("end")) * w;
+    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(0, 0, a, h); ctx.fillRect(b, 0, w - b, h);
+    if (v("loop") >= 0.5 && v("oneshot") < 0.5) {
+      const la = Math.min(v("loop_start"), v("loop_end")) * w, lb = Math.max(v("loop_start"), v("loop_end")) * w;
+      ctx.fillStyle = "rgba(79,214,198,0.12)"; ctx.fillRect(la, 0, lb - la, h);
+      // the crossfade before the loop's end
+      const xf = Math.min(v("xfade") * 0.5 * (lb - la), la);
+      if (xf > 1) { ctx.fillStyle = "rgba(79,214,198,0.22)"; ctx.fillRect(lb - xf, 0, xf, h); }
+    }
+    if (v("reverse") >= 0.5) { ctx.fillStyle = "#e8e4ee"; ctx.font = "700 10px system-ui"; ctx.textAlign = "center"; ctx.fillText("◀ reversed", w / 2, h - 5); ctx.textAlign = "left"; }
+    for (const [k, lbl, c] of shown()) {
+      const x = Math.round(v(k) * w) + 0.5;
+      ctx.fillStyle = c; ctx.fillRect(x - 0.5, 0, 1.5, h);
+      ctx.beginPath();
+      const top = k.startsWith("loop");
+      ctx.roundRect(Math.min(w - 13, Math.max(0, x - 6)), top ? h - 14 : 0, 13, 14, 3); ctx.fill();
+      ctx.fillStyle = "#121016"; ctx.font = "800 9px system-ui"; ctx.fillText(lbl, Math.min(w - 10, Math.max(3, x - 3)), top ? h - 4 : 10);
+    }
+  }
+  cv.onpointerdown = (e) => {
+    const r = cv.getBoundingClientRect(), f = (ev) => Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+    const at = f(e);
+    // the nearest marker (within a few pixels): start, end or the loop's
+    let best = null, d = 10 / r.width;
+    for (const [k] of shown()) if (Math.abs(v(k) - at) < d) { best = k; d = Math.abs(v(k) - at); }
+    if (!best) return;
+    cv.setPointerCapture(e.pointerId);
+    cv.onpointermove = (ev) => { set(best, f(ev), false); draw(); };
+    cv.onpointerup = () => { cv.onpointermove = cv.onpointerup = null; saveMixer(); };
+  };
+  cv.ondblclick = (e) => {
+    const r = cv.getBoundingClientRect(), at = (e.clientX - r.left) / r.width;
+    for (const [k] of shown()) if (Math.abs(v(k) - at) < 10 / r.width) { set(k, INST_DEFAULTS.sampler[k]); draw(); return; }
+  };
+  requestAnimationFrame(draw);
+  if (path && !smpInfo[path]) api.lib_info(path).then((i) => { smpInfo[path] = i || { error: "Can't read it" }; draw(); });
+  // the knobs, in sections like the synth's
+  const grid = document.createElement("div");
+  grid.className = "synsecs smpsecs";
+  const envs = {};
+  const redraw = () => {
+    if (envs.aenv) envs.aenv.setAttribute("d", envPath(0.0005 + 0.5 * v("attack") ** 2, synDecay(v("decay")), v("sustain"), 0.005 + 3 * v("release") ** 2));
+    if (envs.fenv) envs.fenv.setAttribute("d", envPath(synAttack(v("f_attack")), synDecay(v("f_decay")), v("f_sustain"), synRelease(v("f_release"))));
+    draw();
+  };
+  for (const [title, knobs, extra] of INST.sampler.sections) {
+    const sec = document.createElement("div");
+    sec.className = "synsec" + (extra ? " " + extra : "");
+    sec.innerHTML = `<div class="synt">${esc(title)}</div>`;
+    if (extra) {
+      sec.insertAdjacentHTML("beforeend", `<svg class="envsvg" width="132" height="34" viewBox="0 0 132 34"><path fill="none" stroke-width="2" stroke-linejoin="round"/></svg>`);
+      envs[extra] = sec.querySelector("path");
+    }
+    const row = document.createElement("div");
+    row.className = "knobs";
+    for (const [key, label, fmt] of knobs) row.append(instKnob(t, inst, key, label, fmt, redraw));
+    sec.append(row);
+    grid.append(sec);
+  }
+  wrap.append(grid);
+  redraw();
+  return wrap;
 }
 
 // one of an instrument's knobs; `then` runs after every change (to redraw what depends on it)
