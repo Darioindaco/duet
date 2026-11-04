@@ -464,3 +464,49 @@ function eqCurve(slot, color) {
   requestAnimationFrame(cv.redraw);
   return cv;
 }
+
+// ---------- saved mixes ----------
+// The mixer's state (levels, pans, sends, outputs, effects of every track and bus, and the
+// master's effects) kept under a name in the song, for both of you. Recall one to hear it; it's one
+// undo step, so Ctrl+Z is "back to how it was": that's A/B.
+const mixes = { last: null };
+
+function mixesMenu(e) {
+  const list = (song.view && song.view.meta.mixes) || [];
+  const r = (e.currentTarget || e.target).getBoundingClientRect();
+  const items = [["Save the mix as…", "", mixSave]];
+  for (const m of list) {
+    items.push([(m.id === mixes.last ? "● " : "") + (m.name || "Mix"), m.by === song.view.me ? "" : "partner's", () => mixRecall(m)]);
+  }
+  if (list.length) items.push(["Rename, update or delete…", "", () => mixManage(r)]);
+  showCtx(items, r.left, r.bottom + 4);
+}
+
+async function mixSave() {
+  const n = ((song.view && song.view.meta.mixes) || []).length;
+  const name = prompt("Name this mix (e.g. Rough, Vocals up, Club)", `Mix ${n + 1}`);
+  if (name == null) return;
+  const v = await api.daw_mix_save(name.trim(), null);
+  if (v) { mixes.last = v.mix || mixes.last; setSongView(v); toast(`Saved "${name.trim() || "Mix"}".`); }
+}
+
+async function mixRecall(m) {
+  const v = await api.daw_mix_recall(m.id);
+  if (v) { mixes.last = m.id; setSongView(v); toast(`"${m.name}" is on. Undo (Ctrl+Z) goes back to how it was.`); }
+}
+
+function mixManage(r) {
+  const list = (song.view && song.view.meta.mixes) || [];
+  const items = [];
+  for (const m of list) {
+    items.push([`Update "${m.name}" with the mixer now`, "", async () => setSongView(await api.daw_mix_save(m.name, m.id))]);
+    items.push([`Rename "${m.name}"…`, "", async () => {
+      const n = prompt("Mix name", m.name);
+      if (n != null && n.trim()) setSongView(await api.daw_mix_edit(m.id, n.trim(), false));
+    }]);
+    items.push([`Delete "${m.name}"`, "", async () => {
+      if (confirm(`Delete the mix "${m.name}"? (For your partner too.)`)) setSongView(await api.daw_mix_edit(m.id, null, true));
+    }]);
+  }
+  showCtx(items, r.left, r.bottom + 4);
+}

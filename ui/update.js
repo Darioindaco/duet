@@ -78,3 +78,50 @@ async function updInstall() {
   const r = await api.update_install();
   if (r.error) { toast(r.error, true); go.disabled = false; go.textContent = "Restart now"; }
 }
+
+// ---------- your partner's version ----------
+// Both sides tell each other their build and the song format (what fields a song can hold) when
+// they connect. A different format means one of you can't see some of what the other does (a
+// newer Duet's track colours, say): a card says so, and offers the update to whoever is behind.
+// The same format on different builds is fine: just a line in a toast, once.
+function verCheck(v) {
+  const vs = v && v.versions, p = vs && vs.partner;
+  const el = $("verCard");
+  if (!p) { if (el) el.hidden = true; return; }
+  const key = `${p.build}|${p.fmt}`;
+  if (p.fmt === vs.fmt) {
+    if (el) el.hidden = true;
+    if (p.build && vs.build && p.build !== vs.build && upd.verToast !== key) {
+      upd.verToast = key;
+      toast(`Your partner runs build ${p.build}, you ${vs.build}: you can work together fine.`);
+    }
+    return;
+  }
+  if (upd.verDismissed === key) return;
+  const theyOlder = p.fmt < vs.fmt;
+  const mine = vs.build ? `build ${vs.build}` : "a copy run from source";
+  const theirs = p.build ? `build ${p.build}` : "an older build";
+  let card = el;
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "verCard";
+    card.className = "updcard vercard";
+    document.body.append(card);
+  }
+  card.innerHTML = theyOlder
+    ? `<div class="updtop"><b>Your partner's Duet is older</b><button class="qx" title="Got it">✕</button></div>
+       <div class="updtxt">They have ${esc(theirs)}, you ${esc(mine)}. You can work together, but some of what's new
+       (like track colours and clip names) won't show on their side until they update: song menu → <b>Check for updates</b>.
+       Nothing of yours gets lost.</div>
+       <div class="updbtns"><button class="mb primary">OK</button></div>`
+    : `<div class="updtop"><b>Your partner's Duet is newer</b><button class="qx" title="Later">✕</button></div>
+       <div class="updtxt">They have ${esc(theirs)}, you ${esc(mine)}. Some of what they make won't show here until you
+       update (it's kept in the song, so nothing of theirs gets lost).</div>
+       <div class="updbtns"><button class="mb">Later</button><button class="mb primary">Update</button></div>`;
+  card.hidden = false;
+  const close = () => { card.hidden = true; upd.verDismissed = key; };
+  card.querySelector(".qx").onclick = close;
+  const btns = card.querySelectorAll(".updbtns .mb");
+  if (theyOlder) btns[0].onclick = close;
+  else { btns[0].onclick = close; btns[1].onclick = () => { close(); updCheck(true); }; }
+}

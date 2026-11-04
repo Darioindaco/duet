@@ -457,6 +457,14 @@ on both computers (without it, that slot lets the sound through and says so).
 
 ## Mixing the song
 
+**Saved mixes.** *Mixes ▾* in the mixer's title bar keeps the mixer as it is now
+under a name (*Save the mix as…*: every track's and bus's volume, pan, sends,
+output and effects, and the master's effects; not mute and solo, those are just
+yours). Click a saved mix to hear it again; that's one undo step, so *Ctrl+Z*
+takes you back to how it was: recall and undo is your A/B. *Rename, update or
+delete…* keeps them tidy. They're in the song, for both of you (your partner's
+are marked). Tracks made since keep their settings; deleted ones are left out.
+
 Everything below is part of the song, like the tracks themselves: you both
 hear it, either of you can change it, and the export sounds exactly like it.
 
@@ -659,6 +667,15 @@ Patterns play on both computers from the same notes, so they sound the same and
 in full quality on both sides (a VST instrument needs to be installed on both).
 
 ## Working side by side
+
+**Different versions.** When you connect, both Duets say which build they are and
+which *song format* (what a song can hold: track colours and clip names came in
+format 4). The same format on different builds works as usual. A different format
+shows a card: the one with the newer Duet hears that their partner won't see some
+of the new things until they update, and the one behind gets an *Update* button.
+Nothing gets lost either way: a Duet keeps, saves and passes on the fields it
+doesn't know yet, and the two only compare the part of the song they both know
+(so an older partner doesn't make the song get sent over and over).
 
 You see where your partner is working, in their colour, as if you were looking
 over their shoulder:

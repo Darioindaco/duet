@@ -2429,6 +2429,7 @@ def test_colors_names():
     import tempfile
     from pathlib import Path
 
+    import daw
     from daw import Daw, Project
 
     e = Engine()
@@ -2451,11 +2452,63 @@ def test_colors_names():
         d.redo()
         # moving B above A (the UI gives it an order between its new neighbours)
         v = d.edit([["track", "tb", {"order": 0.5}]])
-        assert [x["id"] for x in v["tracks"]][:2] == ["tb", "ta"], v["tracks"]
+        ids = [x["id"] for x in v["tracks"]]
+        assert ids.index("tb") < ids.index("ta"), ids
         # saved with the song
         d.save_now()
         p = Project.load(d.p.folder)
         assert p.live("track")["ta"]["color"] == "#5cb8ff" and p.live("clip")["c1"]["name"] == "Intro beat"
+        # an older partner (format 3: no colours) holds the same song without them: the digests
+        # both of you compare are the same, so the song isn't sent again and again
+        import copy
+        import hashlib
+        old = copy.deepcopy(d.p)
+        for k, names in daw.FIELDS_ADDED[4].items():
+            for o in list(old.objs[k].values()) + list(old.stamps[k].values()):
+                for f in names:
+                    o.pop(f, None)
+        blob = json.dumps([old.objs, {k: {i: {f: list(x) for f, x in dd.items()} for i, dd in v.items()}
+                                      for k, v in old.stamps.items()}], sort_keys=True)
+        old_digest = hashlib.sha1(blob.encode()).hexdigest()[:16]  # (how build 118 makes it)
+        assert d.p.digest(3) == old_digest != d.p.digest(), (d.p.digest(3), old_digest)
+        d.partner_ver = {"build": 118, "fmt": 3}
+        assert d._common_fmt() == 3 and d._digest() == old_digest
+        d.partner_ver = {"build": 130, "fmt": 9}  # a newer one: what we both know is ours
+        assert d._common_fmt() == daw.SONG_FORMAT
+        d.partner_ver = None
+        # a field from a newer Duet is kept, saved and passed on (but doesn't change our digest)
+        before = d.p.digest()
+        d._apply([["clip", "c1", {"sparkle": [0.7, d.p.clock + 5, "them"]}]], local=False)
+        assert d.p.objs["clip"]["c1"]["sparkle"] == 0.7 and before == d.p.digest()
+        assert any(o[0] == "clip" and "sparkle" in o[2] for o in d.p.all_ops())
+        assert not d.p.apply(["clip", "c1", {"Bad Name!": [1, d.p.clock + 6, "them"]}])
+        d.save_now()
+        assert Project.load(d.p.folder).objs["clip"]["c1"]["sparkle"] == 0.7
+        # saved mixes: keep the mixer, change it, call it back (one undo step), the view only names them
+        d.edit([["track", "ta", {"vol": 0.8, "pan": 0.0, "rack": []}], ["track", "tb", {"vol": 0.5}]])
+        v = d.mix_save("Rough")
+        mid = v["mix"]
+        assert v["meta"]["mixes"] == [{"id": mid, "name": "Rough", "t": v["meta"]["mixes"][0]["t"], "by": "me"}], v["meta"]["mixes"]
+        d.edit([["track", "ta", {"vol": 0.3, "pan": -0.5, "rack": [{"kind": "reverb", "on": True}]}],
+                ["meta", "meta", {"master_rack": [{"kind": "limiter", "on": True}]}]])
+        v = d.mix_recall(mid)
+        t = next(x for x in v["tracks"] if x["id"] == "ta")
+        assert t["vol"] == 0.8 and t["pan"] == 0.0 and t["rack"] == [] and v["meta"]["master_rack"] == [], (t, v["meta"]["master_rack"])
+        v = d.undo()  # A/B: back to how it was
+        t = next(x for x in v["tracks"] if x["id"] == "ta")
+        assert t["vol"] == 0.3 and t["rack"][0]["kind"] == "reverb" and v["meta"]["master_rack"][0]["kind"] == "limiter", t
+        v = d.mix_edit(mid, name="Rough 2")
+        assert v["meta"]["mixes"][0]["name"] == "Rough 2"
+        v = d.mix_edit(mid, delete=True)
+        assert v["meta"]["mixes"] == []
+        # the hello says which build and format this is
+        sent = []
+        d.e = type("E", (), {"send_signal": lambda self, m: sent.append(json.loads(m))})()
+        d.connected, d.build = True, 123
+        d._on_connect()
+        h = next(m for m in sent if m["t"] == "hello")
+        assert h["build"] == 123 and h["fmt"] == daw.SONG_FORMAT and h["ds"]["3"] == d.p.digest(3), h
+        d.e, d.connected = e, False
     finally:
         d.close()
         e.close()

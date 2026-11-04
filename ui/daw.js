@@ -256,6 +256,7 @@ function setSongView(v) {
   if (!v) return;
   const before = song.view;
   song.view = v;
+  if (typeof verCheck === "function") verCheck(v);
   // edits still waiting to be sent (turning a knob): on top again, or they'd jump back
   const pend = Object.entries(pendingEdits).map(([key, f]) => [...key.split("\n"), f]);
   if (pend.length) applyLocal(pend);
@@ -2473,6 +2474,23 @@ function demoSong() {
       v++; return copy();
     },
     daw_mode: async (m) => { view.mode = m; v++; return copy(); },
+    // saved mixes (like daw.py's, roughly): volumes only, enough for the demo
+    daw_mix_save: async (name, replace) => {
+      const mx = (view.meta.mixes ||= []), id = replace || newId("x");
+      const snap = { id, name: name || `Mix ${mx.length + 1}`, t: Date.now() / 1000, by: me, vols: Object.fromEntries(view.tracks.map((t) => [t.id, t.vol])) };
+      const i = mx.findIndex((x) => x.id === id);
+      if (i >= 0) mx[i] = snap; else mx.push(snap);
+      v++; return { ...copy(), mix: id };
+    },
+    daw_mix_recall: async (id) => {
+      const m = (view.meta.mixes || []).find((x) => x.id === id);
+      if (m) for (const t of view.tracks) if (t.id in m.vols) t.vol = m.vols[t.id];
+      v++; return copy();
+    },
+    daw_mix_edit: async (id, name, del) => {
+      view.meta.mixes = (view.meta.mixes || []).filter((x) => !(del && x.id === id)).map((x) => (x.id === id && name ? { ...x, name } : x));
+      v++; return copy();
+    },
     daw_freeze: async (tid, mode) => { const t = view.tracks.find((k) => k.id === tid); if (t) t.frozen = mode === "freeze" ? { file: "x", start: 0, len: 4 } : null; v++; return copy(); },
     daw_reconcile: async (c) => { view.reconcile = null; v++; return copy(); },
     daw_comp: async (group, take, a, b) => {

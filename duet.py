@@ -70,6 +70,7 @@ class Api:
         self._daw = Daw(engine, data_dir() / "Projects", settings["peer_id"], float(settings.get("rec_offset_ms", 0)))
         from daw import https_context
         self._upd = Updater(build_info(resource("build_info.json")), data_dir() / "updates", https_context())
+        self._daw.build = self._upd.current()  # told to the partner, to compare versions
         engine.mix_threads(bool(settings.get("mix_threads", True)))
         self._talk_input = settings.get("talk_input")
         if self._talk_input is not None:
@@ -264,6 +265,15 @@ class Api:
 
     def daw_freeze(self, track, mode):
         return self._daw.freeze(str(track), str(mode))
+
+    def daw_mix_save(self, name, replace=None):
+        return self._daw.mix_save(str(name or ""), str(replace) if replace else None)
+
+    def daw_mix_recall(self, mid):
+        return self._daw.mix_recall(str(mid))
+
+    def daw_mix_edit(self, mid, name=None, delete=False):
+        return self._daw.mix_edit(str(mid), None if name is None else str(name), bool(delete))
 
     def daw_mode(self, mode):
         return self._daw.set_mode(str(mode))

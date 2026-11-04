@@ -391,6 +391,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
 .updcard { position: fixed; right: 18px; bottom: 74px; z-index: 900; width: 300px; padding: 12px 14px; border-radius: 14px;
   background: linear-gradient(180deg, var(--panel-2), var(--panel)); border: 1px solid var(--line-2); box-shadow: 0 16px 50px rgba(0,0,0,0.55); font-size: 12.5px; }
 .updcard[hidden] { display: none; }
+.vercard { bottom: auto; top: 64px; border-color: var(--warn); }
 .updtop { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .updtop b { font-size: 13px; }
 .updtxt { color: var(--muted); line-height: 1.4; }
@@ -627,6 +628,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
       <div class="win" id="win-mixer" data-w="mixer" data-title="Mixer">
         <section class="card mixcard">
           <div class="wbar-extra">
+            <button class="ttog" id="mixesBtn" title="Saved mixes: keep the mixer as it is now, go back to one, compare (undo after a recall: back to before)">Mixes ▾</button>
             <div class="stepper" title="Safety buffer: how much of your partner's audio is held back to ride out network hiccups. Auto finds the smallest one without crackles; − / + set it yourself.">
               Safety buffer
               <button class="auto" id="bufAuto" aria-pressed="true">Auto</button>
@@ -1916,6 +1918,7 @@ function buildSafety() {
   $("bufMinus").onclick = () => manual(-1);
   $("bufPlus").onclick = () => manual(+1);
   $("bufAuto").onclick = () => { ui.bufAuto = !ui.bufAuto; paintBuf(); };
+  $("mixesBtn").onclick = (e) => { e.stopPropagation(); mixesMenu(e); };
   paintBuf();
   ui.paintBuf = paintBuf;
   ui.showBuf = showBuf;

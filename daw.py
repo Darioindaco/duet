@@ -54,7 +54,8 @@ META_DEFAULTS = {"name": "Untitled", "bpm": 120.0, "beats": 4, "loop": False, "l
 FIELDS = {
     # tempo: the tempo changes after the start [[beat, bpm], ...] (bpm: the start's); meters: the time
     # signature changes [[beat, beats per bar], ...] (beats: the start's), each on a barline
-    "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end", "master_rack", "key", "tempo", "meters"},
+    # mixes: the mixer's saved states [{id, name, t, by, tracks: {track: {vol, pan, sends, out, rack}}, master_rack}]
+    "meta": {"name", "bpm", "beats", "loop", "loop_start", "loop_end", "master_rack", "key", "tempo", "meters", "mixes"},
     # bus: a mixer track others feed (no clips); out: the bus it goes to (else
     # the master); sends: {bus: level}
     # auto: an automation lane instead of a track ({"target": track id or
@@ -87,6 +88,30 @@ FIELDS = {
     "marker": {"beat", "name", "color", "section", "del"},
 }
 
+
+# What the song can hold, as a number both sides tell each other when they connect: one Duet that
+# knows fields the other doesn't shows a note (the older one keeps them, but can't show them).
+# 3: up to build 118; 4: a track's colour, a clip's name and colour; 5: saved mixes
+SONG_FORMAT = 5
+# the fields each format added (a format's fields: FIELDS without what came after it)
+FIELDS_ADDED = {4: {"track": {"color"}, "clip": {"name", "color"}}, 5: {"meta": {"mixes"}}}
+# what a saved mix holds of each track and bus (not mute and solo: those are just yours)
+MIX_FIELDS = ("vol", "pan", "sends", "out", "rack")
+MAX_MIXES = 24
+
+
+def fields_at(fmt: int) -> dict[str, set]:
+    out = {k: set(v) for k, v in FIELDS.items()}
+    for f, added in FIELDS_ADDED.items():
+        if f > fmt:
+            for kind, names in added.items():
+                out[kind] -= names
+    return out
+
+# a field this version doesn't know (from a newer partner): kept, saved and passed on, so nothing
+# of theirs gets lost here; a plain name, and only so many per object
+OTHER_FIELD = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+MAX_FIELDS = 64
 
 # what a field reads as when it was never set (to undo setting it)
 FIELD_DEFAULTS = {
@@ -426,7 +451,7 @@ class Project:
         st = self.stamps[kind].setdefault(oid, {})
         changed = False
         for f, v in fields.items():
-            if f not in FIELDS[kind]:
+            if f not in FIELDS[kind] and not (OTHER_FIELD.match(str(f)) and (f in obj or len(obj) < MAX_FIELDS)):
                 continue
             try:
                 value, lam, peer = v
@@ -452,9 +477,15 @@ class Project:
         return [[k, i, {f: [v, *self.stamps[k][i][f]] for f, v in o.items()}]
                 for k in KINDS for i, o in self.objs[k].items()]
 
-    def digest(self) -> str:
-        blob = json.dumps([self.objs, {k: {i: {f: list(s) for f, s in d.items()} for i, d in v.items()}
-                                       for k, v in self.stamps.items()}], sort_keys=True)
+    def digest(self, fmt: int | None = None) -> str:
+        """What the song is, in 16 characters, to see that both sides have the same. With a format:
+        only the fields that format knows (a partner on an older Duet can't hold the newer ones);
+        an older format's digest of a song with only its fields is the same as before."""
+        known = fields_at(SONG_FORMAT if fmt is None else fmt)
+        keep = lambda k, d: {f: x for f, x in d.items() if f in known[k]}
+        objs = {k: {i: keep(k, o) for i, o in v.items()} for k, v in self.objs.items()}
+        stamps = {k: {i: {f: list(x) for f, x in keep(k, d).items()} for i, d in v.items()} for k, v in self.stamps.items()}
+        blob = json.dumps([objs, stamps], sort_keys=True)
         return hashlib.sha1(blob.encode()).hexdigest()[:16]
 
     # --- disk -------------------------------------------------------------------
@@ -588,6 +619,10 @@ class Daw:
         self.unsnapped = False
         self.connected = False
         self.partner: str | None = None
+        # this copy's CI build number (duet.py sets it; None: run from source), and the partner's
+        # build and song format from their hello
+        self.build: int | None = None
+        self.partner_ver: dict | None = None
         self.partner_pid: str | None = None
         self.conflict: dict | None = None
         # working Together (play, stop and live sound shared) or Apart (each their own); the newest
@@ -1014,6 +1049,77 @@ class Daw:
             return self.view()
 
     LEVELS = {"vol", "pan", "sends"}
+
+    # --- saved mixes: the mixer's state, to come back to or compare --------------------
+
+    def _mixes(self) -> list:
+        m = self.p.meta().get("mixes")
+        return [x for x in m if isinstance(x, dict) and safe(x.get("id"))] if isinstance(m, list) else []
+
+    def _mix_now(self) -> dict:
+        p = self.p
+        tracks = {tid: {f: json.loads(json.dumps(t.get(f, FIELD_DEFAULTS["track"].get(f)))) for f in MIX_FIELDS}
+                  for tid, t in p.live("track").items() if not t.get("auto")}
+        return {"tracks": tracks, "master_rack": json.loads(json.dumps(p.meta().get("master_rack") or []))}
+
+    def mix_save(self, name: str, replace: str | None = None) -> dict:
+        """Keep the mixer as it is now, under a name (replace: over that saved mix)."""
+        with self.lock:
+            mixes = self._mixes()
+            name = (str(name or "").strip() or f"Mix {len(mixes) + 1}")[:40]
+            snap = {"id": replace if any(x["id"] == replace for x in mixes) else new_id("x"), "name": name,
+                    "t": time.time(), "by": self.me, **self._mix_now()}
+            mixes = [snap if x["id"] == snap["id"] else x for x in mixes]
+            if not any(x["id"] == snap["id"] for x in mixes):
+                if len(mixes) >= MAX_MIXES:
+                    self.notices.append(f"A song keeps {MAX_MIXES} mixes: delete one first.")
+                    return self.view()
+                mixes.append(snap)
+            self._do([["meta", "meta", {"mixes": mixes}]])
+            return {**self.view(), "mix": snap["id"]}
+
+    def mix_recall(self, mid: str) -> dict:
+        """The mixer as it was in a saved mix (one undo step: undo to go back, so you can A/B).
+        Tracks made since keep their settings; tracks deleted since are left out."""
+        with self.lock:
+            snap = next((x for x in self._mixes() if x["id"] == mid), None)
+            if not snap:
+                return self.view()
+            live = self.p.live("track")
+            changes = []
+            for tid, fs in (snap.get("tracks") or {}).items():
+                t = live.get(tid)
+                if not t or not isinstance(fs, dict):
+                    continue
+                diff = {f: v for f, v in fs.items() if f in MIX_FIELDS and t.get(f, FIELD_DEFAULTS["track"].get(f)) != v}
+                if diff.get("out") and diff["out"] not in live:
+                    diff.pop("out")  # its bus is gone
+                if diff:
+                    changes.append(["track", tid, diff])
+            mr = snap.get("master_rack")
+            if isinstance(mr, list) and mr != (self.p.meta().get("master_rack") or []):
+                changes.append(["meta", "meta", {"master_rack": mr}])
+            changes, blocked = self._blocked(changes)
+            if blocked:
+                self.notices.append("Your partner is editing some of it right now: those stay as they are.")
+            # its own undo step (never merged with a fader move just before, or one after it)
+            if self.undos:
+                self.undos[-1]["t"] = 0.0
+            self._do(changes)
+            if self.undos and changes:
+                self.undos[-1]["t"] = 0.0
+            return self.view()
+
+    def mix_edit(self, mid: str, name: str | None = None, delete: bool = False) -> dict:
+        with self.lock:
+            mixes = self._mixes()
+            if delete:
+                mixes = [x for x in mixes if x["id"] != mid]
+            elif name is not None and str(name).strip():
+                mixes = [{**x, "name": str(name).strip()[:40]} if x["id"] == mid else x for x in mixes]
+            if mixes != self._mixes():
+                self._do([["meta", "meta", {"mixes": mixes}]])
+            return self.view()
 
     def levels(self, changes: list) -> dict:
         """A fader or pan knob being moved: track volume, pan and sends only, applied like any edit (undo,
@@ -2621,6 +2727,14 @@ class Daw:
         self.outbox.clear()
         self.last_flush = time.monotonic()
 
+    def _common_fmt(self) -> int:
+        """The song format both of you know (yours until their hello says theirs)."""
+        theirs = (self.partner_ver or {}).get("fmt") or SONG_FORMAT
+        return min(SONG_FORMAT, theirs)
+
+    def _digest(self) -> str:
+        return self.p.digest(self._common_fmt())
+
     def _on_connect(self):
         self.last_hello = time.monotonic()
         self.partner_pid = None
@@ -2629,8 +2743,8 @@ class Daw:
         self.wanted.clear()
         sp = self._sp()
         self._send({"t": "hello", "peer": self.me, "name": self.p.meta()["name"], "empty": self.p.is_empty(),
-                    "d": self.p.digest(), "sp": sp and sp.get("clock"), "mine": self._changes_since(sp),
-                    "spt": sp and sp.get("time")})
+                    "d": self.p.digest(), "ds": {str(f): self.p.digest(f) for f in range(3, SONG_FORMAT + 1)}, "sp": sp and sp.get("clock"), "mine": self._changes_since(sp),
+                    "spt": sp and sp.get("time"), "build": self.build, "fmt": SONG_FORMAT})
         if self.mode_t:
             self._send({"t": "mode", "mode": self.mode, "mt": self.mode_t})
 
@@ -2640,6 +2754,10 @@ class Daw:
             return
         if t == "hello":
             self.partner = m.get("peer")
+            # (an older Duet sends neither: format 3 or before)
+            b, f = m.get("build"), m.get("fmt")
+            self.partner_ver = {"build": int(b) if isinstance(b, int) and 0 < b < 10**7 else None,
+                                "fmt": int(f) if isinstance(f, int) and 0 < f < 10**4 else 3}
             if pid == self.p.pid:
                 self.conflict = None
                 if self._reconcile_check(m):
@@ -2701,9 +2819,9 @@ class Daw:
                 self.partner_here_n = n
                 self.partner_here = {**clean_here(m), "pos": finite(m.get("pos"), 0.0), "at": time.monotonic()}
         elif t == "sum" and pid == self.p.pid:
-            if m.get("d") == self.p.digest():
+            if m.get("d") == self._digest():
                 self._session_point(m["d"])
-            if m.get("d") != self.p.digest():
+            if m.get("d") != self._digest():
                 self.mismatches += 1
                 if self.mismatches >= 2 and time.monotonic() - self.last_snap > 4:
                     self.mismatches = 0
@@ -2966,7 +3084,8 @@ class Daw:
         both sides, don't just mix the two together: ask (True). One side only: it simply comes in."""
         sp = self._sp()
         mine, theirs = self._changes_since(sp), int(finite(m.get("mine"), 0.0, 0, 1e9))
-        if m.get("d") == self.p.digest():
+        ds = m.get("ds") if isinstance(m.get("ds"), dict) else {}
+        if (ds.get(str(self._common_fmt())) or m.get("d")) == self._digest():
             return False
         if sp and m.get("sp") is not None and mine and theirs:
             self.reconcile = {"mine": mine, "theirs": theirs, "since": sp.get("time"), "name": self.p.meta()["name"]}
@@ -3087,6 +3206,7 @@ class Daw:
                 was_shared = self.partner_pid == self.p.pid
                 self.connected = False
                 self.partner_pid = None
+                self.partner_ver = None
                 self.reconcile = None
                 self.version += 1
                 if was_shared:
@@ -3119,7 +3239,7 @@ class Daw:
                 self._stems_poll()
             if conn and self.partner_pid == self.p.pid and now - self.last_sum > 2:  # (also keeps the session point fresh)
                 self.last_sum = now
-                self._send({"t": "sum", "d": self.p.digest()})
+                self._send({"t": "sum", "d": self._digest()})
             if self.dirty and now - self.changed_at > 1.0:
                 self.dirty = False
                 self.unsnapped = True
@@ -3225,7 +3345,9 @@ class Daw:
                 files[name] = {**f, "here": name in self.loaded, "loading": name in self.loading,
                                "mine": f.get("owner") == self.me}
             return {
-                "pid": p.pid, "meta": p.meta(), "unsaved": self.unsaved, "folder": str(p.folder), "tracks": [t for t in tracks if not t["bus"]],
+                # (the saved mixes by name: what's in them stays here, it can be big)
+                "pid": p.pid, "meta": {**p.meta(), "mixes": [{k: x.get(k) for k in ("id", "name", "t", "by")} for x in self._mixes()]},
+                "unsaved": self.unsaved, "folder": str(p.folder), "tracks": [t for t in tracks if not t["bus"]],
                 "buses": [t for t in tracks if t["bus"]],
                 "clips": [{"id": i, **c} for i, c in p.live("clip").items() if not c.get("tsrc")],
                 "takes": [{"id": i, **c} for i, c in p.live("clip").items() if c.get("tsrc")],
@@ -3239,6 +3361,7 @@ class Daw:
                 "patternMode": self.pattern_mode,
                 "conflict": self.conflict, "shared": self.connected and self.partner_pid == p.pid,
                 "mode": self.mode, "reconcile": self.reconcile,
+                "versions": {"build": self.build, "fmt": SONG_FORMAT, "partner": self.partner_ver if self.connected else None},
                 "rendering": self.rendering and {k: self.rendering[k] for k in ("track", "mode")},
                 "locks": {k: sorted(v) for k, v in self._locked().items()},
                 "undo": bool(self.undos), "redo": bool(self.redos),
