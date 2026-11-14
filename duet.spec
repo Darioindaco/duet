@@ -23,6 +23,9 @@ if sys.platform == "darwin":
             "NSMicrophoneUsageDescription": "Duet sends your instrument or voice to your partner.",
             # Same for the camera, except macOS kills the app outright when it's missing.
             "NSCameraUsageDescription": "Duet shows you to your partner in the video call.",
+            # macOS 15+ asks before an app may reach other devices on your Wi-Fi (a partner in the
+            # same house); without a reason here that question can fail to appear at all.
+            "NSLocalNetworkUsageDescription": "Duet connects straight to your partner's computer when you're on the same network.",
             "NSHighResolutionCapable": True,
             "CFBundleShortVersionString": "0.3.0",
             "LSMinimumSystemVersion": "11.0",

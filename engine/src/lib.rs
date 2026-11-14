@@ -432,8 +432,11 @@ struct Engine {
     dsp: Arc<Mutex<Dsp>>,
     audio: audio::AudioThread,
     midi: midi::MidiThread,
-    local: SocketAddrV4,
+    local: Mutex<SocketAddrV4>,
     public: Mutex<Option<SocketAddrV4>>,
+    /// two STUN servers saw different public ports: a strict ("symmetric") NAT,
+    /// which direct connections often can't get through
+    nat_strict: AtomicBool,
     /// splitting a clip into stems, in the background
     stems: Mutex<Option<StemJob>>,
 }
@@ -508,7 +511,7 @@ impl Engine {
         });
         let sink_inner = inner.clone();
         let midi = midi::MidiThread::spawn(Arc::new(move |ev| sink_inner.midi_in(ev)));
-        Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), midi, local: local_addr, public: Mutex::new(None), stems: Mutex::new(None) })
+        Ok(Engine { inner, dsp: Arc::new(Mutex::new(dsp)), audio: audio::AudioThread::spawn(), midi, local: Mutex::new(local_addr), public: Mutex::new(None), nat_strict: AtomicBool::new(false), stems: Mutex::new(None) })
     }
 
     /// Start the network threads.
@@ -525,12 +528,17 @@ impl Engine {
     }
 
     /// Look up our public address (STUN, same socket as the audio) and return our code.
+    /// Safe to call again: it re-reads the local address too (Wi-Fi changed), and the
+    /// lookup itself keeps the router's opening for our port alive.
     fn discover(&self, py: Python<'_>) -> String {
         let inner = self.inner.clone();
-        let local = self.local;
-        let public = py.allow_threads(move || {
-            for host in net::STUN_SERVERS {
-                let Some(server) = net::resolve(host) else { continue };
+        let port = self.local.lock().unwrap().port();
+        let local = SocketAddrV4::new(net::local_ip(), port);
+        *self.local.lock().unwrap() = local;
+        let (public, strict) = py.allow_threads(move || {
+            // ask one server, then a second one: a router that hands out a new public
+            // port for every address it talks to shows two different ports
+            let ask = |server: SocketAddrV4| -> Option<SocketAddrV4> {
                 for _ in 0..2 {
                     let txid: [u8; 12] = rand::random();
                     {
@@ -549,15 +557,34 @@ impl Engine {
                         std::thread::sleep(Duration::from_millis(10));
                     }
                 }
+                None
+            };
+            let mut first: Option<(SocketAddrV4, SocketAddrV4)> = None; // (server, what it saw)
+            for host in net::STUN_SERVERS {
+                let Some(server) = net::resolve(host) else { continue };
+                if first.is_some_and(|(s, _)| s.ip() == server.ip()) {
+                    continue;
+                }
+                let Some(seen) = ask(server) else { continue };
+                match first {
+                    None => first = Some((server, seen)),
+                    Some((_, a)) => return (Some(a), a != seen),
+                }
             }
-            None
+            (first.map(|(_, a)| a), false)
         });
         *self.public.lock().unwrap() = public;
+        self.nat_strict.store(strict, Relaxed);
         net::make_code(public, local)
     }
 
     fn connect(&self, code: &str) -> PyResult<()> {
         let cands = net::parse_code(code).map_err(PyValueError::new_err)?;
+        // the same code again (pasted, then Connect clicked) while it already works:
+        // keep the line instead of dropping it and starting over
+        if self.inner.connected() && self.inner.ctl.lock().unwrap().candidates == cands {
+            return Ok(());
+        }
         self.inner.ctl.lock().unwrap().candidates = cands;
         self.inner.set_peer(None);
         Ok(())
@@ -2147,7 +2174,12 @@ impl Engine {
 
     #[getter]
     fn local_port(&self) -> u16 {
-        self.local.port()
+        self.local.lock().unwrap().port()
+    }
+
+    #[getter]
+    fn nat_strict(&self) -> bool {
+        self.nat_strict.load(Relaxed)
     }
 
     #[getter]
