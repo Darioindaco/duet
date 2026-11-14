@@ -513,6 +513,7 @@ footer.min .ftog { transform: rotate(180deg); height: 18px; }
             <div class="row"><input type="text" id="peerCode" placeholder="Paste their code" spellcheck="false" autocomplete="off"><button class="btn teal" id="connectBtn">Connect</button></div>
           </div>
           <div class="hint" id="connHint"></div>
+          <div class="hint warn" id="netHint" hidden></div>
           <p class="fine">Your code stays the same between sessions, so next time Duet reconnects to your partner by itself.</p>
         </section>
 
@@ -1931,6 +1932,13 @@ function paint(s) {
   // code
   const code = $("myCode");
   if (s.code) { code.textContent = s.code; code.classList.remove("pending"); code.title = s.codeNote || ""; }
+  if (s.codeChanged && !s.connected) toast("Your code changed (another network?). Copy it and send it to your partner again.");
+  // why it may not connect, in words (not just a tooltip on the code); after 20 s of
+  // calling, what to check
+  if (s.calling) paint.callingSince ??= Date.now(); else paint.callingSince = null;
+  const longCall = s.calling && Date.now() - paint.callingSince > 20000;
+  const netTxt = s.connected ? "" : [s.codeNote, longCall ? "Still calling? Check: did your partner paste your newest code too (both of you have to)? On the same Wi-Fi, allow Duet under System Settings → Privacy & Security → Local Network. A work, school or phone network often blocks direct lines: try another network or a hotspot." : ""].filter(Boolean).join(" ");
+  if ($("netHint").textContent !== netTxt) { $("netHint").textContent = netTxt; $("netHint").hidden = !netTxt; }
 
   // connection
   const pill = $("pill");

@@ -31,6 +31,7 @@ import traceback
 import socket
 import subprocess
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -57,6 +58,7 @@ class Api:
         self._engine = engine
         self._code = ""
         self._code_note = ""
+        self._code_changed = False  # our code changed after a lookup: tell the page once
         self._audio = False
         self._window = None  # set once the window exists (for file dialogs)
         self._may_close = False  # closing was asked about (or doesn't need to be)
@@ -79,9 +81,28 @@ class Api:
         threading.Thread(target=self._discover, daemon=True).start()
 
     def _discover(self):
-        self._code = self._engine.discover()
-        if not self._engine.public_addr:
-            self._code_note = "No internet lookup: this code only works on the same Wi-Fi."
+        """Look up our code, and keep doing so every 20 s while we're not connected:
+        that keeps the router's opening for our port alive (most close it after
+        30-120 s of quiet, and then a code you sent a while ago no longer gets
+        through), and it notices a new network (another Wi-Fi, the laptop woke up
+        somewhere else) or a lookup that failed at launch."""
+        firewall = mac_firewall_note()
+        while True:
+            if not self._engine.connected:
+                code = self._engine.discover()
+                if self._code and code != self._code:
+                    self._code_changed = True
+                self._code = code
+                if not self._engine.public_addr:
+                    note = "No internet lookup: this code only works on the same Wi-Fi."
+                elif self._engine.nat_strict:
+                    note = ("Your network gives every connection a new port (a strict NAT, common on "
+                            "work, school and phone networks), so a direct line may not get through. "
+                            "If it keeps calling, try another network, e.g. a phone hotspot.")
+                else:
+                    note = ""
+                self._code_note = " ".join(n for n in (note, firewall) if n)
+            time.sleep(20)
 
     # --- setup ---------------------------------------------------------------
 
@@ -228,13 +249,17 @@ class Api:
             e.set_master(float(cfg["master"]))
         return True
 
+    def _take_code_changed(self):
+        changed, self._code_changed = self._code_changed, False
+        return changed
+
     # --- polled ~12x per second by the page ----------------------------------
 
     def state(self):
         s = self._engine.state()
         sr, frame = s["samplerate"], s["frame"]
         return {
-            "code": self._code, "codeNote": self._code_note,
+            "code": self._code, "codeNote": self._code_note, "codeChanged": self._take_code_changed(),
             "audio": self._audio,
             "connected": s["connected"],
             "calling": s["calling"],
@@ -1043,6 +1068,31 @@ def load_settings() -> dict:
         return json.loads((data_dir() / "settings.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+def mac_firewall_note() -> str:
+    """The Mac's own firewall can drop your partner's packets before Duet sees them:
+    with "Block all incoming connections" always, and for Duet itself if someone
+    clicked Deny when macOS asked (an unsigned app is asked again after updates)."""
+    if sys.platform != "darwin":
+        return ""
+    tool = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+    def ask(*args):
+        try:
+            return subprocess.run([tool, *args], capture_output=True, text=True, timeout=5).stdout.lower()
+        except Exception:
+            return ""
+    if "enabled" not in ask("--getglobalstate"):
+        return ""
+    if "block all" in ask("--getblockall") and "disabled" not in ask("--getblockall"):
+        return ("Your Mac's firewall blocks all incoming connections, so your partner can't reach you: "
+                "System Settings → Network → Firewall → Options → turn off \"Block all incoming connections\".")
+    exe = sys.executable
+    app = exe[: exe.find(".app/") + 4] if ".app/" in exe else exe
+    if "block" in ask("--getappblocked", app) and "permitted" not in ask("--getappblocked", app):
+        return ("Your Mac's firewall blocks Duet: System Settings → Network → Firewall → Options → "
+                "set Duet to \"Allow incoming connections\".")
+    return ""
 
 
 def save_settings(settings: dict):
